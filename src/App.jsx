@@ -689,7 +689,8 @@ const RowLabel = ({ label, color, sub }) => (
       padding: "8px 10px",
       background: "#F8FAFC",
       borderRight: "2px solid #E2E8F0",
-      borderBottom: "1px solid #F1F5F9",
+      borderBottom: "2px solid #D1D5DB",
+      borderTop: "2px solid #D1D5DB",
     }}
   >
     <div style={{ fontWeight: 700, fontSize: 11, color, letterSpacing: 0.1 }}>{label}</div>
