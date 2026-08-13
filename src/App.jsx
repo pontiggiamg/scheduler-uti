@@ -367,7 +367,7 @@ export default function App() {
                       e.stopPropagation();
                       if (active) place(slot.key, di);
                     }}
-                    tint={active ? slot.tint : slot.bg}
+                    tint={active ? slot.tint : slot.tint}
                     ring={active ? slot.accent : null}
                     lastCol={di === 4}
                     lastRow={ri === SLOTS.length - 1}
@@ -412,7 +412,7 @@ export default function App() {
                     e.stopPropagation();
                     if (active) place("pool", di);
                   }}
-                  tint={active ? "#F0FDF4" : "#FAFDFB"}
+                  tint="#F0FDF4"
                   ring={active ? "#22C55E" : null}
                   lastCol={di === 4}
                 >
@@ -455,7 +455,7 @@ export default function App() {
                   e.stopPropagation();
                   if (active) place("unavailable", di);
                 }}
-                tint={active ? "#FEF2F2" : "#FAFAFA"}
+                tint="#FEF2F2"
                 ring={active ? "#F87171" : null}
                 lastCol={di === 4}
               >
