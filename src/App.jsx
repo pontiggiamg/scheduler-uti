@@ -25,10 +25,10 @@ const COLOR = {
 const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"];
 
 const SLOTS = [
-  { key: "uti1", label: "UTI 1", accent: "#3B82F6", bg: "#FFFFFF", tint: "#EFF6FF" },
-  { key: "uti2", label: "UTI 2", accent: "#3B82F6", bg: "#FFFFFF", tint: "#EFF6FF" },
-  { key: "uti3", label: "UTI 3", accent: "#3B82F6", bg: "#FFFFFF", tint: "#EFF6FF" },
-  { key: "postguardia", label: "Postguardia", accent: "#A855F7", bg: "#FDFAFF", tint: "#F5F3FF" },
+  { key: "uti1", label: "UTI 1", accent: "#3B82F6", bg: "#FFFFFF", tint: "#DBEAFE" },
+  { key: "uti2", label: "UTI 2", accent: "#3B82F6", bg: "#FFFFFF", tint: "#D1FAE5" },
+  { key: "uti3", label: "UTI 3", accent: "#3B82F6", bg: "#FFFFFF", tint: "#FEF3C7" },
+  { key: "postguardia", label: "Postguardia", accent: "#A855F7", bg: "#FDFAFF", tint: "#E9D5FF" },
 ];
 
 const SLOT_KEYS = SLOTS.map((s) => s.key);
@@ -367,7 +367,7 @@ export default function App() {
                       e.stopPropagation();
                       if (active) place(slot.key, di);
                     }}
-                    tint={active ? slot.tint : slot.tint}
+                    tint={slot.tint}
                     ring={active ? slot.accent : null}
                     lastCol={di === 4}
                     lastRow={ri === SLOTS.length - 1}
@@ -834,7 +834,7 @@ const Legend = () => (
       </div>
     ))}
     <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#64748B", fontWeight: 500 }}>
-      <span style={{ width: 11, height: 11, borderRadius: 3.5, background: "#F5F3FF", border: "1.5px solid #DDD6FE" }} />
+      <span style={{ width: 11, height: 11, borderRadius: 3.5, background: "#E9D5FF", border: "1.5px solid #D8B4FE" }} />
       Postguardia
     </div>
   </div>
