@@ -66,7 +66,6 @@ const emptyDay = () => ({
 
 const emptyWeek = () => ({ days: DAYS.map(() => emptyDay()) });
 
-/** Normaliza cualquier documento (incluidos formatos viejos) al modelo actual. */
 function normalize(raw) {
   const week = emptyWeek();
   if (!raw || typeof raw !== "object") return week;
@@ -83,7 +82,6 @@ function normalize(raw) {
       day[k] = Array.isArray(v) ? v.filter((n) => LEVEL[n]) : typeof v === "string" && v ? [v] : [];
     }
 
-    // no disponible por día; si el doc es viejo, hereda el global
     day.unavailable = Array.isArray(d.unavailable)
       ? d.unavailable.filter((n) => LEVEL[n])
       : [...legacyGlobal];
@@ -111,21 +109,19 @@ export default function App() {
   const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const [week, setWeek] = useState(emptyWeek);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState("idle"); // idle | saving | saved | error
-  const [sel, setSel] = useState(null); // { name, from }
+  const [status, setStatus] = useState("idle");
+  const [sel, setSel] = useState(null);
   const [toast, setToast] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
   const docId = `week-${isoDate(monday)}`;
 
-  // refs de control de escritura
-  const pending = useRef(null); // payload pendiente de escribir
+  const pending = useRef(null);
   const timer = useRef(null);
   const statusTimer = useRef(null);
-  const dirty = useRef(false); // hay ediciones locales sin confirmar
+  const dirty = useRef(false);
   const toastTimer = useRef(null);
 
-  /* ---------- sincronización en vivo ---------- */
   useEffect(() => {
     setLoading(true);
     setSel(null);
@@ -136,7 +132,6 @@ export default function App() {
       ref,
       { includeMetadataChanges: false },
       (snap) => {
-        // no pisar lo que el usuario está tocando ahora mismo
         if (snap.metadata.hasPendingWrites || dirty.current) {
           setLoading(false);
           return;
@@ -160,7 +155,6 @@ export default function App() {
     };
   }, [docId]);
 
-  /* ---------- guardado (optimista + debounce) ---------- */
   const flush = useCallback(async () => {
     const payload = pending.current;
     if (!payload) return;
@@ -178,7 +172,6 @@ export default function App() {
     }
   }, [docId]);
 
-  /** Actualiza el estado al instante y programa la escritura. */
   const commit = useCallback(
     (next, delay = 350) => {
       setWeek(next);
@@ -190,7 +183,6 @@ export default function App() {
     [flush]
   );
 
-  // guardar antes de cerrar la pestaña
   useEffect(() => {
     const h = () => {
       if (pending.current) flush();
@@ -204,8 +196,6 @@ export default function App() {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 2400);
   };
-
-  /* ---------- lógica de asignación ---------- */
 
   const locationOf = (w, name, di) => {
     const d = w.days[di];
@@ -237,18 +227,15 @@ export default function App() {
     );
   };
 
-  /** target: 'uti1'|'uti2'|'uti3'|'postguardia'|'unavailable'|'pool' */
   const place = (target, di) => {
     if (!sel) return;
     const { name, from } = sel;
     setSel(null);
 
-    // mismo lugar → nada que hacer
     if (from && from.di === di && from.key === target) return;
 
     const next = clone(week);
 
-    // devolver al pool del día
     if (target === "pool") {
       detach(next, name, di);
       commit(next);
@@ -280,8 +267,6 @@ export default function App() {
     next.days[di][field] = value;
     commit(next, 700);
   };
-
-  /* ---------- acciones de semana ---------- */
 
   const copyPrevWeek = async () => {
     setMenuOpen(false);
@@ -374,7 +359,7 @@ export default function App() {
             {/* filas de asignación */}
             {SLOTS.map((slot, ri) => (
               <Fragment key={slot.key}>
-                <RowLabel label={slot.label} color={slot.accent} last={ri === SLOTS.length - 1} />
+                <RowLabel label={slot.label} color={slot.accent} />
                 {DAYS.map((_, di) => (
                   <Cell
                     key={di}
@@ -385,24 +370,32 @@ export default function App() {
                     tint={active ? slot.tint : slot.bg}
                     ring={active ? slot.accent : null}
                     lastCol={di === 4}
+                    lastRow={ri === SLOTS.length - 1}
                   >
-                    {week.days[di][slot.key].map((n) => (
-                      <Chip
-                        key={n}
-                        name={n}
-                        selected={sel?.name === n}
-                        onPick={(e) => {
-                          e.stopPropagation();
-                          pick(n, { di, key: slot.key });
-                        }}
-                        onRemove={(e) => {
-                          e.stopPropagation();
-                          removeChip(n, di);
-                        }}
-                      />
-                    ))}
-                    {active && <GhostHint color={slot.accent} name={sel.name} />}
-                    {!active && week.days[di][slot.key].length === 0 && <Dash />}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
+                      {week.days[di][slot.key]
+                        .sort((a, b) => {
+                          const order = { R4: 0, R3: 1, R2: 2 };
+                          return (order[LEVEL[a]] || 3) - (order[LEVEL[b]] || 3);
+                        })
+                        .map((n) => (
+                          <Chip
+                            key={n}
+                            name={n}
+                            selected={sel?.name === n}
+                            onPick={(e) => {
+                              e.stopPropagation();
+                              pick(n, { di, key: slot.key });
+                            }}
+                            onRemove={(e) => {
+                              e.stopPropagation();
+                              removeChip(n, di);
+                            }}
+                          />
+                        ))}
+                      {active && <GhostHint color={slot.accent} name={sel.name} />}
+                      {!active && week.days[di][slot.key].length === 0 && <Dash />}
+                    </div>
                   </Cell>
                 ))}
               </Fragment>
@@ -423,30 +416,32 @@ export default function App() {
                   ring={active ? "#22C55E" : null}
                   lastCol={di === 4}
                 >
-                  {active && (
-                    <div style={{ fontSize: 10, color: "#16A34A", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>
-                      ↩ liberar el {DAYS[di].toLowerCase()}
-                    </div>
-                  )}
-                  {free.length === 0 ? (
-                    !active && (
-                      <div style={{ fontSize: 10.5, color: "#94A3B8", fontStyle: "italic", textAlign: "center", padding: 6 }}>
-                        todos asignados
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 50 }}>
+                    {active && (
+                      <div style={{ fontSize: 10, color: "#16A34A", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>
+                        ↩ liberar el {DAYS[di].toLowerCase()}
                       </div>
-                    )
-                  ) : (
-                    free.map((n) => (
-                      <Chip
-                        key={n}
-                        name={n}
-                        selected={sel?.name === n}
-                        onPick={(e) => {
-                          e.stopPropagation();
-                          pick(n, { di, key: "pool" });
-                        }}
-                      />
-                    ))
-                  )}
+                    )}
+                    {free.length === 0 ? (
+                      !active && (
+                        <div style={{ fontSize: 10.5, color: "#94A3B8", fontStyle: "italic", textAlign: "center", padding: 6 }}>
+                          todos asignados
+                        </div>
+                      )
+                    ) : (
+                      free.map((n) => (
+                        <Chip
+                          key={n}
+                          name={n}
+                          selected={sel?.name === n}
+                          onPick={(e) => {
+                            e.stopPropagation();
+                            pick(n, { di, key: "pool" });
+                          }}
+                        />
+                      ))
+                    )}
+                  </div>
                 </Cell>
               );
             })}
@@ -464,15 +459,17 @@ export default function App() {
                 ring={active ? "#F87171" : null}
                 lastCol={di === 4}
               >
-                {week.days[di].unavailable.map((n) => (
-                  <OutChip key={n} name={n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "unavailable" }); }} selected={sel?.name === n} />
-                ))}
-                {active && (
-                  <div style={{ fontSize: 10, color: "#EF4444", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>
-                    marcar solo el {DAYS[di].toLowerCase()}
-                  </div>
-                )}
-                {!active && week.days[di].unavailable.length === 0 && <Dash />}
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, minHeight: 40 }}>
+                  {week.days[di].unavailable.map((n) => (
+                    <OutChip key={n} name={n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "unavailable" }); }} selected={sel?.name === n} />
+                  ))}
+                  {active && (
+                    <div style={{ fontSize: 10, color: "#EF4444", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>
+                      marcar solo el {DAYS[di].toLowerCase()}
+                    </div>
+                  )}
+                  {!active && week.days[di].unavailable.length === 0 && <Dash />}
+                </div>
               </Cell>
             ))}
 
@@ -490,7 +487,7 @@ export default function App() {
             ))}
 
             {/* recordatorios */}
-            <RowLabel label="Recordatorios" color="#B45309" last />
+            <RowLabel label="Recordatorios" color="#B45309" />
             {DAYS.map((_, di) => (
               <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4} lastRow>
                 <textarea
@@ -681,7 +678,7 @@ const DayHead = ({ name, date, isToday }) => (
   </div>
 );
 
-const RowLabel = ({ label, color, sub, last }) => (
+const RowLabel = ({ label, color, sub }) => (
   <div
     style={{
       display: "flex",
@@ -692,7 +689,7 @@ const RowLabel = ({ label, color, sub, last }) => (
       padding: "8px 10px",
       background: "#F8FAFC",
       borderRight: "2px solid #E2E8F0",
-      borderBottom: last ? "none" : "1px solid #F1F5F9",
+      borderBottom: "1px solid #F1F5F9",
     }}
   >
     <div style={{ fontWeight: 700, fontSize: 11, color, letterSpacing: 0.1 }}>{label}</div>
@@ -866,7 +863,9 @@ const TEXTAREA = {
   background: "#fff",
   fontSize: 11.5,
   lineHeight: 1.45,
-  color: "#334155",
+  color: "#1F2937",
+  fontWeight: 500,
+  fontFamily: "'Inter', system-ui, sans-serif",
   resize: "vertical",
   outline: "none",
   boxSizing: "border-box",
