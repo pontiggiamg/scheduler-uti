@@ -105,7 +105,7 @@ export default function App() {
     <div style={{ maxWidth: 1500, margin: "0 auto", padding: "14px 12px 40px", fontFamily: "'Inter', system-ui, sans-serif" }}>
       <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 14 }}>
         <TabBtn active={tab === "scheduler"} onClick={() => setTab("scheduler")}>📅 Semana</TabBtn>
-        <TabBtn active={tab === "rotaciones"} onClick={() => setTab("rotaciones")}>🔄 Rotaciones</TabBtn>
+        <TabBtn active={tab === "rotaciones"} onClick={() => setTab("rotaciones")}>🔄 Rotaciones y Vacaciones</TabBtn>
       </div>
       {tab === "scheduler" ? <SchedulerView /> : <RotacionesView />}
     </div>
@@ -368,7 +368,7 @@ function RotacionesView() {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 22 }}>🔄</span>
           <div>
-            <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Rotaciones</div>
+            <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Rotaciones y Vacaciones</div>
             <div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div>
           </div>
         </div>
@@ -432,7 +432,7 @@ function RotacionesView() {
                     onCancel={() => setEditing(null)} />
                 )}
 
-                <textarea value={month.notes} onChange={(e) => editNotes(mi, e.target.value)} placeholder="Notas del mes (vacaciones, comentarios…)" style={{ ...TEXTAREA, minHeight: 32, marginTop: 4, fontSize: 11, fontStyle: month.notes ? "normal" : "italic", color: month.notes ? "#92400E" : "#94A3B8", background: month.notes ? "#FFFBEB" : "#FAFAFA", borderColor: month.notes ? "#FDE68A" : "#E2E8F0" }} />
+                <textarea value={month.notes} onChange={(e) => editNotes(mi, e.target.value)} placeholder="Vacaciones del mes…" style={{ ...TEXTAREA, minHeight: 32, marginTop: 4, fontSize: 11, fontStyle: month.notes ? "normal" : "italic", color: month.notes ? "#92400E" : "#94A3B8", background: month.notes ? "#FFFBEB" : "#FAFAFA", borderColor: month.notes ? "#FDE68A" : "#E2E8F0" }} />
               </div>
             </div>
           );
