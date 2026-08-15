@@ -7,6 +7,19 @@ import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
 
 const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 
+// Pestañas de nivel superior de la app. El orden por defecto se usa si todavía
+// no hay nada guardado en Firestore (scheduler/ui-config); el admin puede
+// reordenarlas arrastrando y ese orden se guarda ahí, compartido para todos.
+const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo"];
+const TAB_META = {
+  scheduler: { icon: "📅", label: "Semana" },
+  rotaciones: { icon: "🔄", label: "Rotaciones y Vacaciones" },
+  pases: { icon: "🛏️", label: "Pases" },
+  chipa: { icon: "🥐", label: "Chipa" },
+  academico: { icon: "📚", label: "Calendario Académico" },
+  articulo: { icon: "📄", label: "Artículo de la semana" },
+};
+
 const RESIDENTS = {
   R2: ["Maca", "Andy", "Nata", "Nahuel"],
   R3: ["Chris", "Ulloa", "Varoli", "Gian"],
@@ -156,6 +169,44 @@ function normalizeAcademico(raw) {
 export default function App() {
   const [user, setUser] = useState(undefined); // undefined = loading, null = no user, object = logged in
   const [tab, setTab] = useState("scheduler");
+  const [tabOrder, setTabOrder] = useState(DEFAULT_TAB_ORDER);
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
+
+  useEffect(() => {
+    const ref = doc(db, "scheduler", "ui-config");
+    const unsub = onSnapshot(ref, (snap) => {
+      const stored = snap.exists() ? snap.data().tabOrder : null;
+      if (Array.isArray(stored) && stored.length) {
+        const known = stored.filter((k) => DEFAULT_TAB_ORDER.includes(k));
+        const missing = DEFAULT_TAB_ORDER.filter((k) => !known.includes(k));
+        setTabOrder([...known, ...missing]);
+      } else {
+        setTabOrder(DEFAULT_TAB_ORDER);
+      }
+    }, () => {});
+    return unsub;
+  }, []);
+
+  const persistTabOrder = (next) => {
+    setTabOrder(next);
+    setDoc(doc(db, "scheduler", "ui-config"), { tabOrder: next }, { merge: true }).catch((e) => console.error("ui-config", e));
+  };
+
+  const handleTabDragStart = (i) => (e) => { setDragIdx(i); e.dataTransfer.effectAllowed = "move"; };
+  const handleTabDragEnter = (i) => (e) => { e.preventDefault(); if (dragIdx !== null) setOverIdx(i); };
+  const handleTabDragOver = (e) => { e.preventDefault(); };
+  const handleTabDragEnd = () => { setDragIdx(null); setOverIdx(null); };
+  const handleTabDrop = (i) => (e) => {
+    e.preventDefault();
+    const from = dragIdx;
+    setDragIdx(null); setOverIdx(null);
+    if (from === null || from === i) return;
+    const next = [...tabOrder];
+    const [moved] = next.splice(from, 1);
+    next.splice(i, 0, moved);
+    persistTabOrder(next);
+  };
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -194,12 +245,29 @@ export default function App() {
       </div>
 
       {/* Tabs */}
-      <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 14 }}>
-        <TabBtn active={tab === "scheduler"} onClick={() => setTab("scheduler")}>📅 Semana</TabBtn>
-        <TabBtn active={tab === "rotaciones"} onClick={() => setTab("rotaciones")}>🔄 Rotaciones y Vacaciones</TabBtn>
-        <TabBtn active={tab === "pases"} onClick={() => setTab("pases")}>🛏️ Pases</TabBtn>
-        <TabBtn active={tab === "chipa"} onClick={() => setTab("chipa")}>🥐 Chipa</TabBtn>
-        <TabBtn active={tab === "academico"} onClick={() => setTab("academico")}>📚 Académico</TabBtn>
+      {isAdmin && <div className="no-print" style={{ fontSize: 10, color: "#94A3B8", marginBottom: 4, paddingLeft: 2 }}>Arrastrá una pestaña para reordenarlas</div>}
+      <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 14, flexWrap: "wrap" }}>
+        {tabOrder.map((key, i) => {
+          const meta = TAB_META[key];
+          if (!meta) return null;
+          return (
+            <TabBtn
+              key={key}
+              active={tab === key}
+              onClick={() => setTab(key)}
+              draggable={isAdmin}
+              dragging={dragIdx === i}
+              dropTarget={isAdmin && overIdx === i && dragIdx !== null && dragIdx !== i}
+              onDragStart={handleTabDragStart(i)}
+              onDragEnter={handleTabDragEnter(i)}
+              onDragOver={handleTabDragOver}
+              onDrop={handleTabDrop(i)}
+              onDragEnd={handleTabDragEnd}
+            >
+              {meta.icon} {meta.label}
+            </TabBtn>
+          );
+        })}
       </div>
 
       {tab === "scheduler" && <SchedulerView isAdmin={isAdmin} />}
@@ -207,6 +275,7 @@ export default function App() {
       {tab === "pases" && <PasesView isAdmin={isAdmin} />}
       {tab === "chipa" && <ChipaView isAdmin={isAdmin} user={user} />}
       {tab === "academico" && <AcademicoView isAdmin={isAdmin} />}
+      {tab === "articulo" && <ArticuloSemanaView isAdmin={isAdmin} />}
     </div>
   );
 }
@@ -232,8 +301,18 @@ function LoginScreen() {
   );
 }
 
-const TabBtn = ({ active, onClick, children }) => (
-  <button onClick={onClick} style={{ padding: "10px 22px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", background: active ? "#0F172A" : "#E2E8F0", color: active ? "#fff" : "#64748B", border: "none", borderRadius: "10px 10px 0 0", transition: "all .15s", letterSpacing: 0.1 }}>{children}</button>
+const TabBtn = ({ active, onClick, children, draggable, dragging, dropTarget, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd }) => (
+  <button
+    onClick={onClick}
+    draggable={draggable}
+    onDragStart={onDragStart}
+    onDragEnter={onDragEnter}
+    onDragOver={onDragOver}
+    onDrop={onDrop}
+    onDragEnd={onDragEnd}
+    title={draggable ? "Arrastrá para reordenar" : undefined}
+    style={{ padding: "10px 22px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: draggable ? "grab" : "pointer", background: active ? "#0F172A" : "#E2E8F0", color: active ? "#fff" : "#64748B", border: "none", borderRadius: "10px 10px 0 0", transition: "all .15s", letterSpacing: 0.1, opacity: dragging ? 0.4 : 1, boxShadow: dropTarget ? "inset 3px 0 0 #3B82F6" : "none" }}
+  >{children}</button>
 );
 
 /* ══════════════════ SCHEDULER VIEW ══════════════════ */
@@ -988,7 +1067,6 @@ function AcademicoView({ isAdmin }) {
   const [status, setStatus] = useState("idle");
   const [editing, setEditing] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
-  const [subTab, setSubTab] = useState("calendario");
 
   const docId = "academico";
   const pending = useRef(null);
@@ -1047,56 +1125,46 @@ function AcademicoView({ isAdmin }) {
       <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 22 }}>📚</span>
-          <div><div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Académico</div><div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Calendario académico</div><div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div></div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div className="no-print" style={{ display: "flex", background: "rgba(255,255,255,.1)", borderRadius: 8, padding: 3, gap: 2 }}>
-            <button onClick={() => setSubTab("calendario")} style={{ ...NAV, background: subTab === "calendario" ? "rgba(255,255,255,.22)" : "transparent", width: "auto", padding: "6px 11px" }}>📅 Calendario</button>
-            <button onClick={() => setSubTab("articulo")} style={{ ...NAV, background: subTab === "articulo" ? "rgba(255,255,255,.22)" : "transparent", width: "auto", padding: "6px 11px" }}>📄 Artículo de la semana</button>
-          </div>
-          {subTab === "calendario" && S && <div style={{ fontSize: 10.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, background: "rgba(255,255,255,.12)", color: S.c }}>{S.t}</div>}
-          {subTab === "calendario" && isAdmin && <button onClick={addActivity} style={{ ...NAV, width: "auto", padding: "6px 12px", fontSize: 11 }}>+ Agregar actividad</button>}
+          {S && <div style={{ fontSize: 10.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, background: "rgba(255,255,255,.12)", color: S.c }}>{S.t}</div>}
+          {isAdmin && <button onClick={addActivity} style={{ ...NAV, width: "auto", padding: "6px 12px", fontSize: 11 }}>+ Agregar actividad</button>}
         </div>
       </div>
 
-      {subTab === "articulo" ? (
-        <ArticuloSemanaView isAdmin={isAdmin} />
-      ) : (
-        <>
-          {editing && editing.mode === "new" && (
-            <div style={{ marginBottom: 8 }}>
-              <AcademicoEditForm editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
+      {editing && editing.mode === "new" && (
+        <div style={{ marginBottom: 8 }}>
+          <AcademicoEditForm editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {upcoming.length === 0 && !(editing && editing.mode === "new") ? (
+          <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>Sin actividades próximas{isAdmin ? " — tocá \"Agregar actividad\" para cargar la primera." : "."}</div>
+        ) : upcoming.map((a) => (
+          editing && editing.mode === "edit" && editing.id === a.id
+            ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
+            : <AcademicoCard key={a.id} activity={a} isAdmin={isAdmin} onEdit={() => editActivity(a)} onRemove={() => removeActivity(a.id)} />
+        ))}
+      </div>
+
+      {past.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <button className="no-print" onClick={() => setShowHistory((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: "#64748B", padding: "4px 2px", marginBottom: 8 }}>
+            <span style={{ display: "inline-block", transform: showHistory ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
+            Historial ({past.length})
+          </button>
+          {showHistory && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {past.map((a) => (
+                editing && editing.mode === "edit" && editing.id === a.id
+                  ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
+                  : <AcademicoCard key={a.id} activity={a} isAdmin={isAdmin} onEdit={() => editActivity(a)} onRemove={() => removeActivity(a.id)} dimmed />
+              ))}
             </div>
           )}
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {upcoming.length === 0 && !(editing && editing.mode === "new") ? (
-              <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>Sin actividades próximas{isAdmin ? " — tocá \"Agregar actividad\" para cargar la primera." : "."}</div>
-            ) : upcoming.map((a) => (
-              editing && editing.mode === "edit" && editing.id === a.id
-                ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
-                : <AcademicoCard key={a.id} activity={a} isAdmin={isAdmin} onEdit={() => editActivity(a)} onRemove={() => removeActivity(a.id)} />
-            ))}
-          </div>
-
-          {past.length > 0 && (
-            <div style={{ marginTop: 18 }}>
-              <button className="no-print" onClick={() => setShowHistory((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: "#64748B", padding: "4px 2px", marginBottom: 8 }}>
-                <span style={{ display: "inline-block", transform: showHistory ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
-                Historial ({past.length})
-              </button>
-              {showHistory && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {past.map((a) => (
-                    editing && editing.mode === "edit" && editing.id === a.id
-                      ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
-                      : <AcademicoCard key={a.id} activity={a} isAdmin={isAdmin} onEdit={() => editActivity(a)} onRemove={() => removeActivity(a.id)} dimmed />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </>
+        </div>
       )}
     </div>
   );
@@ -1204,6 +1272,11 @@ function ArticuloSemanaView({ isAdmin }) {
 
   return (
     <div>
+      <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
+        <span style={{ fontSize: 22 }}>📄</span>
+        <div><div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Artículo de la semana</div><div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div></div>
+      </div>
+
       {isAdmin && (
         <div style={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 12, padding: "12px 14px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div style={{ fontSize: 12, color: "#475569" }}>
