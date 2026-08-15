@@ -421,6 +421,14 @@ function SchedulerView({ isAdmin }) {
   // Recordatorios) entre en una sola hoja A4 horizontal. Medimos el bloque
   // imprimible ya con el ancho fijo de la hoja y con los textos completos
   // (no el textarea recortado) para calcular cuánto hay que achicarlo.
+  //
+  // Usamos "zoom" en vez de "transform: scale()" para achicar el bloque:
+  // transform solo cambia lo que se ve, pero el motor de impresión de Chrome
+  // calcula los saltos de página con el tamaño ORIGINAL (sin escalar), así
+  // que con transform el contenido se seguía recortando aunque visualmente
+  // "entrara" en la vista previa. "zoom" en cambio reacomoda el layout de
+  // verdad a la escala pedida, así que tanto el cálculo de página como lo
+  // que se ve quedan consistentes.
   const printRef = useRef(null);
   const handlePrint = () => {
     setMenuOpen(false);
@@ -436,33 +444,39 @@ function SchedulerView({ isAdmin }) {
     const prevPrintOnly = Array.from(printOnlyEls).map((n) => n.style.display);
 
     // Simulamos por un instante cómo se va a ver impreso (textos completos en
-    // vez de los textarea recortados) solo para medir el alto real.
+    // vez de los textarea recortados) para medir el alto real.
     noPrintEls.forEach((n) => { n.style.display = "none"; });
     printOnlyEls.forEach((n) => { n.style.display = n.classList.contains("print-only-block") ? "block" : "inline"; });
 
     const prevWidth = el.style.width;
-    const prevTransform = el.style.transform;
+    const prevZoom = el.style.zoom;
+    el.style.zoom = "1";
     el.style.width = PAGE_W + "px";
-    el.style.transform = "none";
 
     const naturalW = el.scrollWidth;
     const naturalH = el.scrollHeight;
     const scale = Math.min(1, PAGE_W / naturalW, PAGE_H / naturalH);
 
-    // Revertimos la simulación: la hoja de estilos @media print ya se encarga
-    // de mostrar/ocultar lo que corresponde cuando se imprime de verdad.
-    noPrintEls.forEach((n, i) => { n.style.display = prevNoPrint[i]; });
-    printOnlyEls.forEach((n, i) => { n.style.display = prevPrintOnly[i]; });
+    // El ancho lo dejamos fijo (así el layout impreso es igual al que medimos)
+    // y aplicamos el zoom recién calculado: esto sí reacomoda de verdad el
+    // documento a ese tamaño, cosa que "transform" no hacía para la paginación.
+    el.style.zoom = String(scale);
 
-    el.style.transformOrigin = "top left";
-    el.style.transform = `scale(${scale})`;
-    el.style.marginBottom = (naturalH * scale - naturalH) + "px";
+    const prevTitle = document.title;
+    const inicio = shift(monday, 0);
+    const fin = shift(monday, 4);
+    const mismoMes = inicio.getMonth() === fin.getMonth();
+    const rango = mismoMes
+      ? `${inicio.getDate()} al ${fin.getDate()} de ${MONTHS[inicio.getMonth()].toLowerCase()}`
+      : `${inicio.getDate()} de ${MONTHS[inicio.getMonth()].toLowerCase()} al ${fin.getDate()} de ${MONTHS[fin.getMonth()].toLowerCase()}`;
+    document.title = `Scheduler UTI — Semana del ${rango}`;
 
     const cleanup = () => {
       el.style.width = prevWidth;
-      el.style.transform = prevTransform;
-      el.style.marginBottom = "";
-      el.style.transformOrigin = "";
+      el.style.zoom = prevZoom;
+      document.title = prevTitle;
+      noPrintEls.forEach((n, i) => { n.style.display = prevNoPrint[i]; });
+      printOnlyEls.forEach((n, i) => { n.style.display = prevPrintOnly[i]; });
       window.removeEventListener("afterprint", cleanup);
     };
     window.addEventListener("afterprint", cleanup);
