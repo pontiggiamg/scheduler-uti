@@ -116,7 +116,19 @@ export default function App() {
   const [tab, setTab] = useState("scheduler");
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (u && u.email) {
+        try {
+          await setDoc(doc(db, "access_logs", `${u.uid}-${Date.now()}`), {
+            email: u.email,
+            uid: u.uid,
+            loginAt: new Date().toISOString(),
+            displayName: u.displayName || "Sin nombre",
+          });
+        } catch (e) { console.error("log de acceso", e); }
+      }
+      setUser(u || null);
+    });
     return unsub;
   }, []);
 
