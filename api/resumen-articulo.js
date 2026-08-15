@@ -19,10 +19,11 @@ var db = getFirestore(app);
 var MAX_BASE64_CHARS = 5_500_000; // ~4MB de PDF original aprox.
 
 // Usamos la API gratuita de Google Gemini (Google AI Studio) en vez de la de
-// Claude para no depender de crédito pago: gemini-2.5-flash tiene nivel
-// gratuito sin tarjeta, entiende PDFs nativamente y devuelve JSON estructurado.
-var MODEL = "gemini-2.5-flash";
-var GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent";
+// Claude para no depender de crédito pago. Google retiró generateContent con
+// gemini-2.5-flash para claves nuevas y migró todo a la "Interactions API";
+// gemini-3.5-flash es el modelo flash vigente con nivel gratuito.
+var MODEL = "gemini-3.5-flash";
+var GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 
 var RESPONSE_SCHEMA = {
   type: "object",
@@ -89,21 +90,20 @@ export default async function handler(req, res) {
         "x-goog-api-key": apiKey,
       },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
-              { text: "Este es el artículo de la semana. Generá el resumen y las preguntas en el formato JSON pedido." },
-            ],
-          },
+        model: MODEL,
+        system_instruction: SYSTEM,
+        input: [
+          { type: "document", data: pdfBase64, mime_type: "application/pdf" },
+          { type: "text", text: "Este es el artículo de la semana. Generá el resumen y las preguntas en el formato JSON pedido." },
         ],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: RESPONSE_SCHEMA,
+        response_format: {
+          type: "text",
+          mime_type: "application/json",
+          schema: RESPONSE_SCHEMA,
+        },
+        generation_config: {
           temperature: 0.4,
-          maxOutputTokens: 2000,
+          max_output_tokens: 2000,
         },
       }),
     });
@@ -114,9 +114,16 @@ export default async function handler(req, res) {
     }
 
     var data = await geminiRes.json();
-    var textOut = data.candidates && data.candidates[0] && data.candidates[0].content &&
-      data.candidates[0].content.parts && data.candidates[0].content.parts[0] &&
-      data.candidates[0].content.parts[0].text;
+    var textOut = data.output_text;
+    if (!textOut && Array.isArray(data.steps)) {
+      for (var s = data.steps.length - 1; s >= 0; s--) {
+        var step = data.steps[s];
+        if (step.type === "model_output" && Array.isArray(step.content)) {
+          var textBlock = step.content.find(function (c) { return c.type === "text" && c.text; });
+          if (textBlock) { textOut = textBlock.text; break; }
+        }
+      }
+    }
 
     if (!textOut) {
       return res.status(502).json({ ok: false, error: "Gemini no devolvió el resumen en el formato esperado." });
