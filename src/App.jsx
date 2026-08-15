@@ -417,6 +417,59 @@ function SchedulerView({ isAdmin }) {
 
   const clearWeek = () => { if (!isAdmin) return; setMenuOpen(false); if (!confirm("¿Vaciar toda la semana?")) return; setSel(null); commit(emptyWeek(), 0); };
 
+  // Imprimir / PDF: se ajusta solo para que todo el calendario (hasta
+  // Recordatorios) entre en una sola hoja A4 horizontal. Medimos el bloque
+  // imprimible ya con el ancho fijo de la hoja y con los textos completos
+  // (no el textarea recortado) para calcular cuánto hay que achicarlo.
+  const printRef = useRef(null);
+  const handlePrint = () => {
+    setMenuOpen(false);
+    const el = printRef.current;
+    if (!el) { window.print(); return; }
+
+    const PAGE_W = 1050; // ancho aprox. del área imprimible en A4 horizontal (96dpi, margen 8mm)
+    const PAGE_H = 700; // alto aprox. del área imprimible en A4 horizontal (96dpi, margen 8mm)
+
+    const noPrintEls = el.querySelectorAll(".no-print");
+    const printOnlyEls = el.querySelectorAll(".print-only, .print-only-block");
+    const prevNoPrint = Array.from(noPrintEls).map((n) => n.style.display);
+    const prevPrintOnly = Array.from(printOnlyEls).map((n) => n.style.display);
+
+    // Simulamos por un instante cómo se va a ver impreso (textos completos en
+    // vez de los textarea recortados) solo para medir el alto real.
+    noPrintEls.forEach((n) => { n.style.display = "none"; });
+    printOnlyEls.forEach((n) => { n.style.display = n.classList.contains("print-only-block") ? "block" : "inline"; });
+
+    const prevWidth = el.style.width;
+    const prevTransform = el.style.transform;
+    el.style.width = PAGE_W + "px";
+    el.style.transform = "none";
+
+    const naturalW = el.scrollWidth;
+    const naturalH = el.scrollHeight;
+    const scale = Math.min(1, PAGE_W / naturalW, PAGE_H / naturalH);
+
+    // Revertimos la simulación: la hoja de estilos @media print ya se encarga
+    // de mostrar/ocultar lo que corresponde cuando se imprime de verdad.
+    noPrintEls.forEach((n, i) => { n.style.display = prevNoPrint[i]; });
+    printOnlyEls.forEach((n, i) => { n.style.display = prevPrintOnly[i]; });
+
+    el.style.transformOrigin = "top left";
+    el.style.transform = `scale(${scale})`;
+    el.style.marginBottom = (naturalH * scale - naturalH) + "px";
+
+    const cleanup = () => {
+      el.style.width = prevWidth;
+      el.style.transform = prevTransform;
+      el.style.marginBottom = "";
+      el.style.transformOrigin = "";
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+
+    setTimeout(() => window.print(), 60);
+  };
+
   const dates = useMemo(() => DAYS.map((_, i) => shift(monday, i)), [monday]);
   const today = new Date();
   const active = sel != null;
@@ -425,17 +478,17 @@ function SchedulerView({ isAdmin }) {
 
   return (
     <div onClick={() => { setSel(null); setMenuOpen(false); }}>
-      <SchedulerHeader monday={monday} setMonday={setMonday} status={status} menuOpen={menuOpen} setMenuOpen={setMenuOpen} onCopyPrev={copyPrevWeek} onClear={clearWeek} isAdmin={isAdmin} />
+      <SchedulerHeader monday={monday} setMonday={setMonday} status={status} menuOpen={menuOpen} setMenuOpen={setMenuOpen} onCopyPrev={copyPrevWeek} onClear={clearWeek} onPrint={handlePrint} isAdmin={isAdmin} />
 
       <div style={{ minHeight: 34, marginBottom: 6 }} className="no-print">
         {toast ? <Banner tone="warn">{toast}</Banner> : active ? <Banner tone="info"><b>{sel.name}</b> seleccionado — tocá una celda para ubicarlo, o Esc para cancelar</Banner> : <div style={{ fontSize: 12, color: "#94A3B8", padding: "6px 2px" }}>{isAdmin ? "Tocá un residente para seleccionarlo y después la celda donde va." : "Solo lectura — solo el administrador puede editar."}</div>}
       </div>
 
-      {!loading && <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} />}
-
       {loading ? <Skeleton /> : (
-        <div style={{ overflowX: "auto", paddingBottom: 4 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "104px repeat(5, minmax(178px, 1fr))", background: "#fff", borderRadius: 14, overflow: "hidden", border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 1000 }}>
+        <div ref={printRef}>
+          <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} />
+          <div style={{ overflowX: "auto", paddingBottom: 4 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "104px repeat(5, minmax(178px, 1fr))", background: "#fff", borderRadius: "14px 14px 0 0", overflow: "hidden", border: "1px solid #E2E8F0", borderBottom: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 1000 }}>
             <Corner />{DAYS.map((d, i) => <DayHead key={d} name={d} date={dates[i]} isToday={sameDay(dates[i], today)} />)}
 
             {SLOTS.filter((s) => s.key !== "postguardia").map((slot, ri) => (
@@ -458,7 +511,8 @@ function SchedulerView({ isAdmin }) {
             <RowLabel label="De guardia" color="#9F1239" sub="texto libre" />
             {DAYS.map((_, di) => (
               <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
-                <textarea value={week.days[di].deGuardia} onChange={(e) => editText(di, "deGuardia", e.target.value)} placeholder="Quién queda de guardia…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 40, background: "#FFF1F2", borderColor: "#FECDD3", color: "#881337", fontWeight: 600, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+                <textarea className="no-print" value={week.days[di].deGuardia} onChange={(e) => editText(di, "deGuardia", e.target.value)} placeholder="Quién queda de guardia…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 40, background: "#FFF1F2", borderColor: "#FECDD3", color: "#881337", fontWeight: 600, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+                <div className="print-only-block" style={{ whiteSpace: "pre-wrap", fontSize: 11.5, lineHeight: 1.4, color: "#881337", fontWeight: 600, padding: "6px 8px" }}>{week.days[di].deGuardia || "—"}</div>
               </Cell>
             ))}
 
@@ -482,7 +536,8 @@ function SchedulerView({ isAdmin }) {
             <RowLabel label="Observaciones" color="#854D0E" sub="importante" />
             {DAYS.map((_, di) => (
               <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
-                <textarea value={week.days[di].observaciones} onChange={(e) => editText(di, "observaciones", e.target.value)} placeholder="Supervisores, pases, avisos…" readOnly={!isAdmin} style={{ ...TEXTAREA, background: "#FEF9C3", borderColor: "#FDE047", color: "#713F12", fontWeight: 600, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+                <textarea className="no-print" value={week.days[di].observaciones} onChange={(e) => editText(di, "observaciones", e.target.value)} placeholder="Supervisores, pases, avisos…" readOnly={!isAdmin} style={{ ...TEXTAREA, background: "#FEF9C3", borderColor: "#FDE047", color: "#713F12", fontWeight: 600, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+                <div className="print-only-block" style={{ whiteSpace: "pre-wrap", fontSize: 11.5, lineHeight: 1.4, color: "#713F12", fontWeight: 600, padding: "6px 8px" }}>{week.days[di].observaciones || "—"}</div>
               </Cell>
             ))}
 
@@ -500,16 +555,26 @@ function SchedulerView({ isAdmin }) {
                       ))}
                     </div>
                   )}
-                  <textarea value={week.days[di].recordatorios} onChange={(e) => editText(di, "recordatorios", e.target.value)} placeholder="Clases, ateneos, horarios…" readOnly={!isAdmin} style={{ ...TEXTAREA, background: "#FFFBEB", borderColor: "#FDE68A", color: "#78350F", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+                  <textarea className="no-print" value={week.days[di].recordatorios} onChange={(e) => editText(di, "recordatorios", e.target.value)} placeholder="Clases, ateneos, horarios…" readOnly={!isAdmin} style={{ ...TEXTAREA, background: "#FFFBEB", borderColor: "#FDE68A", color: "#78350F", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+                  <div className="print-only-block" style={{ whiteSpace: "pre-wrap", fontSize: 11.5, lineHeight: 1.4, color: "#78350F", padding: "6px 8px" }}>{week.days[di].recordatorios || "—"}</div>
                 </Cell>
               );
             })}
+          </div>
+          </div>
+        </div>
+      )}
 
-            <RowLabel className="no-print" label="Disponibles" color="#16A34A" />
+      {/* Disponibles / No disponibles: solo en pantalla, nunca se imprimen — por
+          eso son un segundo grid aparte, fuera de printRef. */}
+      {!loading && (
+        <div className="no-print" style={{ overflowX: "auto", paddingBottom: 4 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "104px repeat(5, minmax(178px, 1fr))", background: "#fff", borderRadius: "0 0 14px 14px", overflow: "hidden", border: "1px solid #E2E8F0", borderTop: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 1000 }}>
+            <RowLabel label="Disponibles" color="#16A34A" />
             {DAYS.map((_, di) => {
               const free = pool(di);
               return (
-                <Cell key={di} className="no-print" onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === 4}>
+                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === 4}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 50 }}>
                     {active && <div style={{ fontSize: 10, color: "#16A34A", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>↩ liberar el {DAYS[di].toLowerCase()}</div>}
                     {free.length === 0 ? (!active && <div style={{ fontSize: 10.5, color: "#94A3B8", fontStyle: "italic", textAlign: "center", padding: 6 }}>todos asignados</div>) : free.map((n) => <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "pool" }); }} />)}
@@ -518,9 +583,9 @@ function SchedulerView({ isAdmin }) {
               );
             })}
 
-            <RowLabel className="no-print" label="No disponibles" color="#DC2626" sub="rotación · vacaciones" />
+            <RowLabel label="No disponibles" color="#DC2626" sub="rotación · vacaciones" />
             {DAYS.map((_, di) => (
-              <Cell key={di} className="no-print" onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === 4} lastRow>
+              <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === 4} lastRow>
                 <div style={{ display: "flex", flexDirection: "column", gap: 2, minHeight: 40 }}>
                   {week.days[di].unavailable.map((n) => <OutChip key={n} name={n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "unavailable" }); }} selected={sel?.name === n} />)}
                   {active && <div style={{ fontSize: 10, color: "#EF4444", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>marcar solo el {DAYS[di].toLowerCase()}</div>}
@@ -1420,7 +1485,7 @@ function DiasLibresR4({ week, isAdmin, onChange }) {
 
 /* ══════════════════ SCHEDULER HEADER ══════════════════ */
 
-function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onCopyPrev, onClear, isAdmin }) {
+function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onCopyPrev, onClear, onPrint, isAdmin }) {
   const S = { saving: { t: "Guardando…", c: "#CBD5E1", b: "rgba(255,255,255,.12)" }, saved: { t: "✓ Guardado", c: "#86EFAC", b: "rgba(34,197,94,.18)" }, error: { t: "⚠ Sin conexión", c: "#FCA5A5", b: "rgba(239,68,68,.18)" } }[status];
   return (
     <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
@@ -1443,7 +1508,7 @@ function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onC
         {menuOpen && isAdmin && (
           <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, background: "#fff", borderRadius: 10, boxShadow: "0 10px 30px rgba(15,23,42,.22)", border: "1px solid #E2E8F0", overflow: "hidden", zIndex: 40, minWidth: 210 }}>
             <MenuItem onClick={onCopyPrev}>📋 Copiar semana anterior</MenuItem>
-            <MenuItem onClick={() => { setMenuOpen(false); window.print(); }}>🖨️ Imprimir / PDF</MenuItem>
+            <MenuItem onClick={() => { setMenuOpen(false); onPrint(); }}>🖨️ Imprimir / PDF</MenuItem>
             <MenuItem onClick={onClear} danger>🗑️ Vaciar semana</MenuItem>
           </div>
         )}
