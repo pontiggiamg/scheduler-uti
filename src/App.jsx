@@ -432,8 +432,31 @@ function SchedulerView({ isAdmin }) {
   const printRef = useRef(null);
   const handlePrint = () => {
     setMenuOpen(false);
+
+    // El título de la pestaña lo cambiamos primero y antes que cualquier otra
+    // cosa: Chrome usa el título de la pestaña (que se propaga al proceso del
+    // navegador de forma asíncrona) para proponer el nombre del PDF al
+    // "Guardar como". Si lo cambiamos recién justo antes de imprimir, a veces
+    // el navegador todavía no llegó a enterarse del nuevo título y usa el
+    // viejo. Por eso lo hacemos ya mismo, y dejamos varios milisegundos antes
+    // de abrir el diálogo de impresión.
+    const prevTitle = document.title;
+    const inicio = shift(monday, 0);
+    const fin = shift(monday, 4);
+    const mismoMes = inicio.getMonth() === fin.getMonth();
+    const rango = mismoMes
+      ? `${inicio.getDate()} al ${fin.getDate()} de ${MONTHS[inicio.getMonth()].toLowerCase()}`
+      : `${inicio.getDate()} de ${MONTHS[inicio.getMonth()].toLowerCase()} al ${fin.getDate()} de ${MONTHS[fin.getMonth()].toLowerCase()}`;
+    document.title = `Scheduler UTI — Semana del ${rango}`;
+
     const el = printRef.current;
-    if (!el) { window.print(); return; }
+    if (!el) {
+      setTimeout(() => {
+        window.print();
+        setTimeout(() => { document.title = prevTitle; }, 300);
+      }, 150);
+      return;
+    }
 
     const PAGE_W = 1050; // ancho aprox. del área imprimible en A4 horizontal (96dpi, margen 8mm)
     const PAGE_H = 700; // alto aprox. del área imprimible en A4 horizontal (96dpi, margen 8mm)
@@ -462,15 +485,6 @@ function SchedulerView({ isAdmin }) {
     // documento a ese tamaño, cosa que "transform" no hacía para la paginación.
     el.style.zoom = String(scale);
 
-    const prevTitle = document.title;
-    const inicio = shift(monday, 0);
-    const fin = shift(monday, 4);
-    const mismoMes = inicio.getMonth() === fin.getMonth();
-    const rango = mismoMes
-      ? `${inicio.getDate()} al ${fin.getDate()} de ${MONTHS[inicio.getMonth()].toLowerCase()}`
-      : `${inicio.getDate()} de ${MONTHS[inicio.getMonth()].toLowerCase()} al ${fin.getDate()} de ${MONTHS[fin.getMonth()].toLowerCase()}`;
-    document.title = `Scheduler UTI — Semana del ${rango}`;
-
     const cleanup = () => {
       el.style.width = prevWidth;
       el.style.zoom = prevZoom;
@@ -481,7 +495,7 @@ function SchedulerView({ isAdmin }) {
     };
     window.addEventListener("afterprint", cleanup);
 
-    setTimeout(() => window.print(), 60);
+    setTimeout(() => window.print(), 150);
   };
 
   const dates = useMemo(() => DAYS.map((_, i) => shift(monday, i)), [monday]);
