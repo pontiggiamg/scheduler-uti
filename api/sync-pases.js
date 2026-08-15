@@ -20,51 +20,30 @@ const DOCS = [
   { fallbackUnit: "Doc 4", docId: "1aqaYd9WC86REwTfKFWE5mJf96aMotUV4" },
 ];
 
-const UNIT_ORDER = ["UTI 1", "UTI 2", "UTI 3", "UCO", "RECU"];
-
 async function fetchDocText(docId) {
-  const url = `https://docs.google.com/document/d/${docId}/export?format=txt`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const text = await res.text();
-    if (/<html/i.test(text.slice(0, 400))) throw new Error("No compartido públicamente");
-    return text;
-  } catch (e) {
-    throw new Error(`Error fetching ${fallbackUnit}: ${e.message}`);
-  }
+  var url = "https://docs.google.com/document/d/" + docId + "/export?format=txt";
+  var r = await fetch(url, { redirect: "follow" });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  var text = await r.text();
+  if (text.slice(0, 400).match(/<html/i)) throw new Error("Doc no publico");
+  return text;
 }
 
 export default async function handler(req, res) {
   try {
-    const started = Date.now();
-    const units = {};
-    const errors = [];
-
-    for (const { fallbackUnit, docId } of DOCS) {
+    var started = Date.now();
+    var results = {};
+    var errors = [];
+    for (var i = 0; i < DOCS.length; i++) {
+      var d = DOCS[i];
       try {
-        const raw = await fetchDocText(docId);
-        units[fallbackUnit] = { pacientes: raw.split("\n").length };
+        var raw = await fetchDocText(d.docId);
+        results[d.fallbackUnit] = raw.length + " chars, " + raw.split("\n").length + " lines";
       } catch (e) {
-        errors.push({ unit: fallbackUnit, error: e.message });
+        errors.push({ unit: d.fallbackUnit, error: e.message });
       }
     }
-
-    const payload = {
-      updatedAt: new Date().toISOString(),
-      units,
-      errors,
-      totalLines: Object.values(units).reduce((n, u) => n + (u.pacientes || 0), 0),
-    };
-
-    await setDoc(doc(db, "scheduler", "pases-latest"), payload);
-
-    return res.status(200).json({
-      ok: true,
-      ms: Date.now() - started,
-      units,
-      errors,
-    });
+    return res.status(200).json({ ok: true, ms: Date.now() - started, results: results, errors: errors });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e.message });
   }
