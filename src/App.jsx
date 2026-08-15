@@ -27,6 +27,7 @@ const COLOR = {
 
 const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"];
 const MONTHS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+const WEEKDAYS_FULL = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 
 const SLOTS = [
   { key: "uti1", label: "UTI 1", accent: "#3B82F6", tint: "#DBEAFE" },
@@ -89,6 +90,25 @@ function normalizeRot(raw) {
   return year;
 }
 
+/* ══════════════════ MODELO CALENDARIO ACADÉMICO ══════════════════ */
+
+const emptyAcademico = () => ({ activities: [] });
+
+function normalizeAcademico(raw) {
+  if (!raw || !Array.isArray(raw.activities)) return emptyAcademico();
+  const activities = raw.activities
+    .filter((a) => a && typeof a === "object" && typeof a.date === "string" && a.date)
+    .map((a) => ({
+      id: typeof a.id === "string" && a.id ? a.id : `${a.date}-${Math.random().toString(36).slice(2, 9)}`,
+      date: a.date,
+      time: typeof a.time === "string" ? a.time : "",
+      title: typeof a.title === "string" ? a.title : "",
+      docente: typeof a.docente === "string" ? a.docente : "",
+      notes: typeof a.notes === "string" ? a.notes : "",
+    }));
+  return { activities };
+}
+
 /* ══════════════════ APP PRINCIPAL ══════════════════ */
 
 export default function App() {
@@ -124,11 +144,13 @@ export default function App() {
         <TabBtn active={tab === "scheduler"} onClick={() => setTab("scheduler")}>📅 Semana</TabBtn>
         <TabBtn active={tab === "rotaciones"} onClick={() => setTab("rotaciones")}>🔄 Rotaciones</TabBtn>
         <TabBtn active={tab === "pases"} onClick={() => setTab("pases")}>🛏️ Pases</TabBtn>
+        <TabBtn active={tab === "academico"} onClick={() => setTab("academico")}>📚 Académico</TabBtn>
       </div>
 
       {tab === "scheduler" && <SchedulerView isAdmin={isAdmin} />}
       {tab === "rotaciones" && <RotacionesView isAdmin={isAdmin} />}
       {tab === "pases" && <PasesView isAdmin={isAdmin} />}
+      {tab === "academico" && <AcademicoView isAdmin={isAdmin} />}
     </div>
   );
 }
@@ -632,6 +654,159 @@ function PasesView({ isAdmin }) {
   );
 }
 
+/* ══════════════════ CALENDARIO ACADÉMICO VIEW ══════════════════ */
+
+function AcademicoView({ isAdmin }) {
+  const [data, setData] = useState(emptyAcademico);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState("idle");
+  const [editing, setEditing] = useState(null);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const docId = "academico";
+  const pending = useRef(null);
+  const timer = useRef(null);
+  const statusTimer = useRef(null);
+
+  useEffect(() => {
+    setLoading(true);
+    const ref = doc(db, "scheduler", docId);
+    const unsub = onSnapshot(ref, (snap) => {
+      setData(snap.exists() ? normalizeAcademico(snap.data()) : emptyAcademico());
+      setLoading(false);
+    }, () => setLoading(false));
+    return () => { unsub(); if (timer.current) clearTimeout(timer.current); };
+  }, []);
+
+  const save = useCallback((next) => {
+    if (!isAdmin) return;
+    setData(next); pending.current = next; setStatus("saving");
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(async () => {
+      try { await setDoc(doc(db, "scheduler", docId), pending.current); setStatus("saved");
+        if (statusTimer.current) clearTimeout(statusTimer.current);
+        statusTimer.current = setTimeout(() => setStatus("idle"), 1600);
+      } catch (e) { console.error(e); setStatus("error"); }
+    }, 400);
+  }, [isAdmin]);
+
+  const addActivity = () => { if (!isAdmin) return; setEditing({ mode: "new", date: isoDate(new Date()), time: "", title: "", docente: "", notes: "" }); };
+  const editActivity = (a) => { if (!isAdmin) return; setEditing({ mode: "edit", id: a.id, date: a.date, time: a.time, title: a.title, docente: a.docente, notes: a.notes }); };
+
+  const saveActivity = () => {
+    if (!editing || !editing.date.trim() || !editing.title.trim()) return;
+    const next = clone(data);
+    const record = { id: editing.mode === "edit" ? editing.id : `${editing.date}-${Math.random().toString(36).slice(2, 9)}`, date: editing.date, time: editing.time.trim(), title: editing.title.trim(), docente: editing.docente.trim(), notes: editing.notes.trim() };
+    if (editing.mode === "edit") { const idx = next.activities.findIndex((a) => a.id === editing.id); if (idx >= 0) next.activities[idx] = record; }
+    else next.activities.push(record);
+    save(next); setEditing(null);
+  };
+
+  const removeActivity = (id) => { if (!isAdmin) return; if (!confirm("¿Eliminar esta actividad?")) return; const next = clone(data); next.activities = next.activities.filter((a) => a.id !== id); save(next); };
+
+  const S = { saving: { t: "Guardando…", c: "#CBD5E1" }, saved: { t: "✓ Guardado", c: "#86EFAC" }, error: { t: "⚠ Error", c: "#FCA5A5" } }[status];
+
+  if (loading) return <Skeleton />;
+
+  const now = new Date();
+  const nowKey = `${isoDate(now)} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const key = (a) => `${a.date} ${a.time || "00:00"}`;
+
+  const upcoming = data.activities.filter((a) => key(a) >= nowKey).sort((x, y) => key(x).localeCompare(key(y)));
+  const past = data.activities.filter((a) => key(a) < nowKey).sort((x, y) => key(y).localeCompare(key(x)));
+
+  return (
+    <div>
+      <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 22 }}>📚</span>
+          <div><div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Calendario académico</div><div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div></div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {S && <div style={{ fontSize: 10.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, background: "rgba(255,255,255,.12)", color: S.c }}>{S.t}</div>}
+          {isAdmin && <button onClick={addActivity} style={{ ...NAV, width: "auto", padding: "6px 12px", fontSize: 11 }}>+ Agregar actividad</button>}
+        </div>
+      </div>
+
+      {editing && editing.mode === "new" && (
+        <div style={{ marginBottom: 8 }}>
+          <AcademicoEditForm editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {upcoming.length === 0 && !(editing && editing.mode === "new") ? (
+          <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>Sin actividades próximas{isAdmin ? " — tocá \"Agregar actividad\" para cargar la primera." : "."}</div>
+        ) : upcoming.map((a) => (
+          editing && editing.mode === "edit" && editing.id === a.id
+            ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
+            : <AcademicoCard key={a.id} activity={a} isAdmin={isAdmin} onEdit={() => editActivity(a)} onRemove={() => removeActivity(a.id)} />
+        ))}
+      </div>
+
+      {past.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <button className="no-print" onClick={() => setShowHistory((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: "#64748B", padding: "4px 2px", marginBottom: 8 }}>
+            <span style={{ display: "inline-block", transform: showHistory ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
+            Historial ({past.length})
+          </button>
+          {showHistory && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {past.map((a) => (
+                editing && editing.mode === "edit" && editing.id === a.id
+                  ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
+                  : <AcademicoCard key={a.id} activity={a} isAdmin={isAdmin} onEdit={() => editActivity(a)} onRemove={() => removeActivity(a.id)} dimmed />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AcademicoCard({ activity, isAdmin, onEdit, onRemove, dimmed }) {
+  const d = new Date(`${activity.date}T${activity.time || "00:00"}:00`);
+  const dateLabel = `${WEEKDAYS_FULL[d.getDay()]} ${d.getDate()} de ${MONTHS[d.getMonth()].toLowerCase()}`;
+  return (
+    <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(15,23,42,.04)", padding: "11px 14px", display: "flex", gap: 12, alignItems: "flex-start", opacity: dimmed ? 0.6 : 1 }}>
+      <div style={{ flexShrink: 0, minWidth: 58, textAlign: "center", background: dimmed ? "#F1F5F9" : "#0F172A", color: dimmed ? "#64748B" : "#fff", borderRadius: 8, padding: "6px 7px" }}>
+        <div style={{ fontWeight: 800, fontSize: 14, lineHeight: 1.15 }}>{d.getDate()}</div>
+        <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", opacity: 0.8 }}>{MONTHS[d.getMonth()].slice(0, 3)}</div>
+        {activity.time && <div style={{ fontSize: 9.5, fontWeight: 700, marginTop: 3, opacity: 0.85 }}>{activity.time}</div>}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 10.5, color: "#94A3B8", fontWeight: 600, marginBottom: 2 }}>{dateLabel}</div>
+        <div style={{ fontWeight: 700, fontSize: 13.5, color: dimmed ? "#64748B" : "#0F172A" }}>{activity.title || "(sin nombre)"}</div>
+        {activity.docente && <div style={{ fontSize: 12, color: dimmed ? "#94A3B8" : "#1D4ED8", fontWeight: 600, marginTop: 2 }}>{activity.docente}</div>}
+        {activity.notes && <div style={{ fontSize: 11.5, color: "#475569", marginTop: 4, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>{activity.notes}</div>}
+      </div>
+      {isAdmin && (
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          <span onClick={onEdit} title="Editar" style={{ cursor: "pointer", fontSize: 12, opacity: 0.4 }}>✏️</span>
+          <span onClick={onRemove} title="Eliminar" style={{ cursor: "pointer", fontSize: 12, opacity: 0.4 }}>✕</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const AcademicoEditForm = ({ editing, setEditing, onSave, onCancel }) => (
+  <div style={{ background: "#F8FAFC", border: "1.5px solid #CBD5E1", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      <input type="date" value={editing.date} onChange={(e) => setEditing({ ...editing, date: e.target.value })} style={INPUT} />
+      <input type="time" value={editing.time} onChange={(e) => setEditing({ ...editing, time: e.target.value })} style={INPUT} />
+      <input value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} placeholder="Nombre de la clase" style={{ ...INPUT, flex: 1, minWidth: 160 }} />
+      <input value={editing.docente} onChange={(e) => setEditing({ ...editing, docente: e.target.value })} placeholder="Docente" style={{ ...INPUT, minWidth: 130 }} />
+    </div>
+    <textarea value={editing.notes} onChange={(e) => setEditing({ ...editing, notes: e.target.value })} placeholder="Observaciones…" style={{ ...TEXTAREA, minHeight: 40 }} />
+    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+      <button onClick={onSave} style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✓ Guardar</button>
+      <button onClick={onCancel} style={{ background: "#E2E8F0", color: "#64748B", border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+    </div>
+  </div>
+);
+
 /* ══════════════════ SCHEDULER HEADER ══════════════════ */
 
 function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onCopyPrev, onClear, isAdmin }) {
@@ -703,5 +878,7 @@ const Legend = () => (<div style={{ display: "flex", gap: 16, justifyContent: "c
 /* ══════════════════ ESTILOS ══════════════════ */
 
 const NAV = { background: "rgba(255,255,255,.14)", border: "none", borderRadius: 7, color: "#fff", padding: "6px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit", lineHeight: 1.2 };
+
+const INPUT = { padding: "6px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", background: "#fff", color: "#0F172A" };
 
 const TEXTAREA = { width: "100%", minHeight: 52, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", background: "#fff", fontSize: 11.5, lineHeight: 1.45, color: "#1F2937", fontWeight: 500, fontFamily: "'Inter', system-ui, sans-serif", resize: "vertical", outline: "none", boxSizing: "border-box" };
