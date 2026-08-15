@@ -988,6 +988,7 @@ function AcademicoView({ isAdmin }) {
   const [status, setStatus] = useState("idle");
   const [editing, setEditing] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [subTab, setSubTab] = useState("calendario");
 
   const docId = "academico";
   const pending = useRef(null);
@@ -1046,46 +1047,56 @@ function AcademicoView({ isAdmin }) {
       <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 22 }}>📚</span>
-          <div><div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Calendario académico</div><div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Académico</div><div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div></div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {S && <div style={{ fontSize: 10.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, background: "rgba(255,255,255,.12)", color: S.c }}>{S.t}</div>}
-          {isAdmin && <button onClick={addActivity} style={{ ...NAV, width: "auto", padding: "6px 12px", fontSize: 11 }}>+ Agregar actividad</button>}
+          <div className="no-print" style={{ display: "flex", background: "rgba(255,255,255,.1)", borderRadius: 8, padding: 3, gap: 2 }}>
+            <button onClick={() => setSubTab("calendario")} style={{ ...NAV, background: subTab === "calendario" ? "rgba(255,255,255,.22)" : "transparent", width: "auto", padding: "6px 11px" }}>📅 Calendario</button>
+            <button onClick={() => setSubTab("articulo")} style={{ ...NAV, background: subTab === "articulo" ? "rgba(255,255,255,.22)" : "transparent", width: "auto", padding: "6px 11px" }}>📄 Artículo de la semana</button>
+          </div>
+          {subTab === "calendario" && S && <div style={{ fontSize: 10.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, background: "rgba(255,255,255,.12)", color: S.c }}>{S.t}</div>}
+          {subTab === "calendario" && isAdmin && <button onClick={addActivity} style={{ ...NAV, width: "auto", padding: "6px 12px", fontSize: 11 }}>+ Agregar actividad</button>}
         </div>
       </div>
 
-      {editing && editing.mode === "new" && (
-        <div style={{ marginBottom: 8 }}>
-          <AcademicoEditForm editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
-        </div>
-      )}
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {upcoming.length === 0 && !(editing && editing.mode === "new") ? (
-          <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>Sin actividades próximas{isAdmin ? " — tocá \"Agregar actividad\" para cargar la primera." : "."}</div>
-        ) : upcoming.map((a) => (
-          editing && editing.mode === "edit" && editing.id === a.id
-            ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
-            : <AcademicoCard key={a.id} activity={a} isAdmin={isAdmin} onEdit={() => editActivity(a)} onRemove={() => removeActivity(a.id)} />
-        ))}
-      </div>
-
-      {past.length > 0 && (
-        <div style={{ marginTop: 18 }}>
-          <button className="no-print" onClick={() => setShowHistory((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: "#64748B", padding: "4px 2px", marginBottom: 8 }}>
-            <span style={{ display: "inline-block", transform: showHistory ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
-            Historial ({past.length})
-          </button>
-          {showHistory && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {past.map((a) => (
-                editing && editing.mode === "edit" && editing.id === a.id
-                  ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
-                  : <AcademicoCard key={a.id} activity={a} isAdmin={isAdmin} onEdit={() => editActivity(a)} onRemove={() => removeActivity(a.id)} dimmed />
-              ))}
+      {subTab === "articulo" ? (
+        <ArticuloSemanaView isAdmin={isAdmin} />
+      ) : (
+        <>
+          {editing && editing.mode === "new" && (
+            <div style={{ marginBottom: 8 }}>
+              <AcademicoEditForm editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
             </div>
           )}
-        </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {upcoming.length === 0 && !(editing && editing.mode === "new") ? (
+              <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>Sin actividades próximas{isAdmin ? " — tocá \"Agregar actividad\" para cargar la primera." : "."}</div>
+            ) : upcoming.map((a) => (
+              editing && editing.mode === "edit" && editing.id === a.id
+                ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
+                : <AcademicoCard key={a.id} activity={a} isAdmin={isAdmin} onEdit={() => editActivity(a)} onRemove={() => removeActivity(a.id)} />
+            ))}
+          </div>
+
+          {past.length > 0 && (
+            <div style={{ marginTop: 18 }}>
+              <button className="no-print" onClick={() => setShowHistory((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: "#64748B", padding: "4px 2px", marginBottom: 8 }}>
+                <span style={{ display: "inline-block", transform: showHistory ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
+                Historial ({past.length})
+              </button>
+              {showHistory && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {past.map((a) => (
+                    editing && editing.mode === "edit" && editing.id === a.id
+                      ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
+                      : <AcademicoCard key={a.id} activity={a} isAdmin={isAdmin} onEdit={() => editActivity(a)} onRemove={() => removeActivity(a.id)} dimmed />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1132,6 +1143,128 @@ const AcademicoEditForm = ({ editing, setEditing, onSave, onCancel }) => (
     </div>
   </div>
 );
+
+/* ══════════════════ ARTÍCULO DE LA SEMANA ══════════════════ */
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result || "";
+      const idx = result.indexOf(",");
+      resolve(idx >= 0 ? result.slice(idx + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("No se pudo leer el archivo."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function ArticuloSemanaView({ isAdmin }) {
+  const [articulo, setArticulo] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    setLoading(true);
+    const ref = doc(db, "scheduler", "articulo-semana");
+    const unsub = onSnapshot(ref, (snap) => {
+      setArticulo(snap.exists() ? snap.data() : null);
+      setLoading(false);
+    }, () => setLoading(false));
+    return () => unsub();
+  }, []);
+
+  const handleFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (fileRef.current) fileRef.current.value = "";
+    if (!file) return;
+    if (file.type !== "application/pdf") { setError("El archivo tiene que ser un PDF."); return; }
+    if (file.size > 4.3 * 1024 * 1024) { setError("El PDF es demasiado grande (máx. ~4MB). Probá con un extracto más corto."); return; }
+    setError(""); setUploading(true);
+    try {
+      const pdfBase64 = await fileToBase64(file);
+      const res = await fetch("/api/resumen-articulo", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pdfBase64, filename: file.name }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || "No se pudo generar el resumen.");
+      // El propio onSnapshot va a reflejar el resultado; no hace falta setArticulo acá.
+    } catch (err) {
+      setError(err.message || "Error inesperado al generar el resumen.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  if (loading) return <Skeleton />;
+
+  return (
+    <div>
+      {isAdmin && (
+        <div style={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 12, padding: "12px 14px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontSize: 12, color: "#475569" }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 2 }}>Subir un artículo nuevo</div>
+            Subí el PDF del artículo de la semana y Claude genera un resumen y preguntas para discutir en el pase.
+          </div>
+          <label style={{ ...NAV, background: uploading ? "#94A3B8" : "#0F172A", color: "#fff", width: "auto", padding: "8px 16px", fontSize: 12, opacity: uploading ? 0.7 : 1, cursor: uploading ? "default" : "pointer" }}>
+            {uploading ? "Generando resumen…" : "📤 Subir PDF"}
+            <input ref={fileRef} type="file" accept="application/pdf" onChange={handleFile} disabled={uploading} style={{ display: "none" }} />
+          </label>
+        </div>
+      )}
+
+      {error && (
+        <div style={{ marginBottom: 12 }}>
+          <Banner tone="warn">{error}</Banner>
+        </div>
+      )}
+
+      {!articulo ? (
+        <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>
+          Todavía no se cargó ningún artículo{isAdmin ? " — tocá \"Subir PDF\" para generar el primero." : "."}
+        </div>
+      ) : (
+        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(15,23,42,.04)", overflow: "hidden" }}>
+          <div style={{ padding: "14px 18px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 14.5, color: "#0F172A" }}>📄 {articulo.filename || "Artículo"}</div>
+              <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 2 }}>Actualizado {timeAgo(articulo.generatedAt)}</div>
+            </div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, background: "#EEF2FF", color: "#4338CA", border: "1px solid #C7D2FE" }}>🤖 Generado por IA</div>
+          </div>
+
+          <div style={{ padding: "16px 18px" }}>
+            <div style={{ fontWeight: 700, fontSize: 12, color: "#334155", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>Resumen</div>
+            <div style={{ fontSize: 13, color: "#1E293B", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{articulo.resumen || "—"}</div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0, borderTop: "1px solid #F1F5F9" }}>
+            <div style={{ padding: "14px 18px", borderRight: "1px solid #F1F5F9" }}>
+              <div style={{ fontWeight: 700, fontSize: 11.5, color: "#1D4ED8", marginBottom: 8 }}>❓ Preguntas para R2</div>
+              <ol style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+                {(articulo.preguntasR2 || []).map((q, i) => (
+                  <li key={i} style={{ fontSize: 12.5, color: "#334155", lineHeight: 1.5 }}>{q}</li>
+                ))}
+              </ol>
+            </div>
+            <div style={{ padding: "14px 18px" }}>
+              <div style={{ fontWeight: 700, fontSize: 11.5, color: "#B45309", marginBottom: 8 }}>❓ Preguntas para R3 y R4</div>
+              <ol style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+                {(articulo.preguntasR3R4 || []).map((q, i) => (
+                  <li key={i} style={{ fontSize: 12.5, color: "#334155", lineHeight: 1.5 }}>{q}</li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ══════════════════ DÍAS LIBRES R4 ══════════════════ */
 
