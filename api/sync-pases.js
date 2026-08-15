@@ -26,4 +26,46 @@ async function fetchDocText(docId) {
   const url = `https://docs.google.com/document/d/${docId}/export?format=txt`;
   try {
     const res = await fetch(url);
-    if (!res.ok) throw new Error(
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    if (/<html/i.test(text.slice(0, 400))) throw new Error("No compartido públicamente");
+    return text;
+  } catch (e) {
+    throw new Error(`Error fetching ${fallbackUnit}: ${e.message}`);
+  }
+}
+
+export default async function handler(req, res) {
+  try {
+    const started = Date.now();
+    const units = {};
+    const errors = [];
+
+    for (const { fallbackUnit, docId } of DOCS) {
+      try {
+        const raw = await fetchDocText(docId);
+        units[fallbackUnit] = { pacientes: raw.split("\n").length };
+      } catch (e) {
+        errors.push({ unit: fallbackUnit, error: e.message });
+      }
+    }
+
+    const payload = {
+      updatedAt: new Date().toISOString(),
+      units,
+      errors,
+      totalLines: Object.values(units).reduce((n, u) => n + (u.pacientes || 0), 0),
+    };
+
+    await setDoc(doc(db, "scheduler", "pases-latest"), payload);
+
+    return res.status(200).json({
+      ok: true,
+      ms: Date.now() - started,
+      units,
+      errors,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
