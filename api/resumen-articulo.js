@@ -130,8 +130,19 @@ export default async function handler(req, res) {
     }
 
     var out;
-    try { out = JSON.parse(textOut); } catch (e) {
-      return res.status(502).json({ ok: false, error: "No se pudo interpretar la respuesta de Gemini como JSON." });
+    try {
+      out = JSON.parse(textOut);
+    } catch (e1) {
+      // A veces el modelo envuelve el JSON en un bloque de código markdown
+      // (```json ... ```) pese al response_format. Probamos limpiarlo antes
+      // de rendirnos.
+      var cleaned = textOut.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+      var match = cleaned.match(/\{[\s\S]*\}/);
+      try {
+        out = JSON.parse(match ? match[0] : cleaned);
+      } catch (e2) {
+        return res.status(502).json({ ok: false, error: "No se pudo interpretar la respuesta de Gemini como JSON. Fragmento recibido: " + textOut.slice(0, 300) });
+      }
     }
 
     var payload = {
