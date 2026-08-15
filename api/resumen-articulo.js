@@ -141,7 +141,17 @@ export default async function handler(req, res) {
       try {
         out = JSON.parse(match ? match[0] : cleaned);
       } catch (e2) {
-        return res.status(502).json({ ok: false, error: "No se pudo interpretar la respuesta de Gemini como JSON. Fragmento recibido: " + textOut.slice(0, 300) });
+        var statusInfo = "status=" + data.status;
+        if (Array.isArray(data.steps)) {
+          statusInfo += " steps=" + data.steps.map(function (s) { return s.type + ":" + s.status; }).join(",");
+        }
+        return res.status(502).json({
+          ok: false,
+          error: "No se pudo interpretar la respuesta de Gemini como JSON. Detalle: " + e2.message +
+            " | " + statusInfo +
+            " | Longitud: " + textOut.length +
+            " | Final: " + textOut.slice(-250),
+        });
       }
     }
 
