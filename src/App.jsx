@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from "react";
-import { db } from "./firebase";
+import { db, auth, googleProvider } from "./firebase";
 import { doc, onSnapshot, setDoc, getDoc } from "firebase/firestore";
+import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
 
 /* ══════════════════ CONFIGURACIÓN ══════════════════ */
+
+const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 
 const RESIDENTS = {
   R2: ["Maca", "Andy", "Nata", "Nahuel"],
@@ -77,53 +80,84 @@ const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length ==
 
 /* ══════════════════ MODELO ROTACIONES ══════════════════ */
 
-const emptyRotYear = () => {
-  const m = {};
-  for (let i = 0; i < 12; i++) m[i] = { assignments: [], notes: "" };
-  return { months: m };
-};
+const emptyRotYear = () => { const m = {}; for (let i = 0; i < 12; i++) m[i] = { assignments: [], notes: "" }; return { months: m }; };
 
 function normalizeRot(raw) {
   const year = emptyRotYear();
   if (!raw || typeof raw !== "object" || !raw.months) return year;
-  for (let i = 0; i < 12; i++) {
-    const m = raw.months[i];
-    if (m) {
-      year.months[i].assignments = Array.isArray(m.assignments) ? m.assignments : [];
-      year.months[i].notes = typeof m.notes === "string" ? m.notes : "";
-    }
-  }
+  for (let i = 0; i < 12; i++) { const m = raw.months[i]; if (m) { year.months[i].assignments = Array.isArray(m.assignments) ? m.assignments : []; year.months[i].notes = typeof m.notes === "string" ? m.notes : ""; } }
   return year;
 }
 
 /* ══════════════════ APP PRINCIPAL ══════════════════ */
 
 export default function App() {
+  const [user, setUser] = useState(undefined); // undefined = loading, null = no user, object = logged in
   const [tab, setTab] = useState("scheduler");
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
+    return unsub;
+  }, []);
+
+  if (user === undefined) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#94A3B8", fontSize: 14 }}>Cargando…</div>;
+
+  if (user === null) return <LoginScreen />;
+
+  const isAdmin = user.email === ADMIN_EMAIL;
 
   return (
     <div style={{ maxWidth: 1500, margin: "0 auto", padding: "14px 12px 40px", fontFamily: "'Inter', system-ui, sans-serif" }}>
+      {/* User bar */}
+      <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, padding: "6px 12px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #E2E8F0", fontSize: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {user.photoURL && <img src={user.photoURL} alt="" style={{ width: 24, height: 24, borderRadius: "50%" }} />}
+          <span style={{ color: "#475569", fontWeight: 500 }}>{user.displayName || user.email}</span>
+          {isAdmin && <span style={{ fontSize: 9, fontWeight: 700, background: "#0F172A", color: "#fff", padding: "2px 6px", borderRadius: 4 }}>ADMIN</span>}
+          {!isAdmin && <span style={{ fontSize: 9, fontWeight: 600, background: "#E2E8F0", color: "#64748B", padding: "2px 6px", borderRadius: 4 }}>SOLO LECTURA</span>}
+        </div>
+        <button onClick={() => signOut(auth)} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 11, cursor: "pointer", fontFamily: "inherit", fontWeight: 500 }}>Cerrar sesión</button>
+      </div>
+
+      {/* Tabs */}
       <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 14 }}>
         <TabBtn active={tab === "scheduler"} onClick={() => setTab("scheduler")}>📅 Semana</TabBtn>
         <TabBtn active={tab === "rotaciones"} onClick={() => setTab("rotaciones")}>🔄 Rotaciones y Vacaciones</TabBtn>
       </div>
-      {tab === "scheduler" ? <SchedulerView /> : <RotacionesView />}
+
+      {tab === "scheduler" ? <SchedulerView isAdmin={isAdmin} /> : <RotacionesView isAdmin={isAdmin} />}
+    </div>
+  );
+}
+
+function LoginScreen() {
+  const [error, setError] = useState(null);
+  const login = async () => {
+    try { await signInWithPopup(auth, googleProvider); } catch (e) { console.error(e); setError("No se pudo iniciar sesión. Intentá de nuevo."); }
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <div style={{ textAlign: "center", padding: "40px 36px", background: "#fff", borderRadius: 16, boxShadow: "0 4px 24px rgba(15,23,42,.1)", border: "1px solid #E2E8F0", maxWidth: 340 }}>
+        <div style={{ fontSize: 36, marginBottom: 8 }}>🏥</div>
+        <div style={{ fontWeight: 800, fontSize: 18, color: "#0F172A", marginBottom: 4 }}>Scheduler UTI</div>
+        <div style={{ fontSize: 12, color: "#94A3B8", marginBottom: 24 }}>Hospital Británico</div>
+        <button onClick={login} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: "11px 16px", borderRadius: 10, border: "1px solid #E2E8F0", background: "#fff", fontSize: 13.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: "#334155", boxShadow: "0 1px 3px rgba(15,23,42,.08)", transition: "box-shadow .15s" }}>
+          <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
+          Iniciar sesión con Google
+        </button>
+        {error && <div style={{ color: "#DC2626", fontSize: 11.5, marginTop: 12, fontWeight: 500 }}>{error}</div>}
+      </div>
     </div>
   );
 }
 
 const TabBtn = ({ active, onClick, children }) => (
-  <button onClick={onClick} style={{
-    padding: "10px 22px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: "pointer",
-    background: active ? "#0F172A" : "#E2E8F0", color: active ? "#fff" : "#64748B",
-    border: "none", borderRadius: active ? "10px 10px 0 0" : "10px 10px 0 0",
-    transition: "all .15s", letterSpacing: 0.1,
-  }}>{children}</button>
+  <button onClick={onClick} style={{ padding: "10px 22px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", background: active ? "#0F172A" : "#E2E8F0", color: active ? "#fff" : "#64748B", border: "none", borderRadius: "10px 10px 0 0", transition: "all .15s", letterSpacing: 0.1 }}>{children}</button>
 );
 
 /* ══════════════════ SCHEDULER VIEW ══════════════════ */
 
-function SchedulerView() {
+function SchedulerView({ isAdmin }) {
   const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const [week, setWeek] = useState(emptyWeek);
   const [loading, setLoading] = useState(true);
@@ -160,10 +194,11 @@ function SchedulerView() {
   }, [docId]);
 
   const commit = useCallback((next, delay = 350) => {
+    if (!isAdmin) return;
     setWeek(next); dirty.current = true; pending.current = next;
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(flush, delay);
-  }, [flush]);
+  }, [flush, isAdmin]);
 
   useEffect(() => { const h = () => { if (pending.current) flush(); }; window.addEventListener("beforeunload", h); return () => window.removeEventListener("beforeunload", h); }, [flush]);
 
@@ -178,10 +213,13 @@ function SchedulerView() {
     return ALL.filter((n) => !used.has(n));
   }, [week]);
 
-  const pick = (name, from) => { setSel((cur) => cur && cur.name === name && cur.from?.di === from?.di && cur.from?.key === from?.key ? null : { name, from }); };
+  const pick = (name, from) => {
+    if (!isAdmin) return;
+    setSel((cur) => cur && cur.name === name && cur.from?.di === from?.di && cur.from?.key === from?.key ? null : { name, from });
+  };
 
   const place = (target, di) => {
-    if (!sel) return;
+    if (!sel || !isAdmin) return;
     const { name, from } = sel; setSel(null);
     if (from && from.di === di && from.key === target) return;
     const next = clone(week);
@@ -194,10 +232,11 @@ function SchedulerView() {
     commit(next);
   };
 
-  const removeChip = (name, di) => { const next = clone(week); detach(next, name, di); setSel(null); commit(next); };
-  const editText = (di, field, value) => { const next = clone(week); next.days[di][field] = value; commit(next, 700); };
+  const removeChip = (name, di) => { if (!isAdmin) return; const next = clone(week); detach(next, name, di); setSel(null); commit(next); };
+  const editText = (di, field, value) => { if (!isAdmin) return; const next = clone(week); next.days[di][field] = value; commit(next, 700); };
 
   const copyPrevWeek = async () => {
+    if (!isAdmin) return;
     setMenuOpen(false);
     if (!isBlank(week) && !confirm("Esto reemplaza la semana actual. ¿Continuar?")) return;
     try { const prevId = `week-${isoDate(shift(monday, -7))}`; const snap = await getDoc(doc(db, "scheduler", prevId));
@@ -206,7 +245,7 @@ function SchedulerView() {
     } catch (e) { console.error(e); flash("No se pudo copiar"); }
   };
 
-  const clearWeek = () => { setMenuOpen(false); if (!confirm("¿Vaciar toda la semana?")) return; setSel(null); commit(emptyWeek(), 0); };
+  const clearWeek = () => { if (!isAdmin) return; setMenuOpen(false); if (!confirm("¿Vaciar toda la semana?")) return; setSel(null); commit(emptyWeek(), 0); };
 
   const dates = useMemo(() => DAYS.map((_, i) => shift(monday, i)), [monday]);
   const today = new Date();
@@ -216,10 +255,10 @@ function SchedulerView() {
 
   return (
     <div onClick={() => { setSel(null); setMenuOpen(false); }}>
-      <SchedulerHeader monday={monday} setMonday={setMonday} status={status} menuOpen={menuOpen} setMenuOpen={setMenuOpen} onCopyPrev={copyPrevWeek} onClear={clearWeek} />
+      <SchedulerHeader monday={monday} setMonday={setMonday} status={status} menuOpen={menuOpen} setMenuOpen={setMenuOpen} onCopyPrev={copyPrevWeek} onClear={clearWeek} isAdmin={isAdmin} />
 
       <div style={{ minHeight: 34, marginBottom: 6 }} className="no-print">
-        {toast ? <Banner tone="warn">{toast}</Banner> : active ? <Banner tone="info"><b>{sel.name}</b> seleccionado — tocá una celda para ubicarlo, o Esc para cancelar</Banner> : <div style={{ fontSize: 12, color: "#94A3B8", padding: "6px 2px" }}>Tocá un residente para seleccionarlo y después la celda donde va.</div>}
+        {toast ? <Banner tone="warn">{toast}</Banner> : active ? <Banner tone="info"><b>{sel.name}</b> seleccionado — tocá una celda para ubicarlo, o Esc para cancelar</Banner> : <div style={{ fontSize: 12, color: "#94A3B8", padding: "6px 2px" }}>{isAdmin ? "Tocá un residente para seleccionarlo y después la celda donde va." : "Solo lectura — solo el administrador puede editar."}</div>}
       </div>
 
       {loading ? <Skeleton /> : (
@@ -227,7 +266,6 @@ function SchedulerView() {
           <div style={{ display: "grid", gridTemplateColumns: "104px repeat(5, minmax(178px, 1fr))", background: "#fff", borderRadius: 14, overflow: "hidden", border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 1000 }}>
             <Corner />{DAYS.map((d, i) => <DayHead key={d} name={d} date={dates[i]} isToday={sameDay(dates[i], today)} />)}
 
-            {/* UTI 1, 2, 3, Postguardia */}
             {SLOTS.map((slot, ri) => (
               <Fragment key={slot.key}>
                 <RowLabel label={slot.label} color={slot.accent} />
@@ -235,7 +273,7 @@ function SchedulerView() {
                   <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === 4}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
                       {week.days[di][slot.key].sort((a, b) => { const order = { R4: 0, R3: 1, R2: 2 }; return (order[LEVEL[a]] || 3) - (order[LEVEL[b]] || 3); }).map((n) => (
-                        <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={(e) => { e.stopPropagation(); removeChip(n, di); }} />
+                        <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
                       ))}
                       {active && <GhostHint color={slot.accent} name={sel.name} />}
                       {!active && week.days[di][slot.key].length === 0 && <Dash />}
@@ -245,23 +283,20 @@ function SchedulerView() {
               </Fragment>
             ))}
 
-            {/* OBSERVACIONES — ahora después de Postguardia */}
             <RowLabel label="Observaciones" color="#475569" />
             {DAYS.map((_, di) => (
               <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
-                <textarea value={week.days[di].observaciones} onChange={(e) => editText(di, "observaciones", e.target.value)} placeholder="Supervisores, pases, avisos…" style={TEXTAREA} />
+                <textarea value={week.days[di].observaciones} onChange={(e) => editText(di, "observaciones", e.target.value)} placeholder="Supervisores, pases, avisos…" readOnly={!isAdmin} style={{ ...TEXTAREA, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
               </Cell>
             ))}
 
-            {/* RECORDATORIOS — ahora después de Observaciones */}
             <RowLabel label="Recordatorios" color="#B45309" />
             {DAYS.map((_, di) => (
               <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
-                <textarea value={week.days[di].recordatorios} onChange={(e) => editText(di, "recordatorios", e.target.value)} placeholder="Clases, ateneos, horarios…" style={{ ...TEXTAREA, background: "#FFFBEB", borderColor: "#FDE68A", color: "#78350F" }} />
+                <textarea value={week.days[di].recordatorios} onChange={(e) => editText(di, "recordatorios", e.target.value)} placeholder="Clases, ateneos, horarios…" readOnly={!isAdmin} style={{ ...TEXTAREA, background: "#FFFBEB", borderColor: "#FDE68A", color: "#78350F", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
               </Cell>
             ))}
 
-            {/* Disponibles */}
             <RowLabel label="Disponibles" color="#16A34A" />
             {DAYS.map((_, di) => {
               const free = pool(di);
@@ -275,7 +310,6 @@ function SchedulerView() {
               );
             })}
 
-            {/* No disponibles */}
             <RowLabel label="No disponibles" color="#DC2626" sub="rotación · vacaciones" />
             {DAYS.map((_, di) => (
               <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === 4} lastRow>
@@ -296,12 +330,12 @@ function SchedulerView() {
 
 /* ══════════════════ ROTACIONES VIEW ══════════════════ */
 
-function RotacionesView() {
+function RotacionesView({ isAdmin }) {
   const [year, setYear] = useState(new Date().getFullYear());
   const [data, setData] = useState(emptyRotYear);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("idle");
-  const [editing, setEditing] = useState(null); // { month, idx } or { month, "new" }
+  const [editing, setEditing] = useState(null);
 
   const docId = `rotaciones-${year}`;
   const pending = useRef(null);
@@ -319,6 +353,7 @@ function RotacionesView() {
   }, [docId]);
 
   const save = useCallback(async (next) => {
+    if (!isAdmin) return;
     setData(next); pending.current = next; setStatus("saving");
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
@@ -327,35 +362,21 @@ function RotacionesView() {
         statusTimer.current = setTimeout(() => setStatus("idle"), 1600);
       } catch (e) { console.error(e); setStatus("error"); }
     }, 400);
-  }, [docId]);
+  }, [docId, isAdmin]);
 
-  const addAssignment = (mi) => {
-    setEditing({ month: mi, mode: "new", resident: "", place: "" });
-  };
+  const addAssignment = (mi) => { if (!isAdmin) return; setEditing({ month: mi, mode: "new", resident: "", place: "" }); };
 
   const saveAssignment = (mi, resident, place, idx) => {
     if (!resident.trim() || !place.trim()) return;
     const next = clone(data);
-    if (idx !== undefined && idx !== null) {
-      next.months[mi].assignments[idx] = { resident: resident.trim(), place: place.trim() };
-    } else {
-      next.months[mi].assignments.push({ resident: resident.trim(), place: place.trim() });
-    }
-    save(next);
-    setEditing(null);
+    if (idx !== undefined && idx !== null) { next.months[mi].assignments[idx] = { resident: resident.trim(), place: place.trim() }; }
+    else { next.months[mi].assignments.push({ resident: resident.trim(), place: place.trim() }); }
+    save(next); setEditing(null);
   };
 
-  const removeAssignment = (mi, idx) => {
-    const next = clone(data);
-    next.months[mi].assignments.splice(idx, 1);
-    save(next);
-  };
+  const removeAssignment = (mi, idx) => { if (!isAdmin) return; const next = clone(data); next.months[mi].assignments.splice(idx, 1); save(next); };
 
-  const editNotes = (mi, val) => {
-    const next = clone(data);
-    next.months[mi].notes = val;
-    save(next);
-  };
+  const editNotes = (mi, val) => { if (!isAdmin) return; const next = clone(data); next.months[mi].notes = val; save(next); };
 
   const S = { saving: { t: "Guardando…", c: "#CBD5E1" }, saved: { t: "✓ Guardado", c: "#86EFAC" }, error: { t: "⚠ Error", c: "#FCA5A5" } }[status];
 
@@ -363,14 +384,10 @@ function RotacionesView() {
 
   return (
     <div>
-      {/* Header */}
       <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 22 }}>🔄</span>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Rotaciones y Vacaciones</div>
-            <div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div>
-          </div>
+          <div><div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Rotaciones y Vacaciones</div><div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div></div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button onClick={() => setYear(y => y - 1)} style={NAV}>◀</button>
@@ -380,7 +397,6 @@ function RotacionesView() {
         <div>{S && <div style={{ fontSize: 10.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, background: "rgba(255,255,255,.12)", color: S.c }}>{S.t}</div>}</div>
       </div>
 
-      {/* Grid */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {MONTHS.map((mName, mi) => {
           const month = data.months[mi];
@@ -389,50 +405,36 @@ function RotacionesView() {
             <div key={mi} style={{ background: "#fff", borderRadius: 12, border: isCurrentMonth ? "2px solid #3B82F6" : "1px solid #E2E8F0", overflow: "hidden", boxShadow: isCurrentMonth ? "0 0 0 3px #3B82F633" : "0 1px 3px rgba(15,23,42,.04)" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: isCurrentMonth ? "#EFF6FF" : "#F8FAFC", borderBottom: "1px solid #E2E8F0" }}>
                 <div style={{ fontWeight: 700, fontSize: 13, color: isCurrentMonth ? "#1D4ED8" : "#0F172A" }}>{mName}</div>
-                <button onClick={() => addAssignment(mi)} style={{ background: "#E2E8F0", border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer", color: "#475569", fontFamily: "inherit" }}>+ Agregar</button>
+                {isAdmin && <button onClick={() => addAssignment(mi)} style={{ background: "#E2E8F0", border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer", color: "#475569", fontFamily: "inherit" }}>+ Agregar</button>}
               </div>
               <div style={{ padding: "8px 14px" }}>
-                {month.assignments.length === 0 && !editing?.month === mi ? (
+                {month.assignments.length === 0 && !(editing && editing.month === mi) ? (
                   <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "6px 0" }}>Sin rotaciones este mes</div>
                 ) : (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: month.assignments.length > 0 ? 8 : 0 }}>
                     {month.assignments.map((a, idx) => {
                       const lv = LEVEL[a.resident];
                       const c = lv ? COLOR[lv] : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#64748B" };
-                      const isEditing = editing && editing.month === mi && editing.idx === idx;
-
-                      if (isEditing) {
-                        return (
-                          <EditForm key={idx} resident={editing.resident} place={editing.place}
-                            onResChange={(v) => setEditing({ ...editing, resident: v })}
-                            onPlaceChange={(v) => setEditing({ ...editing, place: v })}
-                            onSave={() => saveAssignment(mi, editing.resident, editing.place, idx)}
-                            onCancel={() => setEditing(null)} />
-                        );
+                      const isEditingThis = editing && editing.month === mi && editing.idx === idx;
+                      if (isEditingThis) {
+                        return <EditForm key={idx} resident={editing.resident} place={editing.place} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place, idx)} onCancel={() => setEditing(null)} />;
                       }
-
                       return (
                         <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 8, background: c.bg, border: `1.5px solid ${c.bd}`, fontSize: 12 }}>
                           <span style={{ fontWeight: 700, color: c.tx }}>{a.resident}</span>
                           <span style={{ color: "#64748B", fontWeight: 500 }}>({a.place})</span>
                           {lv && <span style={{ fontSize: 8, fontWeight: 800, background: c.solid, color: "#fff", padding: "1px 4px", borderRadius: 3 }}>{lv}</span>}
-                          <span onClick={() => setEditing({ month: mi, idx, resident: a.resident, place: a.place })} style={{ cursor: "pointer", fontSize: 11, opacity: 0.4 }} title="Editar">✏️</span>
-                          <span onClick={() => removeAssignment(mi, idx)} style={{ cursor: "pointer", fontSize: 11, opacity: 0.4 }} title="Eliminar">✕</span>
+                          {isAdmin && <span onClick={() => setEditing({ month: mi, idx, resident: a.resident, place: a.place })} style={{ cursor: "pointer", fontSize: 11, opacity: 0.4 }} title="Editar">✏️</span>}
+                          {isAdmin && <span onClick={() => removeAssignment(mi, idx)} style={{ cursor: "pointer", fontSize: 11, opacity: 0.4 }} title="Eliminar">✕</span>}
                         </div>
                       );
                     })}
                   </div>
                 )}
-
                 {editing && editing.month === mi && editing.mode === "new" && (
-                  <EditForm resident={editing.resident} place={editing.place}
-                    onResChange={(v) => setEditing({ ...editing, resident: v })}
-                    onPlaceChange={(v) => setEditing({ ...editing, place: v })}
-                    onSave={() => saveAssignment(mi, editing.resident, editing.place)}
-                    onCancel={() => setEditing(null)} />
+                  <EditForm resident={editing.resident} place={editing.place} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place)} onCancel={() => setEditing(null)} />
                 )}
-
-                <textarea value={month.notes} onChange={(e) => editNotes(mi, e.target.value)} placeholder="Vacaciones del mes…" style={{ ...TEXTAREA, minHeight: 32, marginTop: 4, fontSize: 11, fontStyle: month.notes ? "normal" : "italic", color: month.notes ? "#92400E" : "#94A3B8", background: month.notes ? "#FFFBEB" : "#FAFAFA", borderColor: month.notes ? "#FDE68A" : "#E2E8F0" }} />
+                <textarea value={month.notes} onChange={(e) => editNotes(mi, e.target.value)} placeholder="Vacaciones del mes…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 32, marginTop: 4, fontSize: 11, fontStyle: month.notes ? "normal" : "italic", color: month.notes ? "#92400E" : "#94A3B8", background: month.notes ? "#FFFBEB" : "#FAFAFA", borderColor: month.notes ? "#FDE68A" : "#E2E8F0", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
               </div>
             </div>
           );
@@ -456,7 +458,7 @@ const EditForm = ({ resident, place, onResChange, onPlaceChange, onSave, onCance
 
 /* ══════════════════ SCHEDULER HEADER ══════════════════ */
 
-function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onCopyPrev, onClear }) {
+function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onCopyPrev, onClear, isAdmin }) {
   const S = { saving: { t: "Guardando…", c: "#CBD5E1", b: "rgba(255,255,255,.12)" }, saved: { t: "✓ Guardado", c: "#86EFAC", b: "rgba(34,197,94,.18)" }, error: { t: "⚠ Sin conexión", c: "#FCA5A5", b: "rgba(239,68,68,.18)" } }[status];
   return (
     <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
@@ -475,8 +477,8 @@ function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onC
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
         {S && <div style={{ fontSize: 10.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, background: S.b, color: S.c }}>{S.t}</div>}
-        <button onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }} style={{ ...NAV, width: "auto", padding: "6px 10px" }}>⋯</button>
-        {menuOpen && (
+        {isAdmin && <button onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }} style={{ ...NAV, width: "auto", padding: "6px 10px" }}>⋯</button>}
+        {menuOpen && isAdmin && (
           <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, background: "#fff", borderRadius: 10, boxShadow: "0 10px 30px rgba(15,23,42,.22)", border: "1px solid #E2E8F0", overflow: "hidden", zIndex: 40, minWidth: 210 }}>
             <MenuItem onClick={onCopyPrev}>📋 Copiar semana anterior</MenuItem>
             <MenuItem onClick={() => { setMenuOpen(false); window.print(); }}>🖨️ Imprimir / PDF</MenuItem>
