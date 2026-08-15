@@ -15,6 +15,24 @@ const RESIDENTS = {
 
 const ALL = [...RESIDENTS.R2, ...RESIDENTS.R3, ...RESIDENTS.R4];
 
+// Mapeo residente → email de Google. Se usa para identificar qué cuenta logueada
+// corresponde a qué residente (ej. Procedimientos, donde cada uno carga lo suyo).
+const RESIDENT_EMAIL = {
+  Dani: "dpadillasalcedo@gmail.com",
+  Caro: "caro146ro@gmail.com",
+  Leo: "leonardohomar1894@gmail.com",
+  Vani: "vaninagobatto23@gmail.com",
+  Chris: "chrislombardo225@gmail.com",
+  Ulloa: "nico24ulloa@gmail.com",
+  Varoli: "Nico.a.Varoli@gmail.com",
+  Gian: "giancarlomilemacci@gmail.com",
+  Maca: "macagonzalezvirgili@gmail.com",
+  Andy: "mportilla58@gmail.com",
+  Nata: "nataciademoraes@gmail.com",
+  Nahuel: "nahuelklahn@gmail.com",
+};
+const RESIDENT_BY_EMAIL = Object.fromEntries(Object.entries(RESIDENT_EMAIL).map(([name, email]) => [email.toLowerCase(), name]));
+
 const LEVEL = Object.fromEntries(
   Object.entries(RESIDENTS).flatMap(([lv, names]) => names.map((n) => [n, lv]))
 );
@@ -54,8 +72,9 @@ const sameDay = (a, b) => isoDate(a) === isoDate(b);
 
 /* ══════════════════ MODELO SEMANA ══════════════════ */
 
-const emptyDay = () => ({ uti1: [], uti2: [], uti3: [], postguardia: [], unavailable: [], observaciones: "", recordatorios: "" });
-const emptyWeek = () => ({ days: DAYS.map(() => emptyDay()) });
+const emptyDay = () => ({ uti1: [], uti2: [], uti3: [], postguardia: [], unavailable: [], observaciones: "", recordatorios: "", deGuardia: "" });
+const emptyDiasLibresR4 = () => Object.fromEntries(RESIDENTS.R4.map((n) => [n, ""]));
+const emptyWeek = () => ({ days: DAYS.map(() => emptyDay()), diasLibresR4: emptyDiasLibresR4() });
 
 function normalize(raw) {
   const week = emptyWeek();
@@ -72,12 +91,15 @@ function normalize(raw) {
     day.unavailable = Array.isArray(d.unavailable) ? d.unavailable.filter((n) => LEVEL[n]) : [...legacyGlobal];
     day.observaciones = typeof d.observaciones === "string" ? d.observaciones : "";
     day.recordatorios = typeof d.recordatorios === "string" ? d.recordatorios : "";
+    day.deGuardia = typeof d.deGuardia === "string" ? d.deGuardia : "";
   }
+  const dl = raw.diasLibresR4 || {};
+  for (const n of RESIDENTS.R4) week.diasLibresR4[n] = DAYS.includes(dl[n]) ? dl[n] : "";
   return week;
 }
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
-const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length === 0) && d.unavailable.length === 0 && !d.observaciones.trim() && !d.recordatorios.trim());
+const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length === 0) && d.unavailable.length === 0 && !d.observaciones.trim() && !d.recordatorios.trim() && !d.deGuardia.trim()) && RESIDENTS.R4.every((n) => !w.diasLibresR4[n]);
 
 /* ══════════════════ MODELO ROTACIONES ══════════════════ */
 
@@ -271,6 +293,7 @@ function SchedulerView({ isAdmin }) {
 
   const removeChip = (name, di) => { if (!isAdmin) return; const next = clone(week); detach(next, name, di); setSel(null); commit(next); };
   const editText = (di, field, value) => { if (!isAdmin) return; const next = clone(week); next.days[di][field] = value; commit(next, 700); };
+  const setDiaLibre = (name, day) => { if (!isAdmin) return; const next = clone(week); next.diasLibresR4[name] = day; commit(next, 300); };
 
   const copyPrevWeek = async () => {
     if (!isAdmin) return;
@@ -298,12 +321,38 @@ function SchedulerView({ isAdmin }) {
         {toast ? <Banner tone="warn">{toast}</Banner> : active ? <Banner tone="info"><b>{sel.name}</b> seleccionado — tocá una celda para ubicarlo, o Esc para cancelar</Banner> : <div style={{ fontSize: 12, color: "#94A3B8", padding: "6px 2px" }}>{isAdmin ? "Tocá un residente para seleccionarlo y después la celda donde va." : "Solo lectura — solo el administrador puede editar."}</div>}
       </div>
 
+      {!loading && <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} />}
+
       {loading ? <Skeleton /> : (
         <div style={{ overflowX: "auto", paddingBottom: 4 }}>
           <div style={{ display: "grid", gridTemplateColumns: "104px repeat(5, minmax(178px, 1fr))", background: "#fff", borderRadius: 14, overflow: "hidden", border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 1000 }}>
             <Corner />{DAYS.map((d, i) => <DayHead key={d} name={d} date={dates[i]} isToday={sameDay(dates[i], today)} />)}
 
-            {SLOTS.map((slot, ri) => (
+            {SLOTS.filter((s) => s.key !== "postguardia").map((slot, ri) => (
+              <Fragment key={slot.key}>
+                <RowLabel label={slot.label} color={slot.accent} />
+                {DAYS.map((_, di) => (
+                  <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === 4}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
+                      {week.days[di][slot.key].sort((a, b) => { const order = { R4: 0, R3: 1, R2: 2 }; return (order[LEVEL[a]] || 3) - (order[LEVEL[b]] || 3); }).map((n) => (
+                        <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
+                      ))}
+                      {active && <GhostHint color={slot.accent} name={sel.name} />}
+                      {!active && week.days[di][slot.key].length === 0 && <Dash />}
+                    </div>
+                  </Cell>
+                ))}
+              </Fragment>
+            ))}
+
+            <RowLabel label="De guardia" color="#0EA5E9" sub="texto libre" />
+            {DAYS.map((_, di) => (
+              <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
+                <textarea value={week.days[di].deGuardia} onChange={(e) => editText(di, "deGuardia", e.target.value)} placeholder="Quién queda de guardia…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 40, background: "#F0F9FF", borderColor: "#BAE6FD", color: "#0C4A6E", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+              </Cell>
+            ))}
+
+            {SLOTS.filter((s) => s.key === "postguardia").map((slot) => (
               <Fragment key={slot.key}>
                 <RowLabel label={slot.label} color={slot.accent} />
                 {DAYS.map((_, di) => (
@@ -818,6 +867,33 @@ const AcademicoEditForm = ({ editing, setEditing, onSave, onCancel }) => (
     </div>
   </div>
 );
+
+/* ══════════════════ DÍAS LIBRES R4 ══════════════════ */
+
+const DIAS_LIBRES_OPCIONES = ["Lunes", "Miércoles", "Viernes"];
+
+function DiasLibresR4({ week, isAdmin, onChange }) {
+  const any = RESIDENTS.R4.some((n) => week.diasLibresR4[n]);
+  if (!isAdmin && !any) return null;
+  return (
+    <div className="no-print" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "8px 12px", marginBottom: 10, borderRadius: 10, background: "#FFF7ED", border: "1px solid #FED7AA" }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color: "#9A3412" }}>🗓️ Días libres R4 esta semana:</span>
+      {RESIDENTS.R4.map((n) => (
+        <div key={n} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: "#7C2D12" }}>{n}</span>
+          {isAdmin ? (
+            <select value={week.diasLibresR4[n]} onChange={(e) => onChange(n, e.target.value)} style={{ fontSize: 11, padding: "2px 5px", borderRadius: 5, border: "1px solid #FDBA74", background: "#fff", color: "#7C2D12", fontFamily: "inherit" }}>
+              <option value="">—</option>
+              {DIAS_LIBRES_OPCIONES.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+          ) : (
+            week.diasLibresR4[n] && <span style={{ fontSize: 11, fontWeight: 700, background: "#FDBA74", color: "#7C2D12", padding: "1px 7px", borderRadius: 999 }}>{week.diasLibresR4[n]}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /* ══════════════════ SCHEDULER HEADER ══════════════════ */
 
