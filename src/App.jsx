@@ -47,15 +47,13 @@ const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"];
 const MONTHS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const WEEKDAYS_FULL = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 
-// Los tints de fondo de cada fila son neutros a propósito: R2 es azul y R3 es
-// verde (ver COLOR más abajo), así que si una fila tuviera fondo azul o verde
-// el chip del residente se camuflaba contra el fondo. Acá solo UTI 3 (amarillo)
-// y Postguardia (violeta) usan un color, porque ningún nivel de residente usa
-// esos tonos.
+// Cada fila de UTI tiene su propio color para distinguirse a simple vista,
+// elegidos a propósito lejos del azul de R2 y el verde de R3 (ver COLOR más
+// abajo) para que el chip del residente nunca se camufle contra el fondo.
 const SLOTS = [
-  { key: "uti1", label: "UTI 1", accent: "#3B82F6", tint: "#F1F5F9" },
-  { key: "uti2", label: "UTI 2", accent: "#3B82F6", tint: "#FAFAF9" },
-  { key: "uti3", label: "UTI 3", accent: "#3B82F6", tint: "#FEF3C7" },
+  { key: "uti1", label: "UTI 1", accent: "#0E7490", tint: "#CFFAFE" },
+  { key: "uti2", label: "UTI 2", accent: "#BE185D", tint: "#FCE7F3" },
+  { key: "uti3", label: "UTI 3", accent: "#A16207", tint: "#FEF3C7" },
   { key: "postguardia", label: "Postguardia", accent: "#A855F7", tint: "#E9D5FF" },
 ];
 
@@ -402,10 +400,10 @@ function SchedulerView({ isAdmin }) {
               </Fragment>
             ))}
 
-            <RowLabel label="Observaciones" color="#475569" />
+            <RowLabel label="Observaciones" color="#854D0E" sub="importante" />
             {DAYS.map((_, di) => (
               <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
-                <textarea value={week.days[di].observaciones} onChange={(e) => editText(di, "observaciones", e.target.value)} placeholder="Supervisores, pases, avisos…" readOnly={!isAdmin} style={{ ...TEXTAREA, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+                <textarea value={week.days[di].observaciones} onChange={(e) => editText(di, "observaciones", e.target.value)} placeholder="Supervisores, pases, avisos…" readOnly={!isAdmin} style={{ ...TEXTAREA, background: "#FEF9C3", borderColor: "#FDE047", color: "#713F12", fontWeight: 600, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
               </Cell>
             ))}
 
