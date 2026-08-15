@@ -193,7 +193,7 @@ export default function App() {
       {/* Tabs */}
       <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 14 }}>
         <TabBtn active={tab === "scheduler"} onClick={() => setTab("scheduler")}>📅 Semana</TabBtn>
-        <TabBtn active={tab === "rotaciones"} onClick={() => setTab("rotaciones")}>🔄 Rotaciones</TabBtn>
+        <TabBtn active={tab === "rotaciones"} onClick={() => setTab("rotaciones")}>🔄 Rotaciones y Vacaciones</TabBtn>
         <TabBtn active={tab === "pases"} onClick={() => setTab("pases")}>🛏️ Pases</TabBtn>
         <TabBtn active={tab === "chipa"} onClick={() => setTab("chipa")}>🥐 Chipa</TabBtn>
         <TabBtn active={tab === "academico"} onClick={() => setTab("academico")}>📚 Académico</TabBtn>
