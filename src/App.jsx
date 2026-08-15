@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from "react";
 import { db, auth, googleProvider } from "./firebase";
-import { doc, onSnapshot, setDoc, getDoc } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, getDoc, increment, arrayUnion, collection, getDocs, query, orderBy } from "firebase/firestore";
 import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
 
 /* ══════════════════ CONFIGURACIÓN ══════════════════ */
@@ -112,6 +112,23 @@ function normalizeRot(raw) {
   return year;
 }
 
+/* ══════════════════ MODELO CHIPA DE LA SEMANA ══════════════════ */
+
+// Cada semana vive en su propio documento (id = lunes de esa semana, YYYY-MM-DD)
+// dentro de dos colecciones separadas y sin ningún campo que las vincule:
+// chipa_votes/{weekId}   → candidatos y recuento de votos (público)
+// chipa_voters/{weekId}  → uids que ya votaron esa semana (solo para bloquear el doble voto)
+// Así se ve cuántos votos tiene cada uno, pero no quién votó a quién.
+
+function normalizeChipaWeek(raw, weekId) {
+  if (!raw || typeof raw !== "object") return { weekStart: weekId, candidates: [], counts: {} };
+  return {
+    weekStart: typeof raw.weekStart === "string" ? raw.weekStart : weekId,
+    candidates: Array.isArray(raw.candidates) ? raw.candidates.filter((n) => LEVEL[n]) : [],
+    counts: raw.counts && typeof raw.counts === "object" ? raw.counts : {},
+  };
+}
+
 /* ══════════════════ MODELO CALENDARIO ACADÉMICO ══════════════════ */
 
 const emptyAcademico = () => ({ activities: [] });
@@ -178,12 +195,14 @@ export default function App() {
         <TabBtn active={tab === "scheduler"} onClick={() => setTab("scheduler")}>📅 Semana</TabBtn>
         <TabBtn active={tab === "rotaciones"} onClick={() => setTab("rotaciones")}>🔄 Rotaciones</TabBtn>
         <TabBtn active={tab === "pases"} onClick={() => setTab("pases")}>🛏️ Pases</TabBtn>
+        <TabBtn active={tab === "chipa"} onClick={() => setTab("chipa")}>🥐 Chipa</TabBtn>
         <TabBtn active={tab === "academico"} onClick={() => setTab("academico")}>📚 Académico</TabBtn>
       </div>
 
       {tab === "scheduler" && <SchedulerView isAdmin={isAdmin} />}
       {tab === "rotaciones" && <RotacionesView isAdmin={isAdmin} />}
       {tab === "pases" && <PasesView isAdmin={isAdmin} />}
+      {tab === "chipa" && <ChipaView isAdmin={isAdmin} user={user} />}
       {tab === "academico" && <AcademicoView isAdmin={isAdmin} />}
     </div>
   );
@@ -711,6 +730,193 @@ function PasesView({ isAdmin }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/* ══════════════════ CHIPA DE LA SEMANA VIEW ══════════════════ */
+
+function ChipaView({ isAdmin, user }) {
+  const monday = useMemo(() => mondayOf(new Date()), []);
+  const weekId = isoDate(monday);
+
+  const [week, setWeek] = useState({ weekStart: weekId, candidates: [], counts: {} });
+  const [loading, setLoading] = useState(true);
+  const [voted, setVoted] = useState(null); // null = todavía no se sabe, true/false ya resuelto
+  const [status, setStatus] = useState("idle");
+  const [editingCandidates, setEditingCandidates] = useState(false);
+  const [pickerSel, setPickerSel] = useState([]);
+  const [voting, setVoting] = useState(false);
+  const [history, setHistory] = useState(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    const ref = doc(db, "chipa_votes", weekId);
+    const unsub = onSnapshot(ref, (snap) => {
+      setWeek(snap.exists() ? normalizeChipaWeek(snap.data(), weekId) : { weekStart: weekId, candidates: [], counts: {} });
+      setLoading(false);
+    }, () => setLoading(false));
+    return unsub;
+  }, [weekId]);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    const ref = doc(db, "chipa_voters", weekId);
+    const unsub = onSnapshot(ref, (snap) => {
+      const list = snap.exists() && Array.isArray(snap.data().voted) ? snap.data().voted : [];
+      setVoted(list.includes(user.uid));
+    }, () => setVoted(false));
+    return unsub;
+  }, [weekId, user?.uid]);
+
+  const openPicker = () => { setPickerSel(week.candidates); setEditingCandidates(true); };
+  const toggleCandidate = (n) => setPickerSel((cur) => (cur.includes(n) ? cur.filter((x) => x !== n) : [...cur, n]));
+
+  const saveCandidates = async () => {
+    if (!isAdmin) return;
+    setStatus("saving");
+    try {
+      await setDoc(doc(db, "chipa_votes", weekId), { weekStart: weekId, candidates: pickerSel }, { merge: true });
+      setStatus("saved"); setTimeout(() => setStatus("idle"), 1500);
+    } catch (e) { console.error(e); setStatus("error"); }
+    setEditingCandidates(false);
+  };
+
+  const castVote = async (name) => {
+    if (!user?.uid || voted || voting || !week.candidates.includes(name)) return;
+    setVoting(true);
+    try {
+      await setDoc(doc(db, "chipa_votes", weekId), { weekStart: weekId, counts: { [name]: increment(1) } }, { merge: true });
+      await setDoc(doc(db, "chipa_voters", weekId), { voted: arrayUnion(user.uid) }, { merge: true });
+    } catch (e) { console.error("voto chipa", e); }
+    setVoting(false);
+  };
+
+  const loadHistory = async () => {
+    if (history) { setShowHistory((v) => !v); return; }
+    setHistoryLoading(true);
+    try {
+      const snap = await getDocs(query(collection(db, "chipa_votes"), orderBy("weekStart", "desc")));
+      const weeks = snap.docs.map((d) => normalizeChipaWeek(d.data(), d.id)).filter((w) => w.weekStart < weekId && w.candidates.length > 0);
+      setHistory(weeks);
+      setShowHistory(true);
+    } catch (e) { console.error(e); }
+    setHistoryLoading(false);
+  };
+
+  const S = { saving: { t: "Guardando…", c: "#CBD5E1" }, saved: { t: "✓ Guardado", c: "#86EFAC" }, error: { t: "⚠ Error", c: "#FCA5A5" } }[status];
+
+  if (loading) return <Skeleton />;
+
+  const maxVotes = Math.max(0, ...week.candidates.map((n) => week.counts[n] || 0));
+  const totalVotes = week.candidates.reduce((s, n) => s + (week.counts[n] || 0), 0);
+
+  return (
+    <div>
+      <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#7C2D12,#9A3412 60%,#C2410C)", color: "#fff" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 22 }}>🥐</span>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Chipa de la semana</div>
+            <div style={{ fontSize: 10.5, opacity: 0.7 }}>{dm(monday)} — {dm(shift(monday, 6))} · {totalVotes} voto{totalVotes === 1 ? "" : "s"}</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {S && <div style={{ fontSize: 10.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, background: "rgba(255,255,255,.16)", color: S.c }}>{S.t}</div>}
+          {isAdmin && !editingCandidates && <button onClick={openPicker} style={{ ...NAV, width: "auto", padding: "6px 12px", fontSize: 11, background: "rgba(255,255,255,.18)" }}>✏️ Elegir candidatos</button>}
+        </div>
+      </div>
+
+      {editingCandidates ? (
+        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 14, marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600, marginBottom: 10 }}>Tocá para agregar o sacar candidatos de esta semana:</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+            {ALL.map((n) => {
+              const on = pickerSel.includes(n);
+              const c = COLOR[LEVEL[n]];
+              return (
+                <div key={n} onClick={() => toggleCandidate(n)} style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 8, background: on ? c.solid : "#F1F5F9", border: `1.5px solid ${on ? c.solid : "#E2E8F0"}`, color: on ? "#fff" : "#64748B", fontWeight: 600, fontSize: 12 }}>
+                  {on && "✓ "}{n}
+                  <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: on ? "rgba(255,255,255,.28)" : c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button onClick={saveCandidates} style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✓ Guardar candidatos</button>
+            <button onClick={() => setEditingCandidates(false)} style={{ background: "#E2E8F0", color: "#64748B", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+          </div>
+        </div>
+      ) : week.candidates.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "#94A3B8", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+          🥐 Todavía no se eligieron los candidatos de esta semana.
+          {isAdmin && <div style={{ fontSize: 11.5, marginTop: 8 }}>Tocá "Elegir candidatos" para arrancar la votación.</div>}
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+            {week.candidates.map((n) => {
+              const count = week.counts[n] || 0;
+              const isWinner = maxVotes > 0 && count === maxVotes;
+              return <CandidateCard key={n} name={n} count={count} isWinner={isWinner} disabled={!!voted || voting} onVote={() => castVote(n)} />;
+            })}
+          </div>
+          <div style={{ textAlign: "center", padding: "8px 4px", fontSize: 12, fontWeight: 600, color: voted ? "#16A34A" : "#94A3B8" }}>
+            {voted ? "✓ Ya votaste esta semana — gracias 🍞" : "Tocá a un candidato para votarlo. El voto es anónimo y no se puede cambiar."}
+          </div>
+        </>
+      )}
+
+      <div style={{ marginTop: 18 }}>
+        <button className="no-print" onClick={loadHistory} disabled={historyLoading} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: "#64748B", padding: "4px 2px", marginBottom: 8, opacity: historyLoading ? 0.5 : 1 }}>
+          <span style={{ display: "inline-block", transform: showHistory ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
+          {historyLoading ? "Cargando historial…" : `Historial${history ? ` (${history.length})` : ""}`}
+        </button>
+        {showHistory && history && (
+          history.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px" }}>Sin semanas anteriores todavía.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {history.map((w) => <ChipaHistoryRow key={w.weekStart} week={w} />)}
+            </div>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CandidateCard({ name, count, isWinner, disabled, onVote }) {
+  const c = COLOR[LEVEL[name]];
+  return (
+    <div onClick={disabled ? undefined : onVote} style={{ cursor: disabled ? "default" : "pointer", userSelect: "none", flex: "1 1 130px", maxWidth: 180, textAlign: "center", padding: "16px 10px", borderRadius: 14, background: isWinner ? "#FFFBEB" : "#fff", border: `2px solid ${isWinner ? "#FBBF24" : "#E2E8F0"}`, boxShadow: isWinner ? "0 0 0 3px #FBBF2433" : "0 1px 3px rgba(15,23,42,.04)", transition: "transform .1s", opacity: disabled ? 0.75 : 1 }}>
+      <div style={{ fontSize: 26, marginBottom: 4 }}>{isWinner && count > 0 ? "🏆" : "🥐"}</div>
+      <div style={{ fontWeight: 800, fontSize: 14, color: "#0F172A" }}>{name}</div>
+      <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 5px", borderRadius: 3, background: c.solid, color: "#fff", letterSpacing: 0.2 }}>{LEVEL[name]}</span>
+      <div style={{ marginTop: 8, fontSize: 20, fontWeight: 800, color: isWinner ? "#B45309" : "#334155" }}>{count}</div>
+      <div style={{ fontSize: 9.5, color: "#94A3B8", fontWeight: 600 }}>voto{count === 1 ? "" : "s"}</div>
+    </div>
+  );
+}
+
+function ChipaHistoryRow({ week }) {
+  const monday = new Date(`${week.weekStart}T12:00:00`);
+  const maxVotes = Math.max(0, ...week.candidates.map((n) => week.counts[n] || 0));
+  const winners = maxVotes > 0 ? week.candidates.filter((n) => (week.counts[n] || 0) === maxVotes) : [];
+  const sorted = [...week.candidates].sort((a, b) => (week.counts[b] || 0) - (week.counts[a] || 0));
+  return (
+    <div style={{ background: "#fff", borderRadius: 10, border: "1px solid #E2E8F0", padding: "9px 13px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+        <div style={{ fontSize: 11, color: "#94A3B8", fontWeight: 600 }}>{dm(monday)} — {dm(shift(monday, 6))}</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#B45309" }}>
+          {winners.length === 0 ? "Sin votos" : `🏆 ${winners.join(" y ")}`}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: "#64748B", marginTop: 4 }}>
+        {sorted.map((n) => `${n} (${week.counts[n] || 0})`).join(" · ")}
+      </div>
     </div>
   );
 }
