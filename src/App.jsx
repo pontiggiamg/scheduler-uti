@@ -122,10 +122,13 @@ export default function App() {
       {/* Tabs */}
       <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 14 }}>
         <TabBtn active={tab === "scheduler"} onClick={() => setTab("scheduler")}>📅 Semana</TabBtn>
-        <TabBtn active={tab === "rotaciones"} onClick={() => setTab("rotaciones")}>🔄 Rotaciones y Vacaciones</TabBtn>
+        <TabBtn active={tab === "rotaciones"} onClick={() => setTab("rotaciones")}>🔄 Rotaciones</TabBtn>
+        <TabBtn active={tab === "pases"} onClick={() => setTab("pases")}>🛏️ Pases</TabBtn>
       </div>
 
-      {tab === "scheduler" ? <SchedulerView isAdmin={isAdmin} /> : <RotacionesView isAdmin={isAdmin} />}
+      {tab === "scheduler" && <SchedulerView isAdmin={isAdmin} />}
+      {tab === "rotaciones" && <RotacionesView isAdmin={isAdmin} />}
+      {tab === "pases" && <PasesView isAdmin={isAdmin} />}
     </div>
   );
 }
@@ -455,6 +458,179 @@ const EditForm = ({ resident, place, onResChange, onPlaceChange, onSave, onCance
     <button onClick={onCancel} style={{ background: "#E2E8F0", color: "#64748B", border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✕</button>
   </div>
 );
+
+/* ══════════════════ PASES VIEW ══════════════════ */
+
+const PASE_FIELDS = [
+  ["req", "Requerimientos / Intercurrencias"],
+  ["ea", "Enfermedad actual"],
+  ["ap", "Antecedentes"],
+  ["tto", "Tratamiento"],
+  ["accesos", "Accesos"],
+  ["cultivos", "Cultivos"],
+  ["estudios", "Complementarios"],
+  ["labo", "Laboratorio"],
+  ["eab", "EAB"],
+  ["pendiente", "Pendientes"],
+];
+
+function timeAgo(iso) {
+  if (!iso) return "nunca";
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "recién";
+  if (mins < 60) return `hace ${mins} min`;
+  const h = Math.floor(mins / 60);
+  if (h < 24) return `hace ${h} h`;
+  return `hace ${Math.floor(h / 24)} d`;
+}
+
+function PasesView({ isAdmin }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [unit, setUnit] = useState(null);
+  const [open, setOpen] = useState({});
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState(null);
+  const [q, setQ] = useState("");
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "scheduler", "pases-latest"), (snap) => {
+      setData(snap.exists() ? snap.data() : null);
+      setLoading(false);
+    }, () => setLoading(false));
+    return unsub;
+  }, []);
+
+  const order = data?.unitOrder?.length ? data.unitOrder : Object.keys(data?.units || {});
+  const activeUnit = unit && order.includes(unit) ? unit : order[0];
+  const patients = (data?.units?.[activeUnit] || []).filter((p) => {
+    if (!q.trim()) return true;
+    const hay = `${p.bed} ${p.name} ${p.mi} ${p.status}`.toLowerCase();
+    return hay.includes(q.toLowerCase());
+  });
+
+  const sync = async () => {
+    setSyncing(true); setSyncMsg(null);
+    try {
+      const r = await fetch("/api/sync-pases");
+      const j = await r.json();
+      if (j.ok) {
+        setSyncMsg(`✓ ${j.totalPatients} pacientes actualizados`);
+        if (j.errors?.length) setSyncMsg(`✓ ${j.totalPatients} pacientes · ${j.errors.length} doc con problema`);
+      } else setSyncMsg("⚠ " + (j.error || "Error al sincronizar"));
+    } catch (e) {
+      setSyncMsg("⚠ No se pudo conectar con el servidor");
+    }
+    setSyncing(false);
+    setTimeout(() => setSyncMsg(null), 5000);
+  };
+
+  if (loading) return <Skeleton />;
+
+  return (
+    <div>
+      <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 22 }}>🛏️</span>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Resumen de pases</div>
+            <div style={{ fontSize: 10.5, opacity: 0.55 }}>
+              Actualizado {timeAgo(data?.updatedAt)}
+              {data?.totalPatients ? ` · ${data.totalPatients} pacientes` : ""}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {syncMsg && <span style={{ fontSize: 11, fontWeight: 600, opacity: 0.9 }}>{syncMsg}</span>}
+          {isAdmin && (
+            <button onClick={sync} disabled={syncing} style={{ ...NAV, width: "auto", padding: "6px 12px", fontSize: 11, opacity: syncing ? 0.5 : 1 }}>
+              {syncing ? "Sincronizando…" : "↻ Sincronizar"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {data?.errors?.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          {data.errors.map((e, i) => (
+            <div key={i} style={{ background: "#FEF2F2", border: "1px solid #FECACA", color: "#991B1B", padding: "7px 12px", borderRadius: 9, fontSize: 11.5, fontWeight: 500, marginBottom: 4 }}>
+              ⚠ <b>{e.unit}</b>: {e.error}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!data || !order.length ? (
+        <div style={{ textAlign: "center", padding: "50px 20px", color: "#94A3B8", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+          Todavía no se sincronizó ningún pase.
+          {isAdmin && <div style={{ fontSize: 11.5, marginTop: 8 }}>Tocá "Sincronizar" para traerlos de los documentos.</div>}
+        </div>
+      ) : (
+        <>
+          {/* Selector de unidad */}
+          <div className="no-print" style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 8, marginBottom: 8 }}>
+            {order.map((u) => {
+              const n = data.units[u]?.length || 0;
+              const on = u === activeUnit;
+              return (
+                <button key={u} onClick={() => { setUnit(u); setOpen({}); }} style={{ flexShrink: 0, padding: "7px 14px", borderRadius: 999, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, background: on ? "#0F172A" : "#E2E8F0", color: on ? "#fff" : "#64748B", display: "flex", alignItems: "center", gap: 6 }}>
+                  {u}
+                  <span style={{ fontSize: 10, fontWeight: 800, background: on ? "rgba(255,255,255,.22)" : "#CBD5E1", color: on ? "#fff" : "#475569", padding: "1px 6px", borderRadius: 999 }}>{n}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por cama, nombre o diagnóstico…" className="no-print" style={{ width: "100%", padding: "9px 12px", borderRadius: 10, border: "1px solid #E2E8F0", fontSize: 12.5, fontFamily: "inherit", marginBottom: 10, outline: "none", boxSizing: "border-box", color: "#0F172A" }} />
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {patients.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>
+                {q ? "Ningún paciente coincide con la búsqueda" : "Sin pacientes en esta unidad"}
+              </div>
+            ) : patients.map((p) => {
+              const isOpen = !!open[p.bed];
+              return (
+                <div key={p.bed} style={{ background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden", boxShadow: "0 1px 3px rgba(15,23,42,.04)" }}>
+                  <div onClick={() => setOpen((o) => ({ ...o, [p.bed]: !o[p.bed] }))} style={{ padding: "11px 13px", cursor: "pointer", display: "flex", gap: 11, alignItems: "flex-start" }}>
+                    <div style={{ flexShrink: 0, minWidth: 40, textAlign: "center", background: "#0F172A", color: "#fff", borderRadius: 8, padding: "5px 7px", fontWeight: 800, fontSize: 13, lineHeight: 1.2 }}>{p.bed}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                        <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0F172A" }}>{p.name || "—"}</span>
+                        {p.age && <span style={{ fontSize: 11.5, color: "#64748B", fontWeight: 600 }}>{p.age} a</span>}
+                      </div>
+                      {p.flags?.length > 0 && (
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
+                          {p.flags.map((f, i) => (
+                            <span key={i} style={{ fontSize: 9.5, fontWeight: 700, background: "#FEF2F2", color: "#B91C1C", border: "1px solid #FECACA", padding: "2px 6px", borderRadius: 5 }}>{f}</span>
+                          ))}
+                        </div>
+                      )}
+                      {p.mi && <div style={{ fontSize: 12, color: "#1D4ED8", fontWeight: 600, marginTop: 4, lineHeight: 1.35 }}>{p.mi}</div>}
+                      {p.status && <div style={{ fontSize: 11.5, color: "#475569", marginTop: 5, lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: isOpen ? "unset" : 2, WebkitBoxOrient: "vertical", overflow: isOpen ? "visible" : "hidden" }}>{p.status}</div>}
+                    </div>
+                    <div style={{ flexShrink: 0, color: "#CBD5E1", fontSize: 12, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }}>▼</div>
+                  </div>
+
+                  {isOpen && (
+                    <div style={{ borderTop: "1px solid #F1F5F9", padding: "4px 13px 12px" }}>
+                      {PASE_FIELDS.filter(([k]) => p.fields?.[k]).map(([k, label]) => (
+                        <div key={k} style={{ marginTop: 10 }}>
+                          <div style={{ fontSize: 9.5, fontWeight: 800, color: "#94A3B8", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
+                          <div style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{p.fields[k]}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 /* ══════════════════ SCHEDULER HEADER ══════════════════ */
 
