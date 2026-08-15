@@ -47,9 +47,14 @@ const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"];
 const MONTHS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const WEEKDAYS_FULL = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 
+// Los tints de fondo de cada fila son neutros a propósito: R2 es azul y R3 es
+// verde (ver COLOR más abajo), así que si una fila tuviera fondo azul o verde
+// el chip del residente se camuflaba contra el fondo. Acá solo UTI 3 (amarillo)
+// y Postguardia (violeta) usan un color, porque ningún nivel de residente usa
+// esos tonos.
 const SLOTS = [
-  { key: "uti1", label: "UTI 1", accent: "#3B82F6", tint: "#DBEAFE" },
-  { key: "uti2", label: "UTI 2", accent: "#3B82F6", tint: "#D1FAE5" },
+  { key: "uti1", label: "UTI 1", accent: "#3B82F6", tint: "#F1F5F9" },
+  { key: "uti2", label: "UTI 2", accent: "#3B82F6", tint: "#FAFAF9" },
   { key: "uti3", label: "UTI 3", accent: "#3B82F6", tint: "#FEF3C7" },
   { key: "postguardia", label: "Postguardia", accent: "#A855F7", tint: "#E9D5FF" },
 ];
@@ -243,6 +248,7 @@ function SchedulerView({ isAdmin }) {
   const [sel, setSel] = useState(null);
   const [toast, setToast] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [academico, setAcademico] = useState(emptyAcademico);
 
   const docId = `week-${isoDate(monday)}`;
   const pending = useRef(null);
@@ -261,6 +267,14 @@ function SchedulerView({ isAdmin }) {
     }, (err) => { console.error("snapshot", err); setStatus("error"); setLoading(false); });
     return () => { unsub(); if (timer.current) { clearTimeout(timer.current); timer.current = null; } };
   }, [docId]);
+
+  // Recordatorios se nutre en modo lectura del Calendario académico: la fuente
+  // de verdad es esa pestaña, acá solo se refleja si hay clase ese día.
+  useEffect(() => {
+    const ref = doc(db, "scheduler", "academico");
+    const unsub = onSnapshot(ref, (snap) => setAcademico(snap.exists() ? normalizeAcademico(snap.data()) : emptyAcademico()), () => {});
+    return unsub;
+  }, []);
 
   const flush = useCallback(async () => {
     const payload = pending.current; if (!payload) return;
@@ -364,10 +378,10 @@ function SchedulerView({ isAdmin }) {
               </Fragment>
             ))}
 
-            <RowLabel label="De guardia" color="#0EA5E9" sub="texto libre" />
+            <RowLabel label="De guardia" color="#9F1239" sub="texto libre" />
             {DAYS.map((_, di) => (
               <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
-                <textarea value={week.days[di].deGuardia} onChange={(e) => editText(di, "deGuardia", e.target.value)} placeholder="Quién queda de guardia…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 40, background: "#F0F9FF", borderColor: "#BAE6FD", color: "#0C4A6E", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+                <textarea value={week.days[di].deGuardia} onChange={(e) => editText(di, "deGuardia", e.target.value)} placeholder="Quién queda de guardia…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 40, background: "#FFF1F2", borderColor: "#FECDD3", color: "#881337", fontWeight: 600, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
               </Cell>
             ))}
 
@@ -395,12 +409,24 @@ function SchedulerView({ isAdmin }) {
               </Cell>
             ))}
 
-            <RowLabel label="Recordatorios" color="#B45309" />
-            {DAYS.map((_, di) => (
-              <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
-                <textarea value={week.days[di].recordatorios} onChange={(e) => editText(di, "recordatorios", e.target.value)} placeholder="Clases, ateneos, horarios…" readOnly={!isAdmin} style={{ ...TEXTAREA, background: "#FFFBEB", borderColor: "#FDE68A", color: "#78350F", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
-              </Cell>
-            ))}
+            <RowLabel label="Recordatorios" color="#B45309" sub="+ Académico" />
+            {DAYS.map((_, di) => {
+              const clases = academico.activities.filter((a) => a.date === isoDate(dates[di]));
+              return (
+                <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
+                  {clases.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 4 }}>
+                      {clases.map((a) => (
+                        <div key={a.id} title="Sincronizado desde Calendario académico" style={{ fontSize: 10.5, fontWeight: 700, background: "#FEF3C7", color: "#78350F", border: "1px solid #FDE68A", borderRadius: 6, padding: "3px 6px", lineHeight: 1.3 }}>
+                          📚 {a.title || "Clase"}{a.time ? ` · ${a.time}` : ""}{a.docente ? ` · ${a.docente}` : ""}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <textarea value={week.days[di].recordatorios} onChange={(e) => editText(di, "recordatorios", e.target.value)} placeholder="Clases, ateneos, horarios…" readOnly={!isAdmin} style={{ ...TEXTAREA, background: "#FFFBEB", borderColor: "#FDE68A", color: "#78350F", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+                </Cell>
+              );
+            })}
 
             <RowLabel label="Disponibles" color="#16A34A" />
             {DAYS.map((_, di) => {
