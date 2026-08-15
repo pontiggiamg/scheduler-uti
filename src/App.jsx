@@ -505,11 +505,11 @@ function SchedulerView({ isAdmin }) {
               );
             })}
 
-            <RowLabel label="Disponibles" color="#16A34A" />
+            <RowLabel className="no-print" label="Disponibles" color="#16A34A" />
             {DAYS.map((_, di) => {
               const free = pool(di);
               return (
-                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === 4}>
+                <Cell key={di} className="no-print" onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === 4}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 50 }}>
                     {active && <div style={{ fontSize: 10, color: "#16A34A", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>↩ liberar el {DAYS[di].toLowerCase()}</div>}
                     {free.length === 0 ? (!active && <div style={{ fontSize: 10.5, color: "#94A3B8", fontStyle: "italic", textAlign: "center", padding: 6 }}>todos asignados</div>) : free.map((n) => <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "pool" }); }} />)}
@@ -518,9 +518,9 @@ function SchedulerView({ isAdmin }) {
               );
             })}
 
-            <RowLabel label="No disponibles" color="#DC2626" sub="rotación · vacaciones" />
+            <RowLabel className="no-print" label="No disponibles" color="#DC2626" sub="rotación · vacaciones" />
             {DAYS.map((_, di) => (
-              <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === 4} lastRow>
+              <Cell key={di} className="no-print" onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === 4} lastRow>
                 <div style={{ display: "flex", flexDirection: "column", gap: 2, minHeight: 40 }}>
                   {week.days[di].unavailable.map((n) => <OutChip key={n} name={n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "unavailable" }); }} selected={sel?.name === n} />)}
                   {active && <div style={{ fontSize: 10, color: "#EF4444", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>marcar solo el {DAYS[di].toLowerCase()}</div>}
@@ -531,7 +531,7 @@ function SchedulerView({ isAdmin }) {
           </div>
         </div>
       )}
-      <Legend />
+      <div className="no-print"><Legend /></div>
     </div>
   );
 }
@@ -1227,22 +1227,37 @@ function fileToBase64(file) {
   });
 }
 
+function formatFechaHora(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const fecha = `${WEEKDAYS_FULL[d.getDay()]} ${d.getDate()} de ${MONTHS[d.getMonth()].toLowerCase()}`;
+  const hora = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${fecha} · ${hora}`;
+}
+
 function ArticuloSemanaView({ isAdmin }) {
-  const [articulo, setArticulo] = useState(null);
+  const [articulos, setArticulos] = useState(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [openId, setOpenId] = useState(null);
+  const [driveUrl, setDriveUrl] = useState("");
   const fileRef = useRef(null);
 
   useEffect(() => {
     setLoading(true);
-    const ref = doc(db, "scheduler", "articulo-semana");
-    const unsub = onSnapshot(ref, (snap) => {
-      setArticulo(snap.exists() ? snap.data() : null);
+    const q = query(collection(db, "articulos_semana"), orderBy("generatedAt", "desc"));
+    const unsub = onSnapshot(q, (snap) => {
+      setArticulos(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setLoading(false);
-    }, () => setLoading(false));
+    }, (err) => { console.error(err); setLoading(false); });
     return () => unsub();
   }, []);
+
+  // El más reciente arranca desplegado; si llega uno nuevo, pasa a ser ese.
+  useEffect(() => {
+    if (articulos && articulos.length > 0) setOpenId((cur) => cur ?? articulos[0].id);
+  }, [articulos]);
 
   const handleFile = async (e) => {
     const file = e.target.files && e.target.files[0];
@@ -1256,11 +1271,12 @@ function ArticuloSemanaView({ isAdmin }) {
       const res = await fetch("/api/resumen-articulo", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ pdfBase64, filename: file.name }),
+        body: JSON.stringify({ pdfBase64, filename: file.name, pdfUrl: driveUrl.trim() || undefined }),
       });
       const json = await res.json();
       if (!res.ok || !json.ok) throw new Error(json.error || "No se pudo generar el resumen.");
-      // El propio onSnapshot va a reflejar el resultado; no hace falta setArticulo acá.
+      setDriveUrl("");
+      setOpenId(null); // se va a abrir el nuevo (el más reciente) apenas llegue por onSnapshot
     } catch (err) {
       setError(err.message || "Error inesperado al generar el resumen.");
     } finally {
@@ -1278,15 +1294,26 @@ function ArticuloSemanaView({ isAdmin }) {
       </div>
 
       {isAdmin && (
-        <div style={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 12, padding: "12px 14px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <div style={{ fontSize: 12, color: "#475569" }}>
-            <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 2 }}>Subir un artículo nuevo</div>
-            Subí el PDF del artículo de la semana y la IA genera un resumen y preguntas para discutir en el pase.
+        <div style={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 12, padding: "12px 14px", marginBottom: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <div style={{ fontSize: 12, color: "#475569" }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 2 }}>Subir un artículo nuevo</div>
+              Subí el PDF del artículo de la semana y la IA genera un resumen y preguntas para discutir en el pase. Los anteriores quedan guardados abajo como historial.
+            </div>
+            <label style={{ ...NAV, background: uploading ? "#94A3B8" : "#0F172A", color: "#fff", width: "auto", padding: "8px 16px", fontSize: 12, opacity: uploading ? 0.7 : 1, cursor: uploading ? "default" : "pointer" }}>
+              {uploading ? "Generando resumen…" : "📤 Subir PDF"}
+              <input ref={fileRef} type="file" accept="application/pdf" onChange={handleFile} disabled={uploading} style={{ display: "none" }} />
+            </label>
           </div>
-          <label style={{ ...NAV, background: uploading ? "#94A3B8" : "#0F172A", color: "#fff", width: "auto", padding: "8px 16px", fontSize: 12, opacity: uploading ? 0.7 : 1, cursor: uploading ? "default" : "pointer" }}>
-            {uploading ? "Generando resumen…" : "📤 Subir PDF"}
-            <input ref={fileRef} type="file" accept="application/pdf" onChange={handleFile} disabled={uploading} style={{ display: "none" }} />
-          </label>
+          <div>
+            <input
+              value={driveUrl}
+              onChange={(e) => setDriveUrl(e.target.value)}
+              placeholder="Opcional: pegá acá el link para compartir del PDF en tu Google Drive (para que los residentes lo puedan descargar)"
+              disabled={uploading}
+              style={{ ...INPUT, width: "100%", boxSizing: "border-box" }}
+            />
+          </div>
         </div>
       )}
 
@@ -1296,20 +1323,42 @@ function ArticuloSemanaView({ isAdmin }) {
         </div>
       )}
 
-      {!articulo ? (
+      {!articulos || articulos.length === 0 ? (
         <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>
           Todavía no se cargó ningún artículo{isAdmin ? " — tocá \"Subir PDF\" para generar el primero." : "."}
         </div>
       ) : (
-        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(15,23,42,.04)", overflow: "hidden" }}>
-          <div style={{ padding: "14px 18px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 14.5, color: "#0F172A" }}>📄 {articulo.filename || "Artículo"}</div>
-              <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 2 }}>Actualizado {timeAgo(articulo.generatedAt)}</div>
-            </div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, background: "#EEF2FF", color: "#4338CA", border: "1px solid #C7D2FE" }}>🤖 Generado por IA</div>
-          </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {articulos.map((a, i) => (
+            <ArticuloCard key={a.id} articulo={a} isOpen={openId === a.id} isLatest={i === 0} onToggle={() => setOpenId((cur) => (cur === a.id ? null : a.id))} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
+function ArticuloCard({ articulo, isOpen, isLatest, onToggle }) {
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(15,23,42,.04)", overflow: "hidden" }}>
+      <div onClick={onToggle} style={{ cursor: "pointer", padding: "14px 18px", borderBottom: isOpen ? "1px solid #F1F5F9" : "none", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <span className="no-print" style={{ display: "inline-block", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s", color: "#94A3B8", fontSize: 12 }}>▶</span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 800, fontSize: 14.5, color: "#0F172A", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>📄 {articulo.filename || "Artículo"}</div>
+            <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 2 }}>{formatFechaHora(articulo.generatedAt)}{isLatest && <span style={{ marginLeft: 6, fontWeight: 700, color: "#16A34A" }}>· más reciente</span>}</div>
+          </div>
+        </div>
+        <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          {articulo.pdfUrl && (
+            <a href={articulo.pdfUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, background: "#0F172A", color: "#fff", textDecoration: "none" }}>📄 Ver PDF</a>
+          )}
+          <div style={{ fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, background: "#EEF2FF", color: "#4338CA", border: "1px solid #C7D2FE" }}>🤖 Generado por IA</div>
+        </div>
+      </div>
+
+      {isOpen && (
+        <>
           <div style={{ padding: "16px 18px" }}>
             <div style={{ fontWeight: 700, fontSize: 12, color: "#334155", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>Resumen</div>
             <div style={{ fontSize: 13, color: "#1E293B", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{articulo.resumen || "—"}</div>
@@ -1333,7 +1382,7 @@ function ArticuloSemanaView({ isAdmin }) {
               </ol>
             </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );
@@ -1347,16 +1396,19 @@ function DiasLibresR4({ week, isAdmin, onChange }) {
   const any = RESIDENTS.R4.some((n) => week.diasLibresR4[n]);
   if (!isAdmin && !any) return null;
   return (
-    <div className="no-print" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "8px 12px", marginBottom: 10, borderRadius: 10, background: "#FFF7ED", border: "1px solid #FED7AA" }}>
+    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "8px 12px", marginBottom: 10, borderRadius: 10, background: "#FFF7ED", border: "1px solid #FED7AA" }}>
       <span style={{ fontSize: 11, fontWeight: 700, color: "#9A3412" }}>🗓️ Días libres R4 esta semana:</span>
       {RESIDENTS.R4.map((n) => (
         <div key={n} style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <span style={{ fontSize: 11.5, fontWeight: 600, color: "#7C2D12" }}>{n}</span>
           {isAdmin ? (
-            <select value={week.diasLibresR4[n]} onChange={(e) => onChange(n, e.target.value)} style={{ fontSize: 11, padding: "2px 5px", borderRadius: 5, border: "1px solid #FDBA74", background: "#fff", color: "#7C2D12", fontFamily: "inherit" }}>
-              <option value="">—</option>
-              {DIAS_LIBRES_OPCIONES.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
+            <>
+              <select className="no-print" value={week.diasLibresR4[n]} onChange={(e) => onChange(n, e.target.value)} style={{ fontSize: 11, padding: "2px 5px", borderRadius: 5, border: "1px solid #FDBA74", background: "#fff", color: "#7C2D12", fontFamily: "inherit" }}>
+                <option value="">—</option>
+                {DIAS_LIBRES_OPCIONES.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+              <span className="print-only" style={{ fontSize: 11, fontWeight: 700, background: "#FDBA74", color: "#7C2D12", padding: "1px 7px", borderRadius: 999 }}>{week.diasLibresR4[n] || "—"}</span>
+            </>
           ) : (
             week.diasLibresR4[n] && <span style={{ fontSize: 11, fontWeight: 700, background: "#FDBA74", color: "#7C2D12", padding: "1px 7px", borderRadius: 999 }}>{week.diasLibresR4[n]}</span>
           )}
@@ -1410,9 +1462,9 @@ const Corner = () => (<div style={{ background: "#F8FAFC", borderBottom: "2px so
 
 const DayHead = ({ name, date, isToday }) => (<div style={{ padding: "9px 4px", textAlign: "center", background: isToday ? "#EFF6FF" : "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "1px solid #F1F5F9" }}><div style={{ fontWeight: 700, fontSize: 12.5, color: isToday ? "#1D4ED8" : "#0F172A" }}>{name}</div><div style={{ fontSize: 10.5, color: isToday ? "#3B82F6" : "#94A3B8", fontWeight: isToday ? 700 : 500 }}>{dm(date)}</div></div>);
 
-const RowLabel = ({ label, color, sub }) => (<div style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end", textAlign: "right", padding: "8px 10px", background: "#F8FAFC", borderRight: "2px solid #E2E8F0", borderBottom: "2px solid #D1D5DB", borderTop: "2px solid #D1D5DB" }}><div style={{ fontWeight: 700, fontSize: 11, color, letterSpacing: 0.1 }}>{label}</div>{sub && <div style={{ fontSize: 8.5, color: "#94A3B8", marginTop: 1 }}>{sub}</div>}</div>);
+const RowLabel = ({ label, color, sub, className }) => (<div className={className} style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end", textAlign: "right", padding: "8px 10px", background: "#F8FAFC", borderRight: "2px solid #E2E8F0", borderBottom: "2px solid #D1D5DB", borderTop: "2px solid #D1D5DB" }}><div style={{ fontWeight: 700, fontSize: 11, color, letterSpacing: 0.1 }}>{label}</div>{sub && <div style={{ fontSize: 8.5, color: "#94A3B8", marginTop: 1 }}>{sub}</div>}</div>);
 
-const Cell = ({ children, onClick, tint, ring, pad = 4, lastCol, lastRow }) => (<div onClick={onClick} style={{ padding: pad, minHeight: 46, display: "flex", flexDirection: "column", gap: 3, background: tint, borderRight: lastCol ? "none" : "1px solid #F1F5F9", borderBottom: lastRow ? "none" : "1px solid #F1F5F9", boxShadow: ring ? `inset 0 0 0 1.5px ${ring}66` : "none", cursor: ring ? "pointer" : "default", transition: "background .12s, box-shadow .12s" }}>{children}</div>);
+const Cell = ({ children, onClick, tint, ring, pad = 4, lastCol, lastRow, className }) => (<div className={className} onClick={onClick} style={{ padding: pad, minHeight: 46, display: "flex", flexDirection: "column", gap: 3, background: tint, borderRight: lastCol ? "none" : "1px solid #F1F5F9", borderBottom: lastRow ? "none" : "1px solid #F1F5F9", boxShadow: ring ? `inset 0 0 0 1.5px ${ring}66` : "none", cursor: ring ? "pointer" : "default", transition: "background .12s, box-shadow .12s" }}>{children}</div>);
 
 function Chip({ name, selected, onPick, onRemove }) {
   const lv = LEVEL[name]; const c = COLOR[lv];

@@ -1,5 +1,5 @@
 import { initializeApp, getApps } from "firebase/app";
-import { getFirestore, doc, setDoc } from "firebase/firestore";
+import { getFirestore, collection, doc, setDoc } from "firebase/firestore";
 
 var firebaseConfig = {
   apiKey: "AIzaSyAHjLDpf9MZr8I6KA1sg3Ofr0GzN0IYENw",
@@ -155,6 +155,17 @@ export default async function handler(req, res) {
       }
     }
 
+    // Cada artículo queda como un documento propio en articulos_semana (no se
+    // pisa el anterior), para armar un historial ordenado por fecha en la app.
+    var articleRef = doc(collection(db, "articulos_semana"));
+
+    // No subimos el PDF a Firebase Storage (desde fines de 2024 Google exige
+    // tener el plan de pago Blaze vinculado con tarjeta para usarlo, aunque
+    // el uso real sea gratis). En cambio, el link de descarga es opcional:
+    // si el admin sube el PDF a su propio Google Drive y pega el link para
+    // compartir ("cualquiera con el link puede ver"), lo guardamos tal cual.
+    var pdfUrl = typeof body.pdfUrl === "string" && body.pdfUrl.trim() ? body.pdfUrl.trim() : null;
+
     var payload = {
       filename: filename,
       resumen: typeof out.resumen === "string" ? out.resumen : "",
@@ -162,9 +173,10 @@ export default async function handler(req, res) {
       preguntasR3R4: Array.isArray(out.preguntas_r3_r4) ? out.preguntas_r3_r4.slice(0, 3) : [],
       generatedAt: new Date().toISOString(),
       generatedBy: "Gemini (" + MODEL + ")",
+      pdfUrl: pdfUrl,
     };
 
-    await setDoc(doc(db, "scheduler", "articulo-semana"), payload);
+    await setDoc(articleRef, payload);
 
     return res.status(200).json({ ok: true, articulo: payload });
   } catch (e) {
