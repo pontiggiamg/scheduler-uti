@@ -1281,7 +1281,7 @@ function ArticuloSemanaView({ isAdmin }) {
         <div style={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 12, padding: "12px 14px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div style={{ fontSize: 12, color: "#475569" }}>
             <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 2 }}>Subir un artículo nuevo</div>
-            Subí el PDF del artículo de la semana y Claude genera un resumen y preguntas para discutir en el pase.
+            Subí el PDF del artículo de la semana y la IA genera un resumen y preguntas para discutir en el pase.
           </div>
           <label style={{ ...NAV, background: uploading ? "#94A3B8" : "#0F172A", color: "#fff", width: "auto", padding: "8px 16px", fontSize: 12, opacity: uploading ? 0.7 : 1, cursor: uploading ? "default" : "pointer" }}>
             {uploading ? "Generando resumen…" : "📤 Subir PDF"}
