@@ -103,7 +103,7 @@ export default async function handler(req, res) {
         },
         generation_config: {
           temperature: 0.4,
-          max_output_tokens: 2000,
+          max_output_tokens: 8000,
         },
       }),
     });
