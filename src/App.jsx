@@ -2170,6 +2170,61 @@ function ClasesSection({ clases, isAdmin, user }) {
   );
 }
 
+function ResidentProcAccordion({ residente, procs, ESTADO_META, confirmId, setConfirmId, eliminar, defaultOpen }) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  const [sortBy, setSortBy] = useState("fecha"); // "fecha" | "tipo"
+
+  const ordenados = useMemo(() => {
+    const arr = [...procs];
+    if (sortBy === "tipo") arr.sort((a, b) => a.tipo.localeCompare(b.tipo) || (b.fecha || "").localeCompare(a.fecha || ""));
+    else arr.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+    return arr;
+  }, [procs, sortBy]);
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden", marginBottom: 8 }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: "10px 14px", textAlign: "left" }}>
+        <span style={{ display: "inline-block", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 11, color: "#94A3B8" }}>▶</span>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", flex: 1 }}>{residente}</span>
+        <span style={{ fontSize: 11, fontWeight: 800, color: procs.length > 0 ? "#0F766E" : "#CBD5E1", background: procs.length > 0 ? "#F0FDFA" : "#F8FAFC", borderRadius: 999, padding: "1px 9px", minWidth: 22, textAlign: "center" }}>{procs.length}</span>
+      </button>
+      {open && (
+        <div style={{ borderTop: "1px solid #F1F5F9" }}>
+          {procs.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "10px 14px" }}>Sin procedimientos cargados.</div>
+          ) : (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderBottom: "1px solid #F1F5F9" }}>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8" }}>ORDENAR POR:</span>
+                <button onClick={() => setSortBy("fecha")} style={{ fontSize: 10.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, border: `1px solid ${sortBy === "fecha" ? "#0F766E" : "#E2E8F0"}`, background: sortBy === "fecha" ? "#F0FDFA" : "#fff", color: sortBy === "fecha" ? "#0F766E" : "#64748B", cursor: "pointer", fontFamily: "inherit" }}>Fecha</button>
+                <button onClick={() => setSortBy("tipo")} style={{ fontSize: 10.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, border: `1px solid ${sortBy === "tipo" ? "#0F766E" : "#E2E8F0"}`, background: sortBy === "tipo" ? "#F0FDFA" : "#fff", color: sortBy === "tipo" ? "#0F766E" : "#64748B", cursor: "pointer", fontFamily: "inherit" }}>Tipo</button>
+              </div>
+              {ordenados.map((p, i) => {
+                const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
+                return (
+                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === ordenados.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#64748B", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
+                    <span style={{ fontSize: 12.5, color: "#334155", flex: 1 }}>{p.tipo}{p.nota ? ` — ${p.nota}` : ""}</span>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
+                    {confirmId === p.id ? (
+                      <span style={{ display: "flex", gap: 4 }}>
+                        <button onClick={() => eliminar(p.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
+                        <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+                      </span>
+                    ) : (
+                      <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misResidente }) {
   const [tipo, setTipo] = useState(procList[0] || "");
   const [fecha, setFecha] = useState(() => isoDate(new Date()));
@@ -2177,7 +2232,7 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
   const [saving, setSaving] = useState(false);
   const [editingList, setEditingList] = useState(false);
   const [nuevoProc, setNuevoProc] = useState("");
-  const [showAll, setShowAll] = useState(false);
+  const [sortMios, setSortMios] = useState("fecha"); // "fecha" | "tipo"
   const [confirmId, setConfirmId] = useState(null);
 
   useEffect(() => { if (!procList.includes(tipo)) setTipo(procList[0] || ""); }, [procList]); // eslint-disable-line
@@ -2216,10 +2271,21 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
     try { await setDoc(doc(db, "scheduler", "registro-config"), { procedimientosList: procList.filter((p) => p !== v) }, { merge: true }); } catch (e) { console.error(e); }
   };
 
-  const mios = useMemo(() => procedimientos.filter((p) => p.residente === misResidente).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")), [procedimientos, misResidente]);
+  const mios = useMemo(() => {
+    const arr = procedimientos.filter((p) => p.residente === misResidente);
+    if (sortMios === "tipo") arr.sort((a, b) => a.tipo.localeCompare(b.tipo) || (b.fecha || "").localeCompare(a.fecha || ""));
+    else arr.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+    return arr;
+  }, [procedimientos, misResidente, sortMios]);
   const pendientes = useMemo(() => procedimientos.filter((p) => p.estado === "pendiente").sort((a, b) => (a.fecha || "").localeCompare(b.fecha || "")), [procedimientos]);
   const aprobados = useMemo(() => procedimientos.filter((p) => p.estado === "aprobado"), [procedimientos]);
-  const todos = useMemo(() => [...procedimientos].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")), [procedimientos]);
+
+  const porResidente = useMemo(() => {
+    const g = {};
+    procedimientos.forEach((p) => { (g[p.residente] = g[p.residente] || []).push(p); });
+    return g;
+  }, [procedimientos]);
+  const residentesConDatos = useMemo(() => ALL.filter((n) => porResidente[n]?.length), [porResidente]);
 
   const totalesAprobados = useMemo(() => {
     const t = {};
@@ -2286,7 +2352,16 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
 
       {misResidente && (
         <div style={{ marginBottom: 18 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>Mis procedimientos</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>Mis procedimientos</div>
+            {mios.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#94A3B8" }}>ORDENAR:</span>
+                <button onClick={() => setSortMios("fecha")} style={{ fontSize: 10.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, border: `1px solid ${sortMios === "fecha" ? "#0F766E" : "#E2E8F0"}`, background: sortMios === "fecha" ? "#F0FDFA" : "#fff", color: sortMios === "fecha" ? "#0F766E" : "#64748B", cursor: "pointer", fontFamily: "inherit" }}>Fecha</button>
+                <button onClick={() => setSortMios("tipo")} style={{ fontSize: 10.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, border: `1px solid ${sortMios === "tipo" ? "#0F766E" : "#E2E8F0"}`, background: sortMios === "tipo" ? "#F0FDFA" : "#fff", color: sortMios === "tipo" ? "#0F766E" : "#64748B", cursor: "pointer", fontFamily: "inherit" }}>Tipo</button>
+              </div>
+            )}
+          </div>
           {mios.length === 0 ? (
             <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px" }}>Todavía no cargaste ninguno.</div>
           ) : (
@@ -2296,7 +2371,7 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
                 return (
                   <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === mios.length - 1 ? "none" : "1px solid #F1F5F9" }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: "#0F766E", background: "#F0FDFA", border: "1px solid #99F6E4", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
-                    <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1 }}>{p.tipo}</span>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1 }}>{p.tipo}{p.nota ? ` — ${p.nota}` : ""}</span>
                     <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
                   </div>
                 );
@@ -2333,35 +2408,23 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
             ⬇️ Exportar todo a CSV
           </button>
 
-          <button onClick={() => setShowAll((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
-            <span style={{ display: "inline-block", transform: showAll ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span> Historial completo {todos.length > 0 && `(${todos.length})`}
-          </button>
-          {showAll && (
-            todos.length === 0 ? (
-              <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px", marginBottom: 18 }}>Todavía no hay procedimientos cargados.</div>
-            ) : (
-              <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden", marginBottom: 18 }}>
-                {todos.map((p, i) => {
-                  const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
-                  return (
-                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === todos.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#64748B", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
-                      <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", minWidth: 60 }}>{p.residente}</span>
-                      <span style={{ fontSize: 12.5, color: "#334155", flex: 1 }}>{p.tipo}</span>
-                      <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
-                      {confirmId === p.id ? (
-                        <span style={{ display: "flex", gap: 4 }}>
-                          <button onClick={() => eliminar(p.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
-                          <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
-                        </span>
-                      ) : (
-                        <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 8, marginTop: 4 }}>Historial por residente</div>
+          {residentesConDatos.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px", marginBottom: 18 }}>Todavía no hay procedimientos cargados.</div>
+          ) : (
+            <div style={{ marginBottom: 18 }}>
+              {residentesConDatos.map((n) => (
+                <ResidentProcAccordion
+                  key={n}
+                  residente={n}
+                  procs={porResidente[n] || []}
+                  ESTADO_META={ESTADO_META}
+                  confirmId={confirmId}
+                  setConfirmId={setConfirmId}
+                  eliminar={eliminar}
+                />
+              ))}
+            </div>
           )}
 
           <button onClick={() => setEditingList((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
