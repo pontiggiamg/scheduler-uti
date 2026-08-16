@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from "react";
 import { db, auth, googleProvider } from "./firebase";
-import { doc, onSnapshot, setDoc, getDoc, increment, arrayUnion, collection, getDocs, query, orderBy } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, getDoc, deleteDoc, increment, arrayUnion, collection, getDocs, query, orderBy } from "firebase/firestore";
 import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
 
 /* ══════════════════ CONFIGURACIÓN ══════════════════ */
@@ -10,7 +10,7 @@ const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 // Pestañas de nivel superior de la app. El orden por defecto se usa si todavía
 // no hay nada guardado en Firestore (scheduler/ui-config); el admin puede
 // reordenarlas arrastrando y ese orden se guarda ahí, compartido para todos.
-const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo"];
+const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro"];
 const TAB_META = {
   scheduler: { icon: "📅", label: "Semana" },
   rotaciones: { icon: "🔄", label: "Rotaciones y Vacaciones" },
@@ -18,6 +18,7 @@ const TAB_META = {
   chipa: { icon: "🥐", label: "Chipa" },
   academico: { icon: "📚", label: "Calendario Académico" },
   articulo: { icon: "📄", label: "Artículo de la semana" },
+  registro: { icon: "📋", label: "Registro" },
 };
 
 const RESIDENTS = {
@@ -45,6 +46,36 @@ const RESIDENT_EMAIL = {
   Nahuel: "nahuelklahn@gmail.com",
 };
 const RESIDENT_BY_EMAIL = Object.fromEntries(Object.entries(RESIDENT_EMAIL).map(([name, email]) => [email.toLowerCase(), name]));
+
+// Registro: llegadas tarde, faltas y guardias son eventos con fecha que carga
+// el admin a mano (colección registro_eventos, campo "tipo"). Procedimientos
+// es aparte: cada residente carga los suyos y el admin los aprueba/rechaza
+// (colección "procedimientos"). La lista de procedimientos disponibles vive
+// en Firestore (scheduler/registro-config) para que el admin la pueda ajustar
+// sin tocar código; esta es solo la lista inicial con la que arranca.
+const EVENTO_TIPOS = {
+  tarde: { label: "Llegadas tarde", singular: "llegada tarde", icon: "⏰", color: "#B45309", bg: "#FFFBEB", bd: "#FDE68A" },
+  falta: { label: "Faltas", singular: "falta", icon: "🚫", color: "#B91C1C", bg: "#FEF2F2", bd: "#FECACA" },
+  guardia: { label: "Guardias", singular: "guardia", icon: "🌙", color: "#5B21B6", bg: "#F5F3FF", bd: "#DDD6FE" },
+};
+
+const DEFAULT_PROCEDIMIENTOS = [
+  "Vía venosa central",
+  "Vía arterial",
+  "Intubación orotraqueal",
+  "Traqueostomía percutánea",
+  "Toracocentesis",
+  "Avenamiento pleural (tubo de tórax)",
+  "Paracentesis",
+  "Punción lumbar",
+  "Colocación de catéter de hemodiálisis",
+  "Cardioversión eléctrica",
+  "Broncoscopía",
+  "Sonda nasogástrica / nasoyeyunal",
+  "Cricotiroidotomía",
+  "Pericardiocentesis",
+  "Ecografía point-of-care (FAST/POCUS)",
+];
 
 const LEVEL = Object.fromEntries(
   Object.entries(RESIDENTS).flatMap(([lv, names]) => names.map((n) => [n, lv]))
@@ -276,6 +307,7 @@ export default function App() {
       {tab === "chipa" && <ChipaView isAdmin={isAdmin} user={user} />}
       {tab === "academico" && <AcademicoView isAdmin={isAdmin} />}
       {tab === "articulo" && <ArticuloSemanaView isAdmin={isAdmin} />}
+      {tab === "registro" && <RegistroView isAdmin={isAdmin} user={user} />}
     </div>
   );
 }
@@ -1475,6 +1507,423 @@ function ArticuloCard({ articulo, isOpen, isLatest, onToggle }) {
               </ol>
             </div>
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════ REGISTRO (llegadas tarde / faltas / guardias / procedimientos) ══════════════════ */
+
+function fechaCorta(fecha) {
+  if (!fecha) return "—";
+  const [, m, d] = fecha.split("-");
+  return `${d}/${m}`;
+}
+
+function downloadCSV(filename, headers, rows) {
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const csv = [headers, ...rows].map((r) => r.map(esc).join(",")).join("\r\n");
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function RegistroView({ isAdmin, user }) {
+  const [sub, setSub] = useState("tarde");
+  const [eventos, setEventos] = useState([]);
+  const [procedimientos, setProcedimientos] = useState([]);
+  const [procList, setProcList] = useState(DEFAULT_PROCEDIMIENTOS);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "registro_eventos"), (snap) => {
+      setEventos(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    }, () => setLoading(false));
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "procedimientos"), (snap) => {
+      setProcedimientos(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, () => {});
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "scheduler", "registro-config"), (snap) => {
+      const list = snap.exists() && Array.isArray(snap.data().procedimientosList) ? snap.data().procedimientosList : null;
+      setProcList(list && list.length ? list : DEFAULT_PROCEDIMIENTOS);
+    }, () => {});
+    return unsub;
+  }, []);
+
+  const misResidente = RESIDENT_BY_EMAIL[(user?.email || "").toLowerCase()] || null;
+
+  const SUBS = [
+    { key: "tarde", ...EVENTO_TIPOS.tarde },
+    { key: "falta", ...EVENTO_TIPOS.falta },
+    { key: "guardia", ...EVENTO_TIPOS.guardia },
+    { key: "procedimientos", label: "Procedimientos", icon: "🩺", color: "#0F766E", bg: "#F0FDFA", bd: "#99F6E4" },
+  ];
+
+  if (loading) return <Skeleton />;
+
+  return (
+    <div>
+      <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
+        <span style={{ fontSize: 22 }}>📋</span>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Registro</div>
+          <div style={{ fontSize: 10.5, opacity: 0.7 }}>Llegadas tarde, faltas, guardias y procedimientos</div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+        {SUBS.map((s) => (
+          <button key={s.key} onClick={() => setSub(s.key)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 9, border: `1.5px solid ${sub === s.key ? s.color : "#E2E8F0"}`, background: sub === s.key ? s.color : "#fff", color: sub === s.key ? "#fff" : "#64748B", fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>
+            <span>{s.icon}</span>{s.label}
+          </button>
+        ))}
+      </div>
+
+      {sub !== "procedimientos" ? (
+        <EventosSection key={sub} tipo={sub} eventos={eventos} isAdmin={isAdmin} user={user} />
+      ) : (
+        <ProcedimientosSection procedimientos={procedimientos} procList={procList} isAdmin={isAdmin} user={user} misResidente={misResidente} />
+      )}
+    </div>
+  );
+}
+
+function EventosSection({ tipo, eventos, isAdmin, user }) {
+  const meta = EVENTO_TIPOS[tipo];
+  const [residente, setResidente] = useState(ALL[0]);
+  const [fecha, setFecha] = useState(() => isoDate(new Date()));
+  const [nota, setNota] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [confirmId, setConfirmId] = useState(null);
+
+  const lista = useMemo(() => eventos.filter((e) => e.tipo === tipo).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")), [eventos, tipo]);
+  const totales = useMemo(() => {
+    const t = {};
+    lista.forEach((e) => { t[e.residente] = (t[e.residente] || 0) + 1; });
+    return t;
+  }, [lista]);
+
+  const agregar = async () => {
+    if (!residente || !fecha || saving) return;
+    setSaving(true);
+    try {
+      await setDoc(doc(collection(db, "registro_eventos")), {
+        residente, tipo, fecha, nota: nota.trim(),
+        creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
+      });
+      setNota("");
+    } catch (e) { console.error(e); }
+    setSaving(false);
+  };
+
+  const eliminar = async (id) => {
+    try { await deleteDoc(doc(db, "registro_eventos", id)); } catch (e) { console.error(e); }
+    setConfirmId(null);
+  };
+
+  const exportar = () => {
+    downloadCSV(`registro-${tipo}.csv`, ["Residente", "Fecha", "Nota"], lista.map((e) => [e.residente, e.fecha, e.nota || ""]));
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+        {ALL.map((n) => {
+          const c = totales[n] || 0;
+          const lv = COLOR[LEVEL[n]];
+          return (
+            <div key={n} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 9, background: "#fff", border: "1px solid #E2E8F0" }}>
+              <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: lv.solid, color: "#fff" }}>{LEVEL[n]}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#334155" }}>{n}</span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: c > 0 ? meta.color : "#CBD5E1", background: c > 0 ? meta.bg : "#F8FAFC", borderRadius: 999, padding: "1px 8px", minWidth: 18, textAlign: "center" }}>{c}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {isAdmin && (
+        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 12, marginBottom: 14, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
+          <div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>RESIDENTE</div>
+            <select value={residente} onChange={(e) => setResidente(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
+              {ALL.map((n) => <option key={n} value={n}>{n} ({LEVEL[n]})</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>FECHA</div>
+            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>NOTA (OPCIONAL)</div>
+            <input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Detalle…" style={{ width: "100%", fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", boxSizing: "border-box" }} />
+          </div>
+          <button onClick={agregar} disabled={saving} style={{ background: meta.color, color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: saving ? 0.6 : 1 }}>
+            + Agregar {meta.singular}
+          </button>
+        </div>
+      )}
+
+      {isAdmin && lista.length > 0 && (
+        <button onClick={exportar} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
+          ⬇️ Exportar CSV
+        </button>
+      )}
+
+      {lista.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "30px 20px", color: "#94A3B8", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+          {meta.icon} Todavía no hay {meta.label.toLowerCase()} registradas.
+        </div>
+      ) : (
+        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+          {lista.map((e, i) => (
+            <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === lista.length - 1 ? "none" : "1px solid #F1F5F9" }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: meta.color, background: meta.bg, border: `1px solid ${meta.bd}`, borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(e.fecha)}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", minWidth: 60 }}>{e.residente}</span>
+              {e.nota && <span style={{ fontSize: 11.5, color: "#64748B", flex: 1 }}>{e.nota}</span>}
+              {isAdmin && (
+                confirmId === e.id ? (
+                  <span style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => eliminar(e.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
+                    <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+                  </span>
+                ) : (
+                  <button onClick={() => setConfirmId(e.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+                )
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misResidente }) {
+  const [tipo, setTipo] = useState(procList[0] || "");
+  const [fecha, setFecha] = useState(() => isoDate(new Date()));
+  const [nota, setNota] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [editingList, setEditingList] = useState(false);
+  const [nuevoProc, setNuevoProc] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const [confirmId, setConfirmId] = useState(null);
+
+  useEffect(() => { if (!procList.includes(tipo)) setTipo(procList[0] || ""); }, [procList]); // eslint-disable-line
+
+  const enviar = async () => {
+    if (!misResidente || !tipo || !fecha || saving) return;
+    setSaving(true);
+    try {
+      await setDoc(doc(collection(db, "procedimientos")), {
+        residente: misResidente, tipo, fecha, nota: nota.trim(),
+        estado: "pendiente", creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
+        revisadoPor: null, revisadoEn: null,
+      });
+      setNota("");
+    } catch (e) { console.error(e); }
+    setSaving(false);
+  };
+
+  const revisar = async (id, estado) => {
+    try { await setDoc(doc(db, "procedimientos", id), { estado, revisadoPor: user?.email || "", revisadoEn: new Date().toISOString() }, { merge: true }); } catch (e) { console.error(e); }
+  };
+
+  const eliminar = async (id) => {
+    try { await deleteDoc(doc(db, "procedimientos", id)); } catch (e) { console.error(e); }
+    setConfirmId(null);
+  };
+
+  const agregarAlaLista = async () => {
+    const v = nuevoProc.trim();
+    if (!v || procList.includes(v)) { setNuevoProc(""); return; }
+    try { await setDoc(doc(db, "scheduler", "registro-config"), { procedimientosList: [...procList, v] }, { merge: true }); } catch (e) { console.error(e); }
+    setNuevoProc("");
+  };
+
+  const sacarDeLaLista = async (v) => {
+    try { await setDoc(doc(db, "scheduler", "registro-config"), { procedimientosList: procList.filter((p) => p !== v) }, { merge: true }); } catch (e) { console.error(e); }
+  };
+
+  const mios = useMemo(() => procedimientos.filter((p) => p.residente === misResidente).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")), [procedimientos, misResidente]);
+  const pendientes = useMemo(() => procedimientos.filter((p) => p.estado === "pendiente").sort((a, b) => (a.fecha || "").localeCompare(b.fecha || "")), [procedimientos]);
+  const aprobados = useMemo(() => procedimientos.filter((p) => p.estado === "aprobado"), [procedimientos]);
+  const todos = useMemo(() => [...procedimientos].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")), [procedimientos]);
+
+  const totalesAprobados = useMemo(() => {
+    const t = {};
+    aprobados.forEach((p) => { t[p.residente] = (t[p.residente] || 0) + 1; });
+    return t;
+  }, [aprobados]);
+
+  const ESTADO_META = {
+    pendiente: { label: "Pendiente", color: "#B45309", bg: "#FFFBEB" },
+    aprobado: { label: "Aprobado", color: "#15803D", bg: "#F0FDF4" },
+    rechazado: { label: "Rechazado", color: "#B91C1C", bg: "#FEF2F2" },
+  };
+
+  const exportar = () => {
+    downloadCSV("procedimientos.csv", ["Residente", "Procedimiento", "Fecha", "Estado", "Nota"], procedimientos.map((p) => [p.residente, p.tipo, p.fecha, ESTADO_META[p.estado]?.label || p.estado, p.nota || ""]));
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+        {ALL.map((n) => {
+          const c = totalesAprobados[n] || 0;
+          const lv = COLOR[LEVEL[n]];
+          return (
+            <div key={n} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 9, background: "#fff", border: "1px solid #E2E8F0" }}>
+              <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: lv.solid, color: "#fff" }}>{LEVEL[n]}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#334155" }}>{n}</span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: c > 0 ? "#0F766E" : "#CBD5E1", background: c > 0 ? "#F0FDFA" : "#F8FAFC", borderRadius: 999, padding: "1px 8px", minWidth: 18, textAlign: "center" }}>{c}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {misResidente ? (
+        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 12, marginBottom: 14 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#0F766E", marginBottom: 8 }}>Cargar procedimiento propio ({misResidente})</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
+            <div>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>PROCEDIMIENTO</div>
+              <select value={tipo} onChange={(e) => setTipo(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", maxWidth: 240 }}>
+                {procList.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>FECHA</div>
+              <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 140 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>NOTA (OPCIONAL)</div>
+              <input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Detalle…" style={{ width: "100%", fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", boxSizing: "border-box" }} />
+            </div>
+            <button onClick={enviar} disabled={saving || !tipo} style={{ background: "#0F766E", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: saving ? 0.6 : 1 }}>
+              + Enviar para aprobar
+            </button>
+          </div>
+        </div>
+      ) : (
+        !isAdmin && (
+          <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "6px 10px", marginBottom: 14 }}>
+            Tu cuenta de Google todavía no está vinculada a ningún residente — avisale al jefe de residentes para poder cargar tus procedimientos.
+          </div>
+        )
+      )}
+
+      {misResidente && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>Mis procedimientos</div>
+          {mios.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px" }}>Todavía no cargaste ninguno.</div>
+          ) : (
+            <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+              {mios.map((p, i) => {
+                const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
+                return (
+                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === mios.length - 1 ? "none" : "1px solid #F1F5F9" }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#0F766E", background: "#F0FDFA", border: "1px solid #99F6E4", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1 }}>{p.tipo}</span>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isAdmin && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>Pendientes de aprobar {pendientes.length > 0 && `(${pendientes.length})`}</div>
+          {pendientes.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px" }}>No hay procedimientos esperando aprobación.</div>
+          ) : (
+            <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+              {pendientes.map((p, i) => (
+                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === pendientes.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", minWidth: 60 }}>{p.residente}</span>
+                  <span style={{ fontSize: 12.5, color: "#334155", flex: 1 }}>{p.tipo}{p.nota ? ` — ${p.nota}` : ""}</span>
+                  <button onClick={() => revisar(p.id, "aprobado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#16A34A", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>✓ Aprobar</button>
+                  <button onClick={() => revisar(p.id, "rechazado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>✗ Rechazar</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isAdmin && (
+        <>
+          <button onClick={exportar} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
+            ⬇️ Exportar todo a CSV
+          </button>
+
+          <button onClick={() => setShowAll((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
+            <span style={{ display: "inline-block", transform: showAll ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span> Historial completo {todos.length > 0 && `(${todos.length})`}
+          </button>
+          {showAll && (
+            todos.length === 0 ? (
+              <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px", marginBottom: 18 }}>Todavía no hay procedimientos cargados.</div>
+            ) : (
+              <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden", marginBottom: 18 }}>
+                {todos.map((p, i) => {
+                  const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
+                  return (
+                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === todos.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#64748B", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", minWidth: 60 }}>{p.residente}</span>
+                      <span style={{ fontSize: 12.5, color: "#334155", flex: 1 }}>{p.tipo}</span>
+                      <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
+                      {confirmId === p.id ? (
+                        <span style={{ display: "flex", gap: 4 }}>
+                          <button onClick={() => eliminar(p.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
+                          <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+                        </span>
+                      ) : (
+                        <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          )}
+
+          <button onClick={() => setEditingList((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
+            <span style={{ display: "inline-block", transform: editingList ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span> Editar lista de procedimientos
+          </button>
+          {editingList && (
+            <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 12 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                {procList.map((p) => (
+                  <div key={p} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 5px 4px 10px", borderRadius: 8, background: "#F1F5F9", fontSize: 11.5, color: "#334155", fontWeight: 600 }}>
+                    {p}
+                    <button onClick={() => sacarDeLaLista(p)} style={{ background: "none", border: "none", color: "#94A3B8", cursor: "pointer", fontSize: 13, fontFamily: "inherit", lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input value={nuevoProc} onChange={(e) => setNuevoProc(e.target.value)} placeholder="Nuevo procedimiento…" onKeyDown={(e) => e.key === "Enter" && agregarAlaLista()} style={{ flex: 1, fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }} />
+                <button onClick={agregarAlaLista} style={{ background: "#0F766E", color: "#fff", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>+ Agregar</button>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
