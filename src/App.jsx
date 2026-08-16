@@ -86,17 +86,22 @@ const COBERTURA_TIPOS = {
   rotacion: { label: "Rotación", short: "Rot" },
 };
 
+// Clases/presentaciones dadas por cada residente (colección "registro_clases"),
+// contadas por módulo. Aplica a R2, R3 y R4 (todos).
+const MODULOS_CLASE = ["Fisiología", "Shock", "Respiratorio", "Medio Interno", "Neuro intensivo", "Misceláneas"];
+
 // Sub-pestañas de Registro: el orden por defecto se usa si todavía no hay
 // nada guardado; el admin puede arrastrarlas para reordenarlas y ese orden
 // se guarda compartido para todos (mismo doc que el orden de las pestañas
 // principales, campo distinto).
-const DEFAULT_REGISTRO_SUB_ORDER = ["tarde", "falta", "guardia", "procedimientos", "cobertura"];
+const DEFAULT_REGISTRO_SUB_ORDER = ["tarde", "falta", "guardia", "procedimientos", "cobertura", "clases"];
 const REGISTRO_SUB_META = {
   tarde: { ...EVENTO_TIPOS.tarde },
   falta: { ...EVENTO_TIPOS.falta },
   guardia: { ...EVENTO_TIPOS.guardia },
   procedimientos: { label: "Procedimientos", icon: "🩺", color: "#0F766E", bg: "#F0FDFA", bd: "#99F6E4" },
   cobertura: { label: "R2 y R3 que cubrieron sala post guardia o en rotación", icon: "🔁", color: "#1D4ED8", bg: "#EFF6FF", bd: "#BFDBFE" },
+  clases: { label: "Cantidad de clases/presentaciones", icon: "🎓", color: "#7C2D12", bg: "#FFF7ED", bd: "#FED7AA" },
 };
 
 const LEVEL = Object.fromEntries(
@@ -1562,6 +1567,7 @@ function RegistroView({ isAdmin, user }) {
   const [procedimientos, setProcedimientos] = useState([]);
   const [procList, setProcList] = useState(DEFAULT_PROCEDIMIENTOS);
   const [cobertura, setCobertura] = useState([]);
+  const [clases, setClases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dragIdx, setDragIdx] = useState(null);
   const [overIdx, setOverIdx] = useState(null);
@@ -1584,6 +1590,13 @@ function RegistroView({ isAdmin, user }) {
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "cobertura_sala"), (snap) => {
       setCobertura(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, () => {});
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "registro_clases"), (snap) => {
+      setClases(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     }, () => {});
     return unsub;
   }, []);
@@ -1674,6 +1687,8 @@ function RegistroView({ isAdmin, user }) {
         <ProcedimientosSection procedimientos={procedimientos} procList={procList} isAdmin={isAdmin} user={user} misResidente={misResidente} />
       ) : sub === "cobertura" ? (
         <CoberturaSection cobertura={cobertura} isAdmin={isAdmin} user={user} />
+      ) : sub === "clases" ? (
+        <ClasesSection clases={clases} isAdmin={isAdmin} user={user} />
       ) : (
         <EventosSection key={sub} tipo={sub} eventos={eventos} isAdmin={isAdmin} user={user} />
       )}
@@ -1909,6 +1924,148 @@ function CoberturaSection({ cobertura, isAdmin, user }) {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClasesSection({ clases, isAdmin, user }) {
+  const [residente, setResidente] = useState(ALL[0]);
+  const [modulo, setModulo] = useState(MODULOS_CLASE[0]);
+  const [fecha, setFecha] = useState(() => isoDate(new Date()));
+  const [tema, setTema] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [confirmId, setConfirmId] = useState(null);
+
+  const lista = useMemo(() => [...clases].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")), [clases]);
+
+  const matriz = useMemo(() => {
+    const m = {};
+    ALL.forEach((n) => { m[n] = { total: 0 }; MODULOS_CLASE.forEach((mo) => { m[n][mo] = 0; }); });
+    lista.forEach((c) => {
+      if (!m[c.residente]) return;
+      m[c.residente][c.modulo] = (m[c.residente][c.modulo] || 0) + 1;
+      m[c.residente].total += 1;
+    });
+    return m;
+  }, [lista]);
+
+  const agregar = async () => {
+    if (!residente || !modulo || !fecha || saving) return;
+    setSaving(true);
+    try {
+      await setDoc(doc(collection(db, "registro_clases")), {
+        residente, modulo, fecha, tema: tema.trim(),
+        creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
+      });
+      setTema("");
+    } catch (e) { console.error(e); }
+    setSaving(false);
+  };
+
+  const eliminar = async (id) => {
+    try { await deleteDoc(doc(db, "registro_clases", id)); } catch (e) { console.error(e); }
+    setConfirmId(null);
+  };
+
+  const exportar = () => {
+    downloadCSV("clases-presentaciones.csv", ["Residente", "Módulo", "Fecha", "Tema"], lista.map((c) => [c.residente, c.modulo, c.fecha, c.tema || ""]));
+  };
+
+  return (
+    <div>
+      {/* Matriz de totales: residente × módulo */}
+      <div style={{ overflowX: "auto", marginBottom: 14 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", background: "#fff", borderRadius: 14, overflow: "hidden", border: "1px solid #E2E8F0", fontSize: 11.5 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", padding: "8px 10px", background: "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "1px solid #F1F5F9", fontWeight: 700, color: "#334155" }}>Residente</th>
+              {MODULOS_CLASE.map((mo) => (
+                <th key={mo} style={{ padding: "8px 6px", background: "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "1px solid #F1F5F9", fontWeight: 700, color: "#7C2D12", whiteSpace: "nowrap" }}>{mo}</th>
+              ))}
+              <th style={{ padding: "8px 10px", background: "#F8FAFC", borderBottom: "2px solid #E2E8F0", fontWeight: 800, color: "#0F172A" }}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ALL.map((n, i) => {
+              const lv = COLOR[LEVEL[n]];
+              const row = matriz[n];
+              return (
+                <tr key={n}>
+                  <td style={{ padding: "7px 10px", borderBottom: i === ALL.length - 1 ? "none" : "1px solid #F1F5F9", borderRight: "1px solid #F1F5F9", fontWeight: 700, color: "#0F172A", whiteSpace: "nowrap" }}>
+                    <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: lv.solid, color: "#fff", marginRight: 5 }}>{LEVEL[n]}</span>
+                    {n}
+                  </td>
+                  {MODULOS_CLASE.map((mo) => (
+                    <td key={mo} style={{ textAlign: "center", padding: "7px 6px", borderBottom: i === ALL.length - 1 ? "none" : "1px solid #F1F5F9", borderRight: "1px solid #F1F5F9", color: row[mo] > 0 ? "#7C2D12" : "#CBD5E1", fontWeight: row[mo] > 0 ? 700 : 500 }}>{row[mo] || 0}</td>
+                  ))}
+                  <td style={{ textAlign: "center", padding: "7px 10px", borderBottom: i === ALL.length - 1 ? "none" : "1px solid #F1F5F9", fontWeight: 800, color: row.total > 0 ? "#0F172A" : "#CBD5E1" }}>{row.total}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {isAdmin && (
+        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 12, marginBottom: 14, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
+          <div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>RESIDENTE</div>
+            <select value={residente} onChange={(e) => setResidente(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
+              {ALL.map((n) => <option key={n} value={n}>{n} ({LEVEL[n]})</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>MÓDULO</div>
+            <select value={modulo} onChange={(e) => setModulo(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
+              {MODULOS_CLASE.map((mo) => <option key={mo} value={mo}>{mo}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>FECHA</div>
+            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>TEMA (OPCIONAL)</div>
+            <input value={tema} onChange={(e) => setTema(e.target.value)} placeholder="Título de la clase…" style={{ width: "100%", fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", boxSizing: "border-box" }} />
+          </div>
+          <button onClick={agregar} disabled={saving} style={{ background: "#7C2D12", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: saving ? 0.6 : 1 }}>
+            + Agregar clase
+          </button>
+        </div>
+      )}
+
+      {isAdmin && lista.length > 0 && (
+        <button onClick={exportar} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
+          ⬇️ Exportar CSV
+        </button>
+      )}
+
+      {lista.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "30px 20px", color: "#94A3B8", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+          🎓 Todavía no hay clases ni presentaciones registradas.
+        </div>
+      ) : (
+        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+          {lista.map((c, i) => (
+            <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === lista.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#7C2D12", background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(c.fecha)}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", minWidth: 60 }}>{c.residente}</span>
+              <span style={{ fontSize: 10.5, fontWeight: 700, color: "#7C2D12", background: "#FFF7ED", borderRadius: 999, padding: "2px 9px" }}>{c.modulo}</span>
+              {c.tema && <span style={{ fontSize: 11.5, color: "#64748B", flex: 1 }}>{c.tema}</span>}
+              {isAdmin && (
+                confirmId === c.id ? (
+                  <span style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => eliminar(c.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
+                    <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+                  </span>
+                ) : (
+                  <button onClick={() => setConfirmId(c.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+                )
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
