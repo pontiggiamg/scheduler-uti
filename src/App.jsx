@@ -865,6 +865,29 @@ function PasesView({ isAdmin }) {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);
   const [q, setQ] = useState("");
+  // Resumen por IA de cada paciente: se genera solo a demanda (al tocar el
+  // botón), no automático, y queda en memoria mientras la pestaña está
+  // abierta — no se guarda en Firestore.
+  const [aiState, setAiState] = useState({}); // { [bed]: { loading, error, resumen, perlas, fuentes } }
+
+  const generarResumenIA = async (p) => {
+    setAiState((s) => ({ ...s, [p.bed]: { loading: true } }));
+    try {
+      const r = await fetch("/api/resumen-paciente", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ paciente: p }),
+      });
+      const j = await r.json();
+      if (j.ok) {
+        setAiState((s) => ({ ...s, [p.bed]: { ...j.resumen, loading: false } }));
+      } else {
+        setAiState((s) => ({ ...s, [p.bed]: { loading: false, error: j.error || "Error al generar el resumen." } }));
+      }
+    } catch (e) {
+      setAiState((s) => ({ ...s, [p.bed]: { loading: false, error: "No se pudo conectar con el servidor." } }));
+    }
+  };
 
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "scheduler", "pases-latest"), (snap) => {
@@ -993,6 +1016,7 @@ function PasesView({ isAdmin }) {
                           <div style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{p.fields[k]}</div>
                         </div>
                       ))}
+                      <ResumenIAPaciente p={p} state={aiState[p.bed]} onGenerar={() => generarResumenIA(p)} />
                     </div>
                   )}
                 </div>
@@ -1001,6 +1025,80 @@ function PasesView({ isAdmin }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// Resumen de un paciente en particular generado por IA, a demanda (nunca
+// automático). Se arma con toda la información cargada en el pase de ese
+// paciente y devuelve un resumen clínico formal + 5 perlas basadas en MBE
+// revisada por pares, con citas si corresponde.
+function ResumenIAPaciente({ p, state, onGenerar }) {
+  if (!state) {
+    return (
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E2E8F0" }}>
+        <button onClick={(e) => { e.stopPropagation(); onGenerar(); }} style={{ display: "flex", alignItems: "center", gap: 6, background: "#EEF2FF", color: "#3730A3", border: "1px solid #C7D2FE", borderRadius: 8, padding: "7px 13px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+          🤖 Generar resumen de este paciente en IA
+        </button>
+      </div>
+    );
+  }
+
+  if (state.loading) {
+    return (
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E2E8F0", fontSize: 11.5, color: "#6366F1", fontWeight: 600 }}>
+        🤖 Generando resumen clínico y perlas basadas en evidencia… puede tardar unos segundos.
+      </div>
+    );
+  }
+
+  if (state.error) {
+    return (
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E2E8F0" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, background: "#FEF2F2", border: "1px solid #FECACA", color: "#991B1B", padding: "6px 12px", borderRadius: 9, fontSize: 11.5, fontWeight: 500, marginBottom: 8 }}>
+          ⛔ {state.error}
+        </div>
+        <button onClick={(e) => { e.stopPropagation(); onGenerar(); }} style={{ background: "#EEF2FF", color: "#3730A3", border: "1px solid #C7D2FE", borderRadius: 8, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+          Reintentar
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E2E8F0" }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+        <div style={{ fontSize: 10, fontWeight: 800, color: "#3730A3", letterSpacing: 0.4, textTransform: "uppercase" }}>🤖 Resumen clínico generado por IA</div>
+        <button onClick={onGenerar} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 10.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>↻ Regenerar</button>
+      </div>
+
+      {state.resumen && <div style={{ fontSize: 11.5, color: "#1E1B4B", lineHeight: 1.6, whiteSpace: "pre-wrap", marginBottom: 12 }}>{state.resumen}</div>}
+
+      {state.perlas?.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 9.5, fontWeight: 800, color: "#94A3B8", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 5 }}>Perlas clínicas · MBE</div>
+          <ol style={{ margin: 0, paddingLeft: 18 }}>
+            {state.perlas.map((perla, i) => (
+              <li key={i} style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.55, marginBottom: 6 }}>{perla}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {state.fuentes?.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 9.5, fontWeight: 800, color: "#94A3B8", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 5 }}>Fuentes citadas</div>
+          {state.fuentes.map((f, i) => (
+            <div key={i} style={{ fontSize: 10.5, color: "#64748B", lineHeight: 1.5, marginBottom: 2 }}>
+              {f.referencia}{f.url ? <> — <a href={f.url} target="_blank" rel="noreferrer" style={{ color: "#4F46E5" }}>{f.url}</a></> : ""}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ fontSize: 10, color: "#94A3B8", fontStyle: "italic", lineHeight: 1.4 }}>
+        Generado por IA como apoyo — no reemplaza el juicio clínico. Verificá siempre las citas antes de usarlas.
+      </div>
     </div>
   );
 }

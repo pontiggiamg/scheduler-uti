@@ -1,0 +1,22 @@
+﻿name: Sincronizar pases automaticamente
+
+# Vercel Hobby (el plan gratuito) solo permite cron jobs que corran una vez
+# por dia, asi que la sincronizacion automatica cada 2 horas la hacemos aca,
+# con un cron job gratuito de GitHub Actions que llama al endpoint publico
+# /api/sync-pases del sitio ya desplegado.
+#
+# Buenos Aires esta siempre 3 horas detras de UTC (no tiene horario de
+# verano), asi que las horas PARES locales (00, 02, 04, ..., 22) corresponden
+# a las horas IMPARES en UTC (01, 03, 05, ..., 23). Por eso el cron de abajo
+# usa "1-23/2" en vez de "0-22/2".
+on:
+  schedule:
+    - cron: "0 1-23/2 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar al endpoint de sincronizacion de pases
+        run: curl -sf "https://scheduler-uti.vercel.app/api/sync-pases" || exit 1
