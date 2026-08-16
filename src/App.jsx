@@ -1678,6 +1678,27 @@ function agruparPorTipo(procs, procList) {
   }));
 }
 
+// Solo interesa el mes y el año en que se hizo cada procedimiento (no el día
+// exacto): agrupa una lista de procedimientos de un mismo tipo por mes/año,
+// más reciente primero.
+function agruparPorMes(items) {
+  const map = {};
+  items.forEach((p) => {
+    const clave = p.fecha ? p.fecha.slice(0, 7) : "sin-fecha";
+    (map[clave] = map[clave] || []).push(p);
+  });
+  return Object.keys(map).sort((a, b) => b.localeCompare(a)).map((clave) => ({
+    clave,
+    label: clave === "sin-fecha" ? "Sin fecha" : mesLargo(clave),
+    items: map[clave],
+  }));
+}
+
+function mesLargo(clave) {
+  const [y, m] = clave.split("-").map(Number);
+  return `${MONTHS[m - 1] || ""} ${y}`;
+}
+
 // Abre una ventana nueva con el registro de procedimientos de un residente,
 // ya agrupado por tipo, y dispara el diálogo de impresión (el residente elige
 // "Guardar como PDF"). Mismo patrón que la impresión del calendario semanal:
@@ -1687,15 +1708,22 @@ function descargarPDFProcedimientos(residente, grupos) {
   const total = grupos.reduce((n, g) => n + g.items.length, 0);
   const win = window.open("", "_blank");
   if (!win) return;
-  const filas = grupos.map((g) => `
-    <h3>${g.tipo} <span class="cnt">(${g.items.length})</span></h3>
-    <table>
-      <thead><tr><th>Fecha</th><th>Detalle</th></tr></thead>
-      <tbody>
-        ${g.items.map((p) => `<tr><td class="fecha">${fechaLarga(p.fecha)}</td><td>${p.nota ? p.nota.replace(/</g, "&lt;") : "—"}</td></tr>`).join("")}
-      </tbody>
-    </table>
-  `).join("");
+  const filas = grupos.map((g) => {
+    const meses = agruparPorMes(g.items);
+    return `
+      <h3>${g.tipo} <span class="cnt">(${g.items.length})</span></h3>
+      <table>
+        <thead><tr><th>Mes</th><th>Cantidad</th><th>Región (detalle opcional)</th></tr></thead>
+        <tbody>
+          ${meses.map((m) => {
+            const notas = m.items.map((p) => p.nota).filter(Boolean);
+            const detalle = notas.length ? notas.join(", ").replace(/</g, "&lt;") : "—";
+            return `<tr><td class="mes">${m.label}</td><td class="cant">${m.items.length}</td><td class="det">${detalle}</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    `;
+  }).join("");
   win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8" />
     <title>Registro de procedimientos — ${residente}</title>
     <style>
@@ -1708,7 +1736,9 @@ function descargarPDFProcedimientos(residente, grupos) {
       table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
       th { text-align: left; font-size: 10.5px; color: #94A3B8; font-weight: 700; padding: 4px 6px; }
       td { font-size: 12px; padding: 4px 6px; border-top: 1px solid #F1F5F9; }
-      td.fecha { white-space: nowrap; color: #334155; font-weight: 600; width: 190px; }
+      td.mes { white-space: nowrap; color: #334155; font-weight: 600; width: 150px; text-transform: capitalize; }
+      td.cant { width: 70px; color: #0F766E; font-weight: 700; }
+      td.det { color: #64748B; }
       @media print { body { padding: 14mm; } }
     </style>
     </head><body>
@@ -2233,8 +2263,47 @@ function ClasesSection({ clases, isAdmin, user }) {
   );
 }
 
-function TipoGroup({ tipo, items, ESTADO_META, confirmId, setConfirmId, eliminar, lastGroup, mios }) {
+function MonthRow({ label, items, ESTADO_META, confirmId, setConfirmId, eliminar, lastRow }) {
   const [open, setOpen] = useState(false);
+  const hayRegion = items.some((p) => p.nota);
+  return (
+    <div style={{ borderBottom: lastRow ? "none" : "1px solid #F1F5F9" }}>
+      <button onClick={() => setOpen((v) => !v)} disabled={!hayRegion && !eliminar} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "#fff", border: "none", cursor: hayRegion || eliminar ? "pointer" : "default", fontFamily: "inherit", padding: "8px 14px 8px 32px", textAlign: "left" }}>
+        <span style={{ display: "inline-block", width: 10, transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 9, color: hayRegion || eliminar ? "#CBD5E1" : "transparent" }}>▶</span>
+        <span style={{ fontSize: 12.5, color: "#334155", flex: 1, textTransform: "capitalize" }}>{label}</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#0F766E", background: "#F0FDFA", border: "1px solid #99F6E4", borderRadius: 999, padding: "1px 9px", minWidth: 20, textAlign: "center" }}>{items.length}</span>
+      </button>
+      {open && (
+        <div style={{ padding: "0 14px 8px 52px", display: "flex", flexDirection: "column", gap: 4 }}>
+          {items.map((p) => {
+            const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
+            return (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+                <span style={{ color: "#94A3B8", minWidth: 34 }}>{fechaCorta(p.fecha)}</span>
+                <span style={{ color: p.nota ? "#475569" : "#CBD5E1", fontStyle: p.nota ? "normal" : "italic", flex: 1 }}>{p.nota || "sin región"}</span>
+                <span style={{ fontSize: 9.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "1px 7px" }}>{em.label}</span>
+                {eliminar && (
+                  confirmId === p.id ? (
+                    <span style={{ display: "flex", gap: 3 }}>
+                      <button onClick={() => eliminar(p.id)} style={{ fontSize: 9.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 5, padding: "2px 7px", cursor: "pointer", fontFamily: "inherit" }}>Sí</button>
+                      <button onClick={() => setConfirmId(null)} style={{ fontSize: 9.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 5, padding: "2px 7px", cursor: "pointer", fontFamily: "inherit" }}>×</button>
+                    </span>
+                  ) : (
+                    <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}>🗑️</button>
+                  )
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TipoGroup({ tipo, items, ESTADO_META, confirmId, setConfirmId, eliminar, lastGroup }) {
+  const [open, setOpen] = useState(false);
+  const meses = useMemo(() => agruparPorMes(items), [items]);
   return (
     <div style={{ borderBottom: lastGroup ? "none" : "1px solid #F1F5F9" }}>
       <button onClick={() => setOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "#F8FAFC", border: "none", cursor: "pointer", fontFamily: "inherit", padding: "7px 14px", textAlign: "left" }}>
@@ -2242,26 +2311,18 @@ function TipoGroup({ tipo, items, ESTADO_META, confirmId, setConfirmId, eliminar
         <span style={{ fontSize: 11.5, fontWeight: 700, color: "#0F766E", flex: 1 }}>{tipo}</span>
         <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8" }}>({items.length})</span>
       </button>
-      {open && items.map((p, i) => {
-        const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
-        return (
-          <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === items.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: mios ? "#0F766E" : "#64748B", background: mios ? "#F0FDFA" : "#fff", border: `1px solid ${mios ? "#99F6E4" : "#E2E8F0"}`, borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
-            <span style={{ fontSize: 12.5, fontWeight: mios ? 600 : 400, color: mios ? "#0F172A" : "#334155", flex: 1 }}>{p.nota || <span style={{ color: "#CBD5E1", fontStyle: "italic", fontWeight: 400 }}>sin detalle</span>}</span>
-            <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
-            {eliminar && (
-              confirmId === p.id ? (
-                <span style={{ display: "flex", gap: 4 }}>
-                  <button onClick={() => eliminar(p.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
-                  <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
-                </span>
-              ) : (
-                <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
-              )
-            )}
-          </div>
-        );
-      })}
+      {open && meses.map((m, i) => (
+        <MonthRow
+          key={m.clave}
+          label={m.label}
+          items={m.items}
+          ESTADO_META={ESTADO_META}
+          confirmId={confirmId}
+          setConfirmId={setConfirmId}
+          eliminar={eliminar}
+          lastRow={i === meses.length - 1}
+        />
+      ))}
     </div>
   );
 }
@@ -2449,7 +2510,6 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
                   items={g.items}
                   ESTADO_META={ESTADO_META}
                   lastGroup={gi === misGrupos.length - 1}
-                  mios
                 />
               ))}
             </div>
@@ -2457,53 +2517,53 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
         </div>
       )}
 
-      {isAdmin && (
+      {pendientes.length > 0 && (
         <div style={{ marginBottom: 18 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>Pendientes de aprobar {pendientes.length > 0 && `(${pendientes.length})`}</div>
-          {pendientes.length === 0 ? (
-            <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px" }}>No hay procedimientos esperando aprobación.</div>
-          ) : (
-            <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
-              {pendientes.map((p, i) => (
-                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === pendientes.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
-                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", minWidth: 60 }}>{p.residente}</span>
-                  <span style={{ fontSize: 12.5, color: "#334155", flex: 1 }}>{p.tipo}{p.nota ? ` — ${p.nota}` : ""}</span>
-                  <button onClick={() => revisar(p.id, "aprobado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#16A34A", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>✓ Aprobar</button>
-                  <button onClick={() => revisar(p.id, "rechazado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>✗ Rechazar</button>
-                </div>
-              ))}
-            </div>
-          )}
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>Pendientes de aprobar ({pendientes.length})</div>
+          <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+            {pendientes.map((p, i) => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === pendientes.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", minWidth: 60 }}>{p.residente}</span>
+                <span style={{ fontSize: 12.5, color: "#334155", flex: 1 }}>{p.tipo}{p.nota ? ` — ${p.nota}` : ""}</span>
+                {isAdmin && (
+                  <>
+                    <button onClick={() => revisar(p.id, "aprobado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#16A34A", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>✓ Aprobar</button>
+                    <button onClick={() => revisar(p.id, "rechazado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>✗ Rechazar</button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <button onClick={exportar} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
+        ⬇️ Exportar todo a CSV
+      </button>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 8, marginTop: 4 }}>Historial por residente</div>
+      {residentesConDatos.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px", marginBottom: 18 }}>Todavía no hay procedimientos cargados.</div>
+      ) : (
+        <div style={{ marginBottom: 18 }}>
+          {residentesConDatos.map((n) => (
+            <ResidentProcAccordion
+              key={n}
+              residente={n}
+              procs={porResidente[n] || []}
+              procList={procList}
+              ESTADO_META={ESTADO_META}
+              confirmId={confirmId}
+              setConfirmId={setConfirmId}
+              eliminar={isAdmin ? eliminar : null}
+            />
+          ))}
         </div>
       )}
 
       {isAdmin && (
         <>
-          <button onClick={exportar} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
-            ⬇️ Exportar todo a CSV
-          </button>
-
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 8, marginTop: 4 }}>Historial por residente</div>
-          {residentesConDatos.length === 0 ? (
-            <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px", marginBottom: 18 }}>Todavía no hay procedimientos cargados.</div>
-          ) : (
-            <div style={{ marginBottom: 18 }}>
-              {residentesConDatos.map((n) => (
-                <ResidentProcAccordion
-                  key={n}
-                  residente={n}
-                  procs={porResidente[n] || []}
-                  procList={procList}
-                  ESTADO_META={ESTADO_META}
-                  confirmId={confirmId}
-                  setConfirmId={setConfirmId}
-                  eliminar={eliminar}
-                />
-              ))}
-            </div>
-          )}
-
           <button onClick={() => setEditingList((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
             <span style={{ display: "inline-block", transform: editingList ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span> Editar lista de procedimientos
           </button>
