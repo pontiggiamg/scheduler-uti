@@ -2233,6 +2233,39 @@ function ClasesSection({ clases, isAdmin, user }) {
   );
 }
 
+function TipoGroup({ tipo, items, ESTADO_META, confirmId, setConfirmId, eliminar, lastGroup, mios }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ borderBottom: lastGroup ? "none" : "1px solid #F1F5F9" }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "#F8FAFC", border: "none", cursor: "pointer", fontFamily: "inherit", padding: "7px 14px", textAlign: "left" }}>
+        <span style={{ display: "inline-block", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 9.5, color: "#94A3B8" }}>▶</span>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: "#0F766E", flex: 1 }}>{tipo}</span>
+        <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8" }}>({items.length})</span>
+      </button>
+      {open && items.map((p, i) => {
+        const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
+        return (
+          <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === items.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: mios ? "#0F766E" : "#64748B", background: mios ? "#F0FDFA" : "#fff", border: `1px solid ${mios ? "#99F6E4" : "#E2E8F0"}`, borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
+            <span style={{ fontSize: 12.5, fontWeight: mios ? 600 : 400, color: mios ? "#0F172A" : "#334155", flex: 1 }}>{p.nota || <span style={{ color: "#CBD5E1", fontStyle: "italic", fontWeight: 400 }}>sin detalle</span>}</span>
+            <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
+            {eliminar && (
+              confirmId === p.id ? (
+                <span style={{ display: "flex", gap: 4 }}>
+                  <button onClick={() => eliminar(p.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
+                  <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+                </span>
+              ) : (
+                <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+              )
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ResidentProcAccordion({ residente, procs, procList, ESTADO_META, confirmId, setConfirmId, eliminar, defaultOpen }) {
   const [open, setOpen] = useState(!!defaultOpen);
   const grupos = useMemo(() => agruparPorTipo(procs, procList), [procs, procList]);
@@ -2257,30 +2290,16 @@ function ResidentProcAccordion({ residente, procs, procList, ESTADO_META, confir
             <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "10px 14px" }}>Sin procedimientos cargados.</div>
           ) : (
             grupos.map((g, gi) => (
-              <div key={g.tipo} style={{ borderBottom: gi === grupos.length - 1 ? "none" : "1px solid #F1F5F9" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", background: "#F8FAFC" }}>
-                  <span style={{ fontSize: 11.5, fontWeight: 700, color: "#0F766E" }}>{g.tipo}</span>
-                  <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8" }}>({g.items.length})</span>
-                </div>
-                {g.items.map((p, i) => {
-                  const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
-                  return (
-                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === g.items.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#64748B", background: "#fff", border: "1px solid #E2E8F0", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
-                      <span style={{ fontSize: 12.5, color: "#334155", flex: 1 }}>{p.nota || <span style={{ color: "#CBD5E1", fontStyle: "italic" }}>sin detalle</span>}</span>
-                      <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
-                      {confirmId === p.id ? (
-                        <span style={{ display: "flex", gap: 4 }}>
-                          <button onClick={() => eliminar(p.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
-                          <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
-                        </span>
-                      ) : (
-                        <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+              <TipoGroup
+                key={g.tipo}
+                tipo={g.tipo}
+                items={g.items}
+                ESTADO_META={ESTADO_META}
+                confirmId={confirmId}
+                setConfirmId={setConfirmId}
+                eliminar={eliminar}
+                lastGroup={gi === grupos.length - 1}
+              />
             ))
           )}
         </div>
@@ -2424,22 +2443,14 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
           ) : (
             <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
               {misGrupos.map((g, gi) => (
-                <div key={g.tipo} style={{ borderBottom: gi === misGrupos.length - 1 ? "none" : "1px solid #F1F5F9" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", background: "#F8FAFC" }}>
-                    <span style={{ fontSize: 11.5, fontWeight: 700, color: "#0F766E" }}>{g.tipo}</span>
-                    <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8" }}>({g.items.length})</span>
-                  </div>
-                  {g.items.map((p, i) => {
-                    const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
-                    return (
-                      <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === g.items.length - 1 ? "none" : "1px solid #F1F5F9" }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: "#0F766E", background: "#F0FDFA", border: "1px solid #99F6E4", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
-                        <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1 }}>{p.nota || <span style={{ color: "#CBD5E1", fontStyle: "italic", fontWeight: 400 }}>sin detalle</span>}</span>
-                        <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
-                      </div>
-                    );
-                  })}
-                </div>
+                <TipoGroup
+                  key={g.tipo}
+                  tipo={g.tipo}
+                  items={g.items}
+                  ESTADO_META={ESTADO_META}
+                  lastGroup={gi === misGrupos.length - 1}
+                  mios
+                />
               ))}
             </div>
           )}
