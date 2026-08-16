@@ -77,6 +77,28 @@ const DEFAULT_PROCEDIMIENTOS = [
   "Ecografía point-of-care (FAST/POCUS)",
 ];
 
+// Cobertura de sala por R2/R3 (colección "cobertura_sala"): quién cubrió,
+// qué día, y si fue en calidad de "post guardia" o "rotación". Solo aplica a
+// R2 y R3 (los R4 no cubren sala de esta forma).
+const COBERTURA_RESIDENTS = [...RESIDENTS.R2, ...RESIDENTS.R3];
+const COBERTURA_TIPOS = {
+  post_guardia: { label: "Post guardia", short: "PG" },
+  rotacion: { label: "Rotación", short: "Rot" },
+};
+
+// Sub-pestañas de Registro: el orden por defecto se usa si todavía no hay
+// nada guardado; el admin puede arrastrarlas para reordenarlas y ese orden
+// se guarda compartido para todos (mismo doc que el orden de las pestañas
+// principales, campo distinto).
+const DEFAULT_REGISTRO_SUB_ORDER = ["tarde", "falta", "guardia", "procedimientos", "cobertura"];
+const REGISTRO_SUB_META = {
+  tarde: { ...EVENTO_TIPOS.tarde },
+  falta: { ...EVENTO_TIPOS.falta },
+  guardia: { ...EVENTO_TIPOS.guardia },
+  procedimientos: { label: "Procedimientos", icon: "🩺", color: "#0F766E", bg: "#F0FDFA", bd: "#99F6E4" },
+  cobertura: { label: "R2 y R3 que cubrieron sala post guardia o en rotación", icon: "🔁", color: "#1D4ED8", bg: "#EFF6FF", bd: "#BFDBFE" },
+};
+
 const LEVEL = Object.fromEntries(
   Object.entries(RESIDENTS).flatMap(([lv, names]) => names.map((n) => [n, lv]))
 );
@@ -1534,11 +1556,15 @@ function downloadCSV(filename, headers, rows) {
 }
 
 function RegistroView({ isAdmin, user }) {
+  const [subOrder, setSubOrder] = useState(DEFAULT_REGISTRO_SUB_ORDER);
   const [sub, setSub] = useState("tarde");
   const [eventos, setEventos] = useState([]);
   const [procedimientos, setProcedimientos] = useState([]);
   const [procList, setProcList] = useState(DEFAULT_PROCEDIMIENTOS);
+  const [cobertura, setCobertura] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "registro_eventos"), (snap) => {
@@ -1556,6 +1582,13 @@ function RegistroView({ isAdmin, user }) {
   }, []);
 
   useEffect(() => {
+    const unsub = onSnapshot(collection(db, "cobertura_sala"), (snap) => {
+      setCobertura(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, () => {});
+    return unsub;
+  }, []);
+
+  useEffect(() => {
     const unsub = onSnapshot(doc(db, "scheduler", "registro-config"), (snap) => {
       const list = snap.exists() && Array.isArray(snap.data().procedimientosList) ? snap.data().procedimientosList : null;
       setProcList(list && list.length ? list : DEFAULT_PROCEDIMIENTOS);
@@ -1563,14 +1596,42 @@ function RegistroView({ isAdmin, user }) {
     return unsub;
   }, []);
 
-  const misResidente = RESIDENT_BY_EMAIL[(user?.email || "").toLowerCase()] || null;
+  useEffect(() => {
+    const ref = doc(db, "scheduler", "ui-config");
+    const unsub = onSnapshot(ref, (snap) => {
+      const stored = snap.exists() ? snap.data().registroSubOrder : null;
+      if (Array.isArray(stored) && stored.length) {
+        const known = stored.filter((k) => DEFAULT_REGISTRO_SUB_ORDER.includes(k));
+        const missing = DEFAULT_REGISTRO_SUB_ORDER.filter((k) => !known.includes(k));
+        setSubOrder([...known, ...missing]);
+      } else {
+        setSubOrder(DEFAULT_REGISTRO_SUB_ORDER);
+      }
+    }, () => {});
+    return unsub;
+  }, []);
 
-  const SUBS = [
-    { key: "tarde", ...EVENTO_TIPOS.tarde },
-    { key: "falta", ...EVENTO_TIPOS.falta },
-    { key: "guardia", ...EVENTO_TIPOS.guardia },
-    { key: "procedimientos", label: "Procedimientos", icon: "🩺", color: "#0F766E", bg: "#F0FDFA", bd: "#99F6E4" },
-  ];
+  const persistSubOrder = (next) => {
+    setSubOrder(next);
+    setDoc(doc(db, "scheduler", "ui-config"), { registroSubOrder: next }, { merge: true }).catch((e) => console.error("ui-config registroSubOrder", e));
+  };
+
+  const handleSubDragStart = (i) => (e) => { setDragIdx(i); e.dataTransfer.effectAllowed = "move"; };
+  const handleSubDragEnter = (i) => (e) => { e.preventDefault(); if (dragIdx !== null) setOverIdx(i); };
+  const handleSubDragOver = (e) => { e.preventDefault(); };
+  const handleSubDragEnd = () => { setDragIdx(null); setOverIdx(null); };
+  const handleSubDrop = (i) => (e) => {
+    e.preventDefault();
+    const from = dragIdx;
+    setDragIdx(null); setOverIdx(null);
+    if (from === null || from === i) return;
+    const next = [...subOrder];
+    const [moved] = next.splice(from, 1);
+    next.splice(i, 0, moved);
+    persistSubOrder(next);
+  };
+
+  const misResidente = RESIDENT_BY_EMAIL[(user?.email || "").toLowerCase()] || null;
 
   if (loading) return <Skeleton />;
 
@@ -1580,22 +1641,41 @@ function RegistroView({ isAdmin, user }) {
         <span style={{ fontSize: 22 }}>📋</span>
         <div>
           <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Registro</div>
-          <div style={{ fontSize: 10.5, opacity: 0.7 }}>Llegadas tarde, faltas, guardias y procedimientos</div>
+          <div style={{ fontSize: 10.5, opacity: 0.7 }}>Llegadas tarde, faltas, guardias, procedimientos y cobertura de sala</div>
         </div>
       </div>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-        {SUBS.map((s) => (
-          <button key={s.key} onClick={() => setSub(s.key)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 9, border: `1.5px solid ${sub === s.key ? s.color : "#E2E8F0"}`, background: sub === s.key ? s.color : "#fff", color: sub === s.key ? "#fff" : "#64748B", fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>
-            <span>{s.icon}</span>{s.label}
-          </button>
-        ))}
+      {isAdmin && <div className="no-print" style={{ fontSize: 10, color: "#94A3B8", marginBottom: 4, paddingLeft: 2 }}>Arrastrá una sub-pestaña para reordenarlas</div>}
+      <div className="no-print" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+        {subOrder.map((key, i) => {
+          const s = REGISTRO_SUB_META[key];
+          if (!s) return null;
+          const dropTarget = isAdmin && overIdx === i && dragIdx !== null && dragIdx !== i;
+          return (
+            <button
+              key={key}
+              onClick={() => setSub(key)}
+              draggable={isAdmin}
+              onDragStart={handleSubDragStart(i)}
+              onDragEnter={handleSubDragEnter(i)}
+              onDragOver={handleSubDragOver}
+              onDrop={handleSubDrop(i)}
+              onDragEnd={handleSubDragEnd}
+              title={isAdmin ? "Arrastrá para reordenar" : undefined}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 9, border: `1.5px solid ${sub === key ? s.color : "#E2E8F0"}`, background: sub === key ? s.color : "#fff", color: sub === key ? "#fff" : "#64748B", fontWeight: 700, fontSize: 12.5, cursor: isAdmin ? "grab" : "pointer", fontFamily: "inherit", opacity: dragIdx === i ? 0.4 : 1, boxShadow: dropTarget ? "inset 3px 0 0 #3B82F6" : "none" }}
+            >
+              <span>{s.icon}</span>{s.label}
+            </button>
+          );
+        })}
       </div>
 
-      {sub !== "procedimientos" ? (
-        <EventosSection key={sub} tipo={sub} eventos={eventos} isAdmin={isAdmin} user={user} />
-      ) : (
+      {sub === "procedimientos" ? (
         <ProcedimientosSection procedimientos={procedimientos} procList={procList} isAdmin={isAdmin} user={user} misResidente={misResidente} />
+      ) : sub === "cobertura" ? (
+        <CoberturaSection cobertura={cobertura} isAdmin={isAdmin} user={user} />
+      ) : (
+        <EventosSection key={sub} tipo={sub} eventos={eventos} isAdmin={isAdmin} user={user} />
       )}
     </div>
   );
@@ -1705,6 +1785,130 @@ function EventosSection({ tipo, eventos, isAdmin, user }) {
               )}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CoberturaSection({ cobertura, isAdmin, user }) {
+  const [residente, setResidente] = useState(COBERTURA_RESIDENTS[0]);
+  const [fecha, setFecha] = useState(() => isoDate(new Date()));
+  const [modalidad, setModalidad] = useState("post_guardia");
+  const [nota, setNota] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [confirmId, setConfirmId] = useState(null);
+
+  const lista = useMemo(() => [...cobertura].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")), [cobertura]);
+  const totales = useMemo(() => {
+    const t = {};
+    lista.forEach((e) => { t[e.residente] = (t[e.residente] || 0) + 1; });
+    return t;
+  }, [lista]);
+
+  const agregar = async () => {
+    if (!residente || !fecha || saving) return;
+    setSaving(true);
+    try {
+      await setDoc(doc(collection(db, "cobertura_sala")), {
+        residente, fecha, modalidad, nota: nota.trim(),
+        creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
+      });
+      setNota("");
+    } catch (e) { console.error(e); }
+    setSaving(false);
+  };
+
+  const eliminar = async (id) => {
+    try { await deleteDoc(doc(db, "cobertura_sala", id)); } catch (e) { console.error(e); }
+    setConfirmId(null);
+  };
+
+  const exportar = () => {
+    downloadCSV("cobertura-sala.csv", ["Residente", "Fecha", "Modalidad", "Nota"], lista.map((e) => [e.residente, e.fecha, COBERTURA_TIPOS[e.modalidad]?.label || e.modalidad, e.nota || ""]));
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+        {COBERTURA_RESIDENTS.map((n) => {
+          const c = totales[n] || 0;
+          const lv = COLOR[LEVEL[n]];
+          return (
+            <div key={n} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 9, background: "#fff", border: "1px solid #E2E8F0" }}>
+              <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: lv.solid, color: "#fff" }}>{LEVEL[n]}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#334155" }}>{n}</span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: c > 0 ? "#1D4ED8" : "#CBD5E1", background: c > 0 ? "#EFF6FF" : "#F8FAFC", borderRadius: 999, padding: "1px 8px", minWidth: 18, textAlign: "center" }}>{c}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {isAdmin && (
+        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 12, marginBottom: 14, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
+          <div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>RESIDENTE (R2/R3)</div>
+            <select value={residente} onChange={(e) => setResidente(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
+              {COBERTURA_RESIDENTS.map((n) => <option key={n} value={n}>{n} ({LEVEL[n]})</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>FECHA</div>
+            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }} />
+          </div>
+          <div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>MODALIDAD</div>
+            <select value={modalidad} onChange={(e) => setModalidad(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
+              {Object.entries(COBERTURA_TIPOS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+            </select>
+          </div>
+          <div style={{ flex: 1, minWidth: 140 }}>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>NOTA (OPCIONAL)</div>
+            <input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Detalle…" style={{ width: "100%", fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", boxSizing: "border-box" }} />
+          </div>
+          <button onClick={agregar} disabled={saving} style={{ background: "#1D4ED8", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: saving ? 0.6 : 1 }}>
+            + Agregar cobertura
+          </button>
+        </div>
+      )}
+
+      {isAdmin && lista.length > 0 && (
+        <button onClick={exportar} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#64748B", padding: "2px 2px", marginBottom: 8 }}>
+          ⬇️ Exportar CSV
+        </button>
+      )}
+
+      {lista.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "30px 20px", color: "#94A3B8", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+          🔁 Todavía no hay coberturas de sala registradas.
+        </div>
+      ) : (
+        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+          {lista.map((e, i) => {
+            const mod = COBERTURA_TIPOS[e.modalidad] || COBERTURA_TIPOS.post_guardia;
+            const lv = COLOR[LEVEL[e.residente]] || COLOR.R2;
+            return (
+              <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === lista.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#1D4ED8", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(e.fecha)}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 999, background: lv?.bg, border: `1px solid ${lv?.bd}`, color: lv?.tx, fontSize: 12, fontWeight: 700 }}>
+                  {e.residente}
+                  <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: lv?.solid, color: "#fff" }}>{LEVEL[e.residente]}</span>
+                </span>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: e.modalidad === "rotacion" ? "#0369A1" : "#9F1239", background: e.modalidad === "rotacion" ? "#F0F9FF" : "#FFF1F2", borderRadius: 999, padding: "2px 9px" }}>{mod.label}</span>
+                {e.nota && <span style={{ fontSize: 11.5, color: "#64748B", flex: 1 }}>{e.nota}</span>}
+                {isAdmin && (
+                  confirmId === e.id ? (
+                    <span style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => eliminar(e.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
+                      <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+                    </span>
+                  ) : (
+                    <button onClick={() => setConfirmId(e.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+                  )
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
