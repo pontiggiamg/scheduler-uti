@@ -1658,6 +1658,69 @@ function downloadCSV(filename, headers, rows) {
   URL.revokeObjectURL(url);
 }
 
+function fechaLarga(fecha) {
+  if (!fecha) return "—";
+  const [y, m, d] = fecha.split("-").map(Number);
+  return `${String(d).padStart(2, "0")} de ${(MONTHS[m - 1] || "").toLowerCase()} de ${y}`;
+}
+
+// Agrupa procedimientos por tipo (solo los tipos que el residente efectivamente
+// tiene cargados quedan visibles), en el orden de la lista maestra `procList`,
+// y dentro de cada tipo ordena las entradas por fecha (más reciente primero).
+function agruparPorTipo(procs, procList) {
+  const map = {};
+  procs.forEach((p) => { (map[p.tipo] = map[p.tipo] || []).push(p); });
+  const enLista = (procList || []).filter((t) => map[t]);
+  const extras = Object.keys(map).filter((t) => !enLista.includes(t)).sort((a, b) => a.localeCompare(b));
+  return [...enLista, ...extras].map((tipo) => ({
+    tipo,
+    items: [...map[tipo]].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")),
+  }));
+}
+
+// Abre una ventana nueva con el registro de procedimientos de un residente,
+// ya agrupado por tipo, y dispara el diálogo de impresión (el residente elige
+// "Guardar como PDF"). Mismo patrón que la impresión del calendario semanal:
+// título dinámico seteado antes de imprimir para que el nombre de archivo
+// sugerido ya venga armado.
+function descargarPDFProcedimientos(residente, grupos) {
+  const total = grupos.reduce((n, g) => n + g.items.length, 0);
+  const win = window.open("", "_blank");
+  if (!win) return;
+  const filas = grupos.map((g) => `
+    <h3>${g.tipo} <span class="cnt">(${g.items.length})</span></h3>
+    <table>
+      <thead><tr><th>Fecha</th><th>Detalle</th></tr></thead>
+      <tbody>
+        ${g.items.map((p) => `<tr><td class="fecha">${fechaLarga(p.fecha)}</td><td>${p.nota ? p.nota.replace(/</g, "&lt;") : "—"}</td></tr>`).join("")}
+      </tbody>
+    </table>
+  `).join("");
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8" />
+    <title>Registro de procedimientos — ${residente}</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { font-family: 'Inter', system-ui, sans-serif; color: #0F172A; padding: 28px 34px; }
+      h1 { font-size: 19px; margin: 0 0 2px; }
+      .sub { font-size: 12px; color: #64748B; margin: 0 0 22px; }
+      h3 { font-size: 13px; color: #0F766E; border-bottom: 1.5px solid #99F6E4; padding-bottom: 4px; margin: 20px 0 6px; }
+      .cnt { color: #94A3B8; font-weight: 500; }
+      table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+      th { text-align: left; font-size: 10.5px; color: #94A3B8; font-weight: 700; padding: 4px 6px; }
+      td { font-size: 12px; padding: 4px 6px; border-top: 1px solid #F1F5F9; }
+      td.fecha { white-space: nowrap; color: #334155; font-weight: 600; width: 190px; }
+      @media print { body { padding: 14mm; } }
+    </style>
+    </head><body>
+    <h1>Registro de procedimientos — ${residente}</h1>
+    <p class="sub">Scheduler UTI · Hospital Británico · Total: ${total} procedimiento${total === 1 ? "" : "s"}</p>
+    ${filas || "<p>Todavía no hay procedimientos cargados.</p>"}
+    </body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 200);
+}
+
 function RegistroView({ isAdmin, user }) {
   const [subOrder, setSubOrder] = useState(DEFAULT_REGISTRO_SUB_ORDER);
   const [sub, setSub] = useState("tarde");
@@ -2170,54 +2233,55 @@ function ClasesSection({ clases, isAdmin, user }) {
   );
 }
 
-function ResidentProcAccordion({ residente, procs, ESTADO_META, confirmId, setConfirmId, eliminar, defaultOpen }) {
+function ResidentProcAccordion({ residente, procs, procList, ESTADO_META, confirmId, setConfirmId, eliminar, defaultOpen }) {
   const [open, setOpen] = useState(!!defaultOpen);
-  const [sortBy, setSortBy] = useState("fecha"); // "fecha" | "tipo"
-
-  const ordenados = useMemo(() => {
-    const arr = [...procs];
-    if (sortBy === "tipo") arr.sort((a, b) => a.tipo.localeCompare(b.tipo) || (b.fecha || "").localeCompare(a.fecha || ""));
-    else arr.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
-    return arr;
-  }, [procs, sortBy]);
+  const grupos = useMemo(() => agruparPorTipo(procs, procList), [procs, procList]);
 
   return (
     <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden", marginBottom: 8 }}>
-      <button onClick={() => setOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: "10px 14px", textAlign: "left" }}>
-        <span style={{ display: "inline-block", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 11, color: "#94A3B8" }}>▶</span>
-        <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", flex: 1 }}>{residente}</span>
-        <span style={{ fontSize: 11, fontWeight: 800, color: procs.length > 0 ? "#0F766E" : "#CBD5E1", background: procs.length > 0 ? "#F0FDFA" : "#F8FAFC", borderRadius: 999, padding: "1px 9px", minWidth: 22, textAlign: "center" }}>{procs.length}</span>
-      </button>
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <button onClick={() => setOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: "10px 14px", textAlign: "left" }}>
+          <span style={{ display: "inline-block", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 11, color: "#94A3B8" }}>▶</span>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", flex: 1 }}>{residente}</span>
+          <span style={{ fontSize: 11, fontWeight: 800, color: procs.length > 0 ? "#0F766E" : "#CBD5E1", background: procs.length > 0 ? "#F0FDFA" : "#F8FAFC", borderRadius: 999, padding: "1px 9px", minWidth: 22, textAlign: "center" }}>{procs.length}</span>
+        </button>
+        {procs.length > 0 && (
+          <button onClick={() => descargarPDFProcedimientos(residente, grupos)} title="Descargar registro en PDF" style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700, color: "#64748B", padding: "8px 14px" }}>
+            ⬇️ PDF
+          </button>
+        )}
+      </div>
       {open && (
         <div style={{ borderTop: "1px solid #F1F5F9" }}>
           {procs.length === 0 ? (
             <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "10px 14px" }}>Sin procedimientos cargados.</div>
           ) : (
-            <>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderBottom: "1px solid #F1F5F9" }}>
-                <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8" }}>ORDENAR POR:</span>
-                <button onClick={() => setSortBy("fecha")} style={{ fontSize: 10.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, border: `1px solid ${sortBy === "fecha" ? "#0F766E" : "#E2E8F0"}`, background: sortBy === "fecha" ? "#F0FDFA" : "#fff", color: sortBy === "fecha" ? "#0F766E" : "#64748B", cursor: "pointer", fontFamily: "inherit" }}>Fecha</button>
-                <button onClick={() => setSortBy("tipo")} style={{ fontSize: 10.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, border: `1px solid ${sortBy === "tipo" ? "#0F766E" : "#E2E8F0"}`, background: sortBy === "tipo" ? "#F0FDFA" : "#fff", color: sortBy === "tipo" ? "#0F766E" : "#64748B", cursor: "pointer", fontFamily: "inherit" }}>Tipo</button>
+            grupos.map((g, gi) => (
+              <div key={g.tipo} style={{ borderBottom: gi === grupos.length - 1 ? "none" : "1px solid #F1F5F9" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", background: "#F8FAFC" }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 700, color: "#0F766E" }}>{g.tipo}</span>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8" }}>({g.items.length})</span>
+                </div>
+                {g.items.map((p, i) => {
+                  const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
+                  return (
+                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === g.items.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#64748B", background: "#fff", border: "1px solid #E2E8F0", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
+                      <span style={{ fontSize: 12.5, color: "#334155", flex: 1 }}>{p.nota || <span style={{ color: "#CBD5E1", fontStyle: "italic" }}>sin detalle</span>}</span>
+                      <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
+                      {confirmId === p.id ? (
+                        <span style={{ display: "flex", gap: 4 }}>
+                          <button onClick={() => eliminar(p.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
+                          <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+                        </span>
+                      ) : (
+                        <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              {ordenados.map((p, i) => {
-                const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
-                return (
-                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === ordenados.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: "#64748B", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
-                    <span style={{ fontSize: 12.5, color: "#334155", flex: 1 }}>{p.tipo}{p.nota ? ` — ${p.nota}` : ""}</span>
-                    <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
-                    {confirmId === p.id ? (
-                      <span style={{ display: "flex", gap: 4 }}>
-                        <button onClick={() => eliminar(p.id)} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
-                        <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
-                      </span>
-                    ) : (
-                      <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
-                    )}
-                  </div>
-                );
-              })}
-            </>
+            ))
           )}
         </div>
       )}
@@ -2232,7 +2296,6 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
   const [saving, setSaving] = useState(false);
   const [editingList, setEditingList] = useState(false);
   const [nuevoProc, setNuevoProc] = useState("");
-  const [sortMios, setSortMios] = useState("fecha"); // "fecha" | "tipo"
   const [confirmId, setConfirmId] = useState(null);
 
   useEffect(() => { if (!procList.includes(tipo)) setTipo(procList[0] || ""); }, [procList]); // eslint-disable-line
@@ -2271,12 +2334,8 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
     try { await setDoc(doc(db, "scheduler", "registro-config"), { procedimientosList: procList.filter((p) => p !== v) }, { merge: true }); } catch (e) { console.error(e); }
   };
 
-  const mios = useMemo(() => {
-    const arr = procedimientos.filter((p) => p.residente === misResidente);
-    if (sortMios === "tipo") arr.sort((a, b) => a.tipo.localeCompare(b.tipo) || (b.fecha || "").localeCompare(a.fecha || ""));
-    else arr.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
-    return arr;
-  }, [procedimientos, misResidente, sortMios]);
+  const mios = useMemo(() => procedimientos.filter((p) => p.residente === misResidente), [procedimientos, misResidente]);
+  const misGrupos = useMemo(() => agruparPorTipo(mios, procList), [mios, procList]);
   const pendientes = useMemo(() => procedimientos.filter((p) => p.estado === "pendiente").sort((a, b) => (a.fecha || "").localeCompare(b.fecha || "")), [procedimientos]);
   const aprobados = useMemo(() => procedimientos.filter((p) => p.estado === "aprobado"), [procedimientos]);
 
@@ -2353,29 +2412,35 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
       {misResidente && (
         <div style={{ marginBottom: 18 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>Mis procedimientos</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", flex: 1 }}>Mis procedimientos</div>
             {mios.length > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, color: "#94A3B8" }}>ORDENAR:</span>
-                <button onClick={() => setSortMios("fecha")} style={{ fontSize: 10.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, border: `1px solid ${sortMios === "fecha" ? "#0F766E" : "#E2E8F0"}`, background: sortMios === "fecha" ? "#F0FDFA" : "#fff", color: sortMios === "fecha" ? "#0F766E" : "#64748B", cursor: "pointer", fontFamily: "inherit" }}>Fecha</button>
-                <button onClick={() => setSortMios("tipo")} style={{ fontSize: 10.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, border: `1px solid ${sortMios === "tipo" ? "#0F766E" : "#E2E8F0"}`, background: sortMios === "tipo" ? "#F0FDFA" : "#fff", color: sortMios === "tipo" ? "#0F766E" : "#64748B", cursor: "pointer", fontFamily: "inherit" }}>Tipo</button>
-              </div>
+              <button onClick={() => descargarPDFProcedimientos(misResidente, misGrupos)} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700, color: "#64748B" }}>
+                ⬇️ Descargar PDF
+              </button>
             )}
           </div>
           {mios.length === 0 ? (
             <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px" }}>Todavía no cargaste ninguno.</div>
           ) : (
             <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
-              {mios.map((p, i) => {
-                const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
-                return (
-                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === mios.length - 1 ? "none" : "1px solid #F1F5F9" }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: "#0F766E", background: "#F0FDFA", border: "1px solid #99F6E4", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
-                    <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1 }}>{p.tipo}{p.nota ? ` — ${p.nota}` : ""}</span>
-                    <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
+              {misGrupos.map((g, gi) => (
+                <div key={g.tipo} style={{ borderBottom: gi === misGrupos.length - 1 ? "none" : "1px solid #F1F5F9" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", background: "#F8FAFC" }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 700, color: "#0F766E" }}>{g.tipo}</span>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8" }}>({g.items.length})</span>
                   </div>
-                );
-              })}
+                  {g.items.map((p, i) => {
+                    const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
+                    return (
+                      <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === g.items.length - 1 ? "none" : "1px solid #F1F5F9" }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#0F766E", background: "#F0FDFA", border: "1px solid #99F6E4", borderRadius: 6, padding: "2px 7px", minWidth: 42, textAlign: "center" }}>{fechaCorta(p.fecha)}</span>
+                        <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1 }}>{p.nota || <span style={{ color: "#CBD5E1", fontStyle: "italic", fontWeight: 400 }}>sin detalle</span>}</span>
+                        <span style={{ fontSize: 10.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "2px 9px" }}>{em.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -2418,6 +2483,7 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
                   key={n}
                   residente={n}
                   procs={porResidente[n] || []}
+                  procList={procList}
                   ESTADO_META={ESTADO_META}
                   confirmId={confirmId}
                   setConfirmId={setConfirmId}
