@@ -143,6 +143,10 @@ const shift = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); ret
 const isoDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const dm = (d) => `${d.getDate()}/${d.getMonth() + 1}`;
 const sameDay = (a, b) => isoDate(a) === isoDate(b);
+// Formato legible en hora de Argentina (fija UTC-3, sin horario de verano),
+// para que los registros (ej. access_logs) se puedan leer directo en la
+// consola de Firebase sin tener que restar horas a mano.
+const fechaHoraAR = (d) => new Intl.DateTimeFormat("es-AR", { dateStyle: "short", timeStyle: "medium", timeZone: "America/Argentina/Buenos_Aires" }).format(d);
 
 /* ══════════════════ MODELO SEMANA ══════════════════ */
 
@@ -274,6 +278,7 @@ export default function App() {
             email: u.email,
             uid: u.uid,
             loginAt: new Date().toISOString(),
+            loginAtAR: fechaHoraAR(new Date()),
             displayName: u.displayName || "Sin nombre",
           });
           localStorage.setItem("uti-last-access-log", isoDate(new Date()));
@@ -301,6 +306,7 @@ export default function App() {
           email: user.email,
           uid: user.uid,
           loginAt: new Date().toISOString(),
+          loginAtAR: fechaHoraAR(new Date()),
           displayName: user.displayName || "Sin nombre",
         });
         localStorage.setItem("uti-last-access-log", hoy);
