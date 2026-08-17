@@ -72,6 +72,11 @@ var SYSTEM =
   "URL que no conozcas con certeza: ante la duda, referite a la guía o al consenso de forma general en el texto " +
   "de la perla, sin inventar una referencia falsa, y dejá el arreglo de fuentes vacío o incompleto si hace " +
   "falta. El tono tiene que ser serio, formal y profesional en todo momento, en español rioplatense técnico. " +
+  "Nota de interpretación de unidades (aplicá esto solo si en los datos provistos aparece un valor de lactato " +
+  "o ácido láctico): ese número está expresado en mg/dL, no en mmol/L, salvo que el pase indique explícitamente " +
+  "lo contrario. Esto es únicamente una aclaración para interpretar correctamente el valor si aparece — no es una " +
+  "instrucción para buscar, mencionar o priorizar el lactato en el resumen o en las perlas si no es relevante " +
+  "para el cuadro clínico del paciente. " +
   "Respondé únicamente con el JSON pedido, sin texto adicional.";
 
 function pickApiKey() {
