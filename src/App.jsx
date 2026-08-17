@@ -276,12 +276,39 @@ export default function App() {
             loginAt: new Date().toISOString(),
             displayName: u.displayName || "Sin nombre",
           });
+          localStorage.setItem("uti-last-access-log", isoDate(new Date()));
         } catch (e) { console.error("log de acceso", e); }
       }
       setUser(u || null);
     });
     return unsub;
   }, []);
+
+  // El registro de arriba solo se dispara en el login (o al recargar la página),
+  // así que si alguien deja la pestaña abierta varios días sin recargar no queda
+  // registro de esos días. Pero tampoco queremos contar "pestaña abierta sin
+  // tocar" como uso — lo que interesa es actividad real: que la persona haya
+  // navegado o tocado algo en la app ese día. Por eso enganchamos cualquier
+  // click dentro de la app (cambiar de pestaña, tocar un botón, etc.) y, la
+  // primera vez que eso pasa en el día, registramos el ingreso.
+  useEffect(() => {
+    if (!user || !user.email) return;
+    const registrarSiNoHoy = async () => {
+      const hoy = isoDate(new Date());
+      if (localStorage.getItem("uti-last-access-log") === hoy) return;
+      try {
+        await setDoc(doc(db, "access_logs", `${user.uid}-${Date.now()}`), {
+          email: user.email,
+          uid: user.uid,
+          loginAt: new Date().toISOString(),
+          displayName: user.displayName || "Sin nombre",
+        });
+        localStorage.setItem("uti-last-access-log", hoy);
+      } catch (e) { console.error("log de acceso diario", e); }
+    };
+    document.addEventListener("click", registrarSiNoHoy);
+    return () => document.removeEventListener("click", registrarSiNoHoy);
+  }, [user]);
 
   if (user === undefined) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#94A3B8", fontSize: 14 }}>Cargando…</div>;
 
