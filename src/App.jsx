@@ -1542,6 +1542,15 @@ function ArticuloSemanaView({ isAdmin }) {
     if (articulos && articulos.length > 0) setOpenId((cur) => cur ?? articulos[0].id);
   }, [articulos]);
 
+  const eliminarArticulo = async (id) => {
+    if (!confirm("¿Eliminar este artículo? Se borra el resumen, las preguntas y el link — no se puede deshacer.")) return;
+    try { await deleteDoc(doc(db, "articulos_semana", id)); } catch (e) { console.error(e); }
+  };
+
+  const guardarPdfUrl = async (id, url) => {
+    try { await setDoc(doc(db, "articulos_semana", id), { pdfUrl: url.trim() || null }, { merge: true }); } catch (e) { console.error(e); }
+  };
+
   const handleFile = async (e) => {
     const file = e.target.files && e.target.files[0];
     if (fileRef.current) fileRef.current.value = "";
@@ -1613,7 +1622,7 @@ function ArticuloSemanaView({ isAdmin }) {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {articulos.map((a, i) => (
-            <ArticuloCard key={a.id} articulo={a} isOpen={openId === a.id} isLatest={i === 0} onToggle={() => setOpenId((cur) => (cur === a.id ? null : a.id))} />
+            <ArticuloCard key={a.id} articulo={a} isOpen={openId === a.id} isLatest={i === 0} isAdmin={isAdmin} onToggle={() => setOpenId((cur) => (cur === a.id ? null : a.id))} onDelete={() => eliminarArticulo(a.id)} onSavePdfUrl={(url) => guardarPdfUrl(a.id, url)} />
           ))}
         </div>
       )}
@@ -1621,7 +1630,14 @@ function ArticuloSemanaView({ isAdmin }) {
   );
 }
 
-function ArticuloCard({ articulo, isOpen, isLatest, onToggle }) {
+function ArticuloCard({ articulo, isOpen, isLatest, isAdmin, onToggle, onDelete, onSavePdfUrl }) {
+  const [editingUrl, setEditingUrl] = useState(false);
+  const [urlValue, setUrlValue] = useState(articulo.pdfUrl || "");
+
+  const startEditUrl = (e) => { e.stopPropagation(); setUrlValue(articulo.pdfUrl || ""); setEditingUrl(true); };
+  const saveUrl = (e) => { e.stopPropagation(); onSavePdfUrl(urlValue); setEditingUrl(false); };
+  const cancelUrl = (e) => { e.stopPropagation(); setEditingUrl(false); };
+
   return (
     <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(15,23,42,.04)", overflow: "hidden" }}>
       <div onClick={onToggle} style={{ cursor: "pointer", padding: "14px 18px", borderBottom: isOpen ? "1px solid #F1F5F9" : "none", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -1636,9 +1652,31 @@ function ArticuloCard({ articulo, isOpen, isLatest, onToggle }) {
           {articulo.pdfUrl && (
             <a href={articulo.pdfUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, background: "#0F172A", color: "#fff", textDecoration: "none" }}>📄 Ver PDF</a>
           )}
+          {isAdmin && (
+            <button onClick={startEditUrl} title={articulo.pdfUrl ? "Editar link del PDF" : "Agregar link del PDF"} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, background: "#F1F5F9", color: "#475569", border: "1px solid #E2E8F0", cursor: "pointer", fontFamily: "inherit" }}>
+              🔗 {articulo.pdfUrl ? "Editar link" : "Agregar link"}
+            </button>
+          )}
           <div style={{ fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, background: "#EEF2FF", color: "#4338CA", border: "1px solid #C7D2FE" }}>🤖 Generado por IA</div>
+          {isAdmin && (
+            <button onClick={(e) => { e.stopPropagation(); onDelete(); }} title="Eliminar artículo" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 14, fontFamily: "inherit", padding: "2px 2px" }}>🗑️</button>
+          )}
         </div>
       </div>
+
+      {isAdmin && editingUrl && (
+        <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6, alignItems: "center", padding: "10px 18px", background: "#F8FAFC", borderBottom: "1px solid #F1F5F9", flexWrap: "wrap" }}>
+          <input
+            value={urlValue}
+            onChange={(e) => setUrlValue(e.target.value)}
+            placeholder="Link para compartir del PDF en Google Drive…"
+            onKeyDown={(e) => e.key === "Enter" && saveUrl(e)}
+            style={{ ...INPUT, flex: 1, minWidth: 200, boxSizing: "border-box" }}
+          />
+          <button onClick={saveUrl} style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✓ Guardar</button>
+          <button onClick={cancelUrl} style={{ background: "#E2E8F0", color: "#64748B", border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+        </div>
+      )}
 
       {isOpen && (
         <>
