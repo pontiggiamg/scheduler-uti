@@ -1072,6 +1072,7 @@ function SchedulerView({ isAdmin }) {
 
       {loading ? <Skeleton /> : (
         <div ref={printRef}>
+          <EquiposMes monday={monday} isAdmin={isAdmin} />
           <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} onAplicarAlMes={aplicarDiasLibresAlMes} aplicando={aplicandoMes} />
           <div style={{ overflowX: "auto", paddingBottom: 4 }}>
           <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DAYS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "14px 14px 0 0", overflow: "hidden", border: "1px solid #E2E8F0", borderBottom: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DAYS.length * 150 }}>
@@ -3713,6 +3714,161 @@ function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChang
           )}
           <button onClick={onClose} style={{ background: "none", color: "#94A3B8", border: "none", padding: "8px 16px", fontWeight: 600, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>Cerrar</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════ EQUIPOS POR UTI (por mes) ══════════════════ */
+
+// A qué mes "pertenece" una semana: la que tiene 4 o más de sus 7 días en él.
+// Las semanas cruzan meses, así que mirar solo el lunes daría mal (septiembre
+// 2026 arranca un martes).
+function mesDeLaSemana(monday) {
+  const cuenta = {};
+  for (let i = 0; i < DAYS.length; i++) {
+    const d = shift(monday, i);
+    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    cuenta[k] = (cuenta[k] || 0) + 1;
+  }
+  return Object.keys(cuenta).sort((a, b) => cuenta[b] - cuenta[a])[0];
+}
+
+function etiquetaMes(clave) {
+  const [y, m] = clave.split("-").map(Number);
+  return `${MONTHS[m - 1]} ${y}`;
+}
+
+const EQUIPO_MAX = 4;
+const EQUIPO_SLOTS = SLOTS.filter((s) => s.key !== "postguardia");
+
+// Se trata de que cada residente vea la misma sala con los mismos compañeros
+// durante todo el mes. Esto guarda ese armado (hasta 4 por UTI) en
+// scheduler/equipos, con una clave por mes. Es informativo: no condiciona la
+// grilla, solo la tenés a la vista mientras armás la semana.
+function EquiposMes({ monday, isAdmin }) {
+  const clave = useMemo(() => mesDeLaSemana(monday), [monday]);
+  const [todos, setTodos] = useState({});
+  const [editando, setEditando] = useState(false);
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "scheduler", "equipos"), (snap) => {
+      setTodos(snap.exists() ? snap.data() : {});
+    }, () => {});
+    return unsub;
+  }, []);
+
+  const equipos = todos[clave] || {};
+  const conGente = EQUIPO_SLOTS.filter((s) => (equipos[s.key] || []).length > 0);
+
+  const guardar = async (next) => {
+    try { await setDoc(doc(db, "scheduler", "equipos"), { [clave]: next }, { merge: true }); }
+    catch (e) { console.error("equipos", e); }
+  };
+
+  // Alguien pertenece a una sola UTI por mes: ponerlo en otra lo saca de la
+  // anterior, que es como funciona en la realidad.
+  const toggle = (slotKey, nombre) => {
+    if (!isAdmin) return;
+    const next = {};
+    EQUIPO_SLOTS.forEach((s) => { next[s.key] = (equipos[s.key] || []).filter((n) => n !== nombre); });
+    const yaEstaba = (equipos[slotKey] || []).includes(nombre);
+    if (!yaEstaba) {
+      if (next[slotKey].length >= EQUIPO_MAX) return; // tope de 4
+      next[slotKey] = [...next[slotKey], nombre];
+    }
+    guardar(next);
+  };
+
+  // Si no hay nada cargado y no sos admin, ni se muestra: no deja hueco.
+  if (conGente.length === 0 && !isAdmin) return null;
+
+  return (
+    <div className="no-print" style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "7px 12px", borderRadius: 10, background: "#F8FAFC", border: "1px solid #E2E8F0" }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#475569", whiteSpace: "nowrap" }}>👥 Equipos por UTI · {etiquetaMes(clave)}</span>
+
+        {conGente.length === 0 ? (
+          <span style={{ fontSize: 10.5, color: "#CBD5E1", fontStyle: "italic" }}>Sin equipos armados este mes.</span>
+        ) : (
+          conGente.map((s) => (
+            <span key={s.key} style={{ display: "inline-flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 9.5, fontWeight: 800, color: s.accent, background: s.tint, borderRadius: 5, padding: "2px 6px", whiteSpace: "nowrap" }}>{s.label}</span>
+              {(equipos[s.key] || []).map((n) => {
+                const c = COLOR[LEVEL[n]] || COLOR.R2;
+                return (
+                  <span key={n} style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 7px", borderRadius: 999, background: c.bg, border: `1px solid ${c.bd}`, color: c.tx, fontWeight: 600, fontSize: 10.5 }}>
+                    {n}
+                    <span style={{ fontSize: 7, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+                  </span>
+                );
+              })}
+            </span>
+          ))
+        )}
+
+        {isAdmin && (
+          <button onClick={() => setEditando(true)} style={{ marginLeft: "auto", background: "none", border: "none", color: "#64748B", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+            {conGente.length === 0 ? "+ Armar equipos" : "✏️ Editar"}
+          </button>
+        )}
+      </div>
+
+      {editando && isAdmin && (
+        <EquiposEditor clave={clave} equipos={equipos} onToggle={toggle} onClose={() => setEditando(false)} />
+      )}
+    </div>
+  );
+}
+
+function EquiposEditor({ clave, equipos, onToggle, onClose }) {
+  const asignados = {};
+  EQUIPO_SLOTS.forEach((s) => (equipos[s.key] || []).forEach((n) => { asignados[n] = s.key; }));
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120, padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "18px 20px 20px", width: "100%", maxWidth: 520, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 12px 40px rgba(15,23,42,.28)", fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+          <div style={{ fontWeight: 800, fontSize: 15.5, color: "#0F172A" }}>👥 Equipos por UTI</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 18, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ fontSize: 11.5, color: "#64748B", marginBottom: 14, lineHeight: 1.5 }}>
+          {etiquetaMes(clave)} · hasta {EQUIPO_MAX} por sala. Cada residente va en una sola UTI: si lo ponés en otra, sale de la anterior.
+        </div>
+
+        {EQUIPO_SLOTS.map((s) => {
+          const miembros = equipos[s.key] || [];
+          const lleno = miembros.length >= EQUIPO_MAX;
+          return (
+            <div key={s.key} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: s.accent, background: s.tint, borderRadius: 5, padding: "2px 7px" }}>{s.label}</span>
+                <span style={{ fontSize: 10.5, color: lleno ? "#B45309" : "#94A3B8", fontWeight: 600 }}>{miembros.length}/{EQUIPO_MAX}{lleno ? " · completo" : ""}</span>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {ALL.map((n) => {
+                  const aca = miembros.includes(n);
+                  const enOtra = asignados[n] && asignados[n] !== s.key;
+                  const bloqueado = !aca && lleno;
+                  const c = COLOR[LEVEL[n]];
+                  return (
+                    <div
+                      key={n}
+                      onClick={() => !bloqueado && onToggle(s.key, n)}
+                      title={enOtra ? `Ahora está en ${EQUIPO_SLOTS.find((x) => x.key === asignados[n]).label}` : bloqueado ? `${s.label} ya tiene ${EQUIPO_MAX}` : undefined}
+                      style={{ cursor: bloqueado ? "not-allowed" : "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 7, background: aca ? c.solid : "#F8FAFC", border: `1.5px solid ${aca ? c.solid : "#E2E8F0"}`, color: aca ? "#fff" : enOtra ? "#CBD5E1" : "#64748B", fontWeight: 600, fontSize: 11.5, opacity: bloqueado ? 0.4 : 1 }}
+                    >
+                      {aca && "✓ "}{n}
+                      <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: aca ? "rgba(255,255,255,.28)" : c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+
+        <button onClick={onClose} style={{ width: "100%", marginTop: 4, background: "#16A34A", color: "#fff", border: "none", borderRadius: 10, padding: "11px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Listo</button>
       </div>
     </div>
   );
