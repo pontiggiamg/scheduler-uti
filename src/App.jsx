@@ -10,7 +10,7 @@ const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 // Pestañas de nivel superior de la app. El orden por defecto se usa si todavía
 // no hay nada guardado en Firestore (scheduler/ui-config); el admin puede
 // reordenarlas arrastrando y ese orden se guarda ahí, compartido para todos.
-const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy"];
+const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy", "accesos"];
 const TAB_META = {
   scheduler: { icon: "📅", label: "Semana" },
   rotaciones: { icon: "🔄", label: "Rotaciones y Vacaciones" },
@@ -20,6 +20,7 @@ const TAB_META = {
   articulo: { icon: "📄", label: "Artículo de la semana" },
   registro: { icon: "📋", label: "Registro" },
   hoy: { icon: "📱", label: "¿Quién está hoy?" },
+  accesos: { icon: "🔐", label: "Accesos", soloAdmin: true },
 };
 
 // Ruta pública sin login para compartir a otros servicios del hospital: entra
@@ -283,6 +284,8 @@ function AuthenticatedApp() {
   const [tabOrder, setTabOrder] = useState(DEFAULT_TAB_ORDER);
   const [dragIdx, setDragIdx] = useState(null);
   const [overIdx, setOverIdx] = useState(null);
+  const [acceso, setAcceso] = useState("cargando"); // cargando | ok | pendiente | rechazado
+  const [pendientesAcceso, setPendientesAcceso] = useState(0);
 
   useEffect(() => {
     const ref = doc(db, "scheduler", "ui-config");
@@ -365,11 +368,72 @@ function AuthenticatedApp() {
     return () => document.removeEventListener("click", registrarSiNoHoy);
   }, [user]);
 
+  // ── Control de acceso al scheduler privado ───────────────────────────────
+  // Cualquiera puede iniciar sesión con Google, pero solo entra si el jefe de
+  // residentes lo autorizó. Dos excepciones que entran siempre y nunca piden
+  // permiso: la cuenta admin y los 12 residentes ya mapeados en
+  // RESIDENT_EMAIL — así un deploy nuevo jamás deja afuera a la gente que ya
+  // venía usando la app. Para el resto se crea (una sola vez) un documento en
+  // usuarios_autorizados con estado "pendiente" y se dispara el aviso por
+  // Telegram. Como quedamos escuchando ese documento con onSnapshot, cuando
+  // el admin aprueba desde su celular la app se desbloquea sola, sin que la
+  // persona tenga que recargar nada.
+  useEffect(() => {
+    if (!user || !user.email) { setAcceso("cargando"); return; }
+    const email = user.email.toLowerCase();
+    if (email === ADMIN_EMAIL.toLowerCase() || RESIDENT_BY_EMAIL[email]) { setAcceso("ok"); return; }
+
+    const ref = doc(db, "usuarios_autorizados", email);
+    let pedidoEnviado = false;
+    const unsub = onSnapshot(ref, async (snap) => {
+      if (!snap.exists()) {
+        if (pedidoEnviado) return;
+        pedidoEnviado = true;
+        setAcceso("pendiente");
+        try {
+          await setDoc(ref, {
+            email: user.email,
+            displayName: user.displayName || "",
+            photoURL: user.photoURL || "",
+            estado: "pendiente",
+            solicitadoEn: new Date().toISOString(),
+            solicitadoEnAR: fechaHoraAR(new Date()),
+          });
+          // El aviso es "mejor esfuerzo": si el bot de Telegram no está
+          // configurado o falla, la solicitud igual queda registrada y el
+          // admin la ve con el badge de la pestaña Accesos.
+          fetch("/api/notificar-acceso", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ email: user.email, displayName: user.displayName || "" }),
+          }).catch(() => {});
+        } catch (e) { console.error("solicitud de acceso", e); }
+        return;
+      }
+      const estado = snap.data().estado;
+      setAcceso(estado === "aprobado" ? "ok" : estado === "rechazado" ? "rechazado" : "pendiente");
+    }, (e) => { console.error("acceso", e); setAcceso("pendiente"); });
+    return unsub;
+  }, [user]);
+
+  // Cantidad de solicitudes sin revisar, para el badge rojo de la pestaña
+  // Accesos. Solo lo mira la cuenta admin.
+  useEffect(() => {
+    if (!user || user.email !== ADMIN_EMAIL) { setPendientesAcceso(0); return; }
+    const unsub = onSnapshot(collection(db, "usuarios_autorizados"), (snap) => {
+      setPendientesAcceso(snap.docs.filter((d) => d.data().estado === "pendiente").length);
+    }, () => {});
+    return unsub;
+  }, [user]);
+
   if (user === undefined) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#94A3B8", fontSize: 14 }}>Cargando…</div>;
 
   if (user === null) return <LoginScreen />;
 
   const isAdmin = user.email === ADMIN_EMAIL;
+
+  if (acceso === "cargando") return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#94A3B8", fontSize: 14 }}>Verificando acceso…</div>;
+  if (acceso !== "ok") return <PantallaEspera user={user} rechazado={acceso === "rechazado"} />;
 
   return (
     <div style={{ maxWidth: 1500, margin: "0 auto", padding: "14px 12px 40px", fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -390,11 +454,13 @@ function AuthenticatedApp() {
         {tabOrder.map((key, i) => {
           const meta = TAB_META[key];
           if (!meta) return null;
+          if (meta.soloAdmin && !isAdmin) return null;
           return (
             <TabBtn
               key={key}
               active={tab === key}
               onClick={() => setTab(key)}
+              badge={key === "accesos" ? pendientesAcceso : 0}
               draggable={isAdmin}
               dragging={dragIdx === i}
               dropTarget={isAdmin && overIdx === i && dragIdx !== null && dragIdx !== i}
@@ -418,6 +484,7 @@ function AuthenticatedApp() {
       {tab === "articulo" && <ArticuloSemanaView isAdmin={isAdmin} />}
       {tab === "registro" && <RegistroView isAdmin={isAdmin} user={user} />}
       {tab === "hoy" && <QuienEstaHoyView isAdmin={isAdmin} embedded />}
+      {tab === "accesos" && isAdmin && <AccesosView user={user} />}
     </div>
   );
 }
@@ -443,7 +510,152 @@ function LoginScreen() {
   );
 }
 
-const TabBtn = ({ active, onClick, children, draggable, dragging, dropTarget, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd }) => (
+// Lo que ve alguien que inició sesión pero todavía no fue autorizado (o fue
+// rechazado). No muestra ningún dato de la app. Cuando el admin aprueba, el
+// onSnapshot de AuthenticatedApp cambia el estado y esta pantalla desaparece
+// sola, sin necesidad de recargar.
+function PantallaEspera({ user, rechazado }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 20, fontFamily: "'Inter', system-ui, sans-serif", background: "#F1F5F9" }}>
+      <div style={{ textAlign: "center", padding: "36px 32px", background: "#fff", borderRadius: 16, boxShadow: "0 4px 24px rgba(15,23,42,.1)", border: "1px solid #E2E8F0", maxWidth: 380 }}>
+        <div style={{ fontSize: 38, marginBottom: 10 }}>{rechazado ? "⛔" : "⏳"}</div>
+        <div style={{ fontWeight: 800, fontSize: 17, color: "#0F172A", marginBottom: 8 }}>
+          {rechazado ? "Acceso no autorizado" : "Esperando autorización"}
+        </div>
+        <div style={{ fontSize: 12.5, color: "#64748B", lineHeight: 1.6, marginBottom: 18 }}>
+          {rechazado ? (
+            <>Tu cuenta no tiene acceso a esta aplicación. Si creés que es un error, hablá con el jefe de residentes.</>
+          ) : (
+            <>Tu solicitud ya fue enviada al jefe de residentes. En cuanto la apruebe, esta pantalla se va a desbloquear sola — no hace falta que recargues ni que vuelvas a entrar.</>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 9, padding: "8px 12px", marginBottom: 16 }}>
+          {user.photoURL && <img src={user.photoURL} alt="" style={{ width: 22, height: 22, borderRadius: "50%" }} />}
+          <span style={{ fontSize: 11.5, color: "#475569", fontWeight: 600, wordBreak: "break-all" }}>{user.email}</span>
+        </div>
+        <button onClick={() => signOut(auth)} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>Cerrar sesión</button>
+      </div>
+    </div>
+  );
+}
+
+// Panel del admin para autorizar o revocar el acceso al scheduler privado.
+// Los 12 residentes y la cuenta admin no aparecen acá: entran siempre por
+// código (ver el gate en AuthenticatedApp), así que esta lista es solo para
+// cuentas "de afuera" que pidieron entrar.
+function AccesosView({ user }) {
+  const [solicitudes, setSolicitudes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [confirmId, setConfirmId] = useState(null);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "usuarios_autorizados"), (snap) => {
+      setSolicitudes(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    }, (e) => { console.error(e); setLoading(false); });
+    return unsub;
+  }, []);
+
+  const revisar = async (id, estado) => {
+    try {
+      await setDoc(doc(db, "usuarios_autorizados", id), {
+        estado,
+        revisadoPor: user?.email || "",
+        revisadoEn: new Date().toISOString(),
+        revisadoEnAR: fechaHoraAR(new Date()),
+      }, { merge: true });
+    } catch (e) { console.error(e); }
+  };
+
+  const eliminar = async (id) => {
+    try { await deleteDoc(doc(db, "usuarios_autorizados", id)); } catch (e) { console.error(e); }
+    setConfirmId(null);
+  };
+
+  const orden = (a, b) => (b.solicitadoEn || "").localeCompare(a.solicitadoEn || "");
+  const pendientes = useMemo(() => solicitudes.filter((s) => s.estado === "pendiente").sort(orden), [solicitudes]);
+  const aprobados = useMemo(() => solicitudes.filter((s) => s.estado === "aprobado").sort(orden), [solicitudes]);
+  const rechazados = useMemo(() => solicitudes.filter((s) => s.estado === "rechazado").sort(orden), [solicitudes]);
+
+  if (loading) return <Skeleton />;
+
+  return (
+    <div>
+      <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
+        <span style={{ fontSize: 22 }}>🔐</span>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Accesos</div>
+          <div style={{ fontSize: 10.5, opacity: 0.7 }}>Quién puede entrar al scheduler privado</div>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.55, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "9px 13px", marginBottom: 14 }}>
+        Los 12 residentes y tu cuenta de administrador entran siempre, sin pedir permiso — no aparecen en estas listas. Acá solo caen las cuentas de Google que no están en ese grupo.
+      </div>
+
+      <SeccionAccesos titulo={`Pendientes de autorizar (${pendientes.length})`} vacio="No hay solicitudes esperando." items={pendientes} color="#B45309" bg="#FFFBEB" bd="#FDE68A">
+        {(s) => (
+          <>
+            <button onClick={() => revisar(s.id, "aprobado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#16A34A", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontFamily: "inherit" }}>✓ Autorizar</button>
+            <button onClick={() => revisar(s.id, "rechazado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontFamily: "inherit" }}>✗ Rechazar</button>
+          </>
+        )}
+      </SeccionAccesos>
+
+      <SeccionAccesos titulo={`Con acceso (${aprobados.length})`} vacio="Todavía no autorizaste ninguna cuenta de afuera." items={aprobados} color="#15803D" bg="#F0FDF4" bd="#BBF7D0">
+        {(s) => (
+          <button onClick={() => revisar(s.id, "rechazado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#B91C1C", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontFamily: "inherit" }}>Quitar acceso</button>
+        )}
+      </SeccionAccesos>
+
+      <SeccionAccesos titulo={`Rechazados (${rechazados.length})`} vacio="Sin cuentas rechazadas." items={rechazados} color="#B91C1C" bg="#FEF2F2" bd="#FECACA">
+        {(s) => (
+          <>
+            <button onClick={() => revisar(s.id, "aprobado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#15803D", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontFamily: "inherit" }}>✓ Autorizar</button>
+            {confirmId === s.id ? (
+              <span style={{ display: "flex", gap: 4 }}>
+                <button onClick={() => eliminar(s.id)} style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 5, padding: "4px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
+                <button onClick={() => setConfirmId(null)} style={{ fontSize: 10, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 5, padding: "4px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+              </span>
+            ) : (
+              <button onClick={() => setConfirmId(s.id)} title="Borrar el registro (si vuelve a entrar, pide permiso de nuevo)" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+            )}
+          </>
+        )}
+      </SeccionAccesos>
+    </div>
+  );
+}
+
+function SeccionAccesos({ titulo, vacio, items, color, bg, bd, children }) {
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>{titulo}</div>
+      {items.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px" }}>{vacio}</div>
+      ) : (
+        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+          {items.map((s, i) => (
+            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === items.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
+              {s.photoURL
+                ? <img src={s.photoURL} alt="" style={{ width: 26, height: 26, borderRadius: "50%", flexShrink: 0 }} />
+                : <span style={{ width: 26, height: 26, borderRadius: "50%", background: bg, border: `1px solid ${bd}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flexShrink: 0 }}>👤</span>}
+              <div style={{ flex: 1, minWidth: 150 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A" }}>{s.displayName || "Sin nombre"}</div>
+                <div style={{ fontSize: 11, color: "#64748B", wordBreak: "break-all" }}>{s.email || s.id}</div>
+                <div style={{ fontSize: 10, color: "#94A3B8", marginTop: 1 }}>Pidió acceso: {s.solicitadoEnAR || "—"}</div>
+              </div>
+              <span style={{ fontSize: 9.5, fontWeight: 700, color, background: bg, border: `1px solid ${bd}`, borderRadius: 999, padding: "2px 9px" }}>{s.estado}</span>
+              {children(s)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const TabBtn = ({ active, onClick, children, draggable, dragging, dropTarget, badge, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd }) => (
   <button
     onClick={onClick}
     draggable={draggable}
@@ -453,8 +665,11 @@ const TabBtn = ({ active, onClick, children, draggable, dragging, dropTarget, on
     onDrop={onDrop}
     onDragEnd={onDragEnd}
     title={draggable ? "Arrastrá para reordenar" : undefined}
-    style={{ padding: "10px 22px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: draggable ? "grab" : "pointer", background: active ? "#0F172A" : "#E2E8F0", color: active ? "#fff" : "#64748B", border: "none", borderRadius: "10px 10px 0 0", transition: "all .15s", letterSpacing: 0.1, opacity: dragging ? 0.4 : 1, boxShadow: dropTarget ? "inset 3px 0 0 #3B82F6" : "none" }}
-  >{children}</button>
+    style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "10px 22px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: draggable ? "grab" : "pointer", background: active ? "#0F172A" : "#E2E8F0", color: active ? "#fff" : "#64748B", border: "none", borderRadius: "10px 10px 0 0", transition: "all .15s", letterSpacing: 0.1, opacity: dragging ? 0.4 : 1, boxShadow: dropTarget ? "inset 3px 0 0 #3B82F6" : "none" }}
+  >
+    {children}
+    {badge > 0 && <span style={{ fontSize: 10, fontWeight: 800, background: "#DC2626", color: "#fff", borderRadius: 999, padding: "1px 7px", minWidth: 18, textAlign: "center" }}>{badge}</span>}
+  </button>
 );
 
 /* ══════════════════ SCHEDULER VIEW ══════════════════ */
