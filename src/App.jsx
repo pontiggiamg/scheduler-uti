@@ -3373,6 +3373,18 @@ function limpiarTelefono(raw) {
 // que escribieron en el texto libre y que no es ninguno de los 12
 // residentes — ej. un médico de planta cubriendo, o un nombre suelto) antes
 // de descartarse solo, para no ir acumulando contactos viejos para siempre.
+// Hora actual en Buenos Aires (00-23), independiente de la zona horaria del
+// celular de quien mira la página — puede estar consultando desde otro lado.
+function horaAR() {
+  return Number(new Intl.DateTimeFormat("es-AR", { hour: "2-digit", hourCycle: "h23", timeZone: "America/Argentina/Buenos_Aires" }).format(new Date()));
+}
+
+// A partir de esta hora ya solo queda el equipo de guardia en el hospital.
+const HORA_AVISO_TARDE = 17;
+// Hasta esta hora de la mañana sigue en el hospital la guardia de la noche
+// anterior; después arranca la actividad normal y está todo el mundo.
+const HORA_FIN_GUARDIA = 8;
+
 const INVITADO_VIGENCIA_MS = 15 * 24 * 60 * 60 * 1000; // 15 días
 
 // El texto de "De guardia" es libre (lo escribe el admin a mano en el
@@ -3400,14 +3412,14 @@ function parseDeGuardia(lista) {
 function QuienEstaHoyView({ isAdmin, embedded }) {
   const hoy = useMemo(() => new Date(), []);
   const manana = useMemo(() => shift(hoy, 1), [hoy]);
-  const mondayHoy = useMemo(() => mondayOf(hoy), [hoy]);
-  const mondayManana = useMemo(() => mondayOf(manana), [manana]);
-  const idHoy = isoDate(mondayHoy);
-  const idManana = isoDate(mondayManana);
-  const mismaSemana = idHoy === idManana;
+  const ayer = useMemo(() => shift(hoy, -1), [hoy]);
+  // Ayer, hoy y mañana pueden caer en hasta tres documentos semanales
+  // distintos (si hoy es lunes o domingo), así que se cargan por id y se
+  // guardan en un mapa en vez de tener una variable por semana.
+  const idsSemanas = useMemo(() => [...new Set([ayer, hoy, manana].map((d) => isoDate(mondayOf(d))))], [ayer, hoy, manana]);
+  const claveIds = idsSemanas.join(",");
 
-  const [weekHoy, setWeekHoy] = useState(null);
-  const [weekManana, setWeekManana] = useState(null);
+  const [semanas, setSemanas] = useState({});
   const [telefonosDoc, setTelefonosDoc] = useState({ numeros: {}, invitados: {} });
   const [nota, setNota] = useState("");
   const [loading, setLoading] = useState(true);
@@ -3420,17 +3432,14 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    const ref = doc(db, "scheduler", `week-${idHoy}`);
-    const unsub = onSnapshot(ref, (snap) => { setWeekHoy(snap.exists() ? normalize(snap.data()) : emptyWeek()); setLoading(false); }, () => setLoading(false));
-    return unsub;
-  }, [idHoy]);
-
-  useEffect(() => {
-    if (mismaSemana) { setWeekManana(null); return; }
-    const ref = doc(db, "scheduler", `week-${idManana}`);
-    const unsub = onSnapshot(ref, (snap) => setWeekManana(snap.exists() ? normalize(snap.data()) : emptyWeek()), () => {});
-    return unsub;
-  }, [idManana, mismaSemana]);
+    const unsubs = claveIds.split(",").map((id) =>
+      onSnapshot(doc(db, "scheduler", `week-${id}`), (snap) => {
+        setSemanas((cur) => ({ ...cur, [id]: snap.exists() ? normalize(snap.data()) : emptyWeek() }));
+        setLoading(false);
+      }, () => setLoading(false))
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [claveIds]);
 
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "scheduler", "telefonos"), (snap) => {
@@ -3465,8 +3474,23 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
     }
   }, [telefonosDoc, embedded, isAdmin]);
 
-  const diaHoy = weekHoy ? weekHoy.days[diOfDate(hoy)] : null;
-  const diaManana = mismaSemana ? (weekHoy ? weekHoy.days[diOfDate(manana)] : null) : (weekManana ? weekManana.days[diOfDate(manana)] : null);
+  const diaDe = (fecha) => {
+    const w = semanas[isoDate(mondayOf(fecha))];
+    return w ? w.days[diOfDate(fecha)] : null;
+  };
+  const diaHoy = diaDe(hoy);
+  const diaManana = diaDe(manana);
+
+  // Quién está realmente en el hospital en este momento. La guardia arranca a
+  // la tarde y termina a la mañana siguiente, así que de madrugada el que está
+  // es el de la guardia de AYER, no el de hoy. Durante el día (08 a 17) está
+  // todo el mundo, así que no hay a quién advertir.
+  const guardiaActiva = useMemo(() => {
+    const h = horaAR();
+    if (h >= HORA_AVISO_TARDE) return parseDeGuardia((diaHoy || {}).deGuardia);
+    if (h < HORA_FIN_GUARDIA) return parseDeGuardia((diaDe(ayer) || {}).deGuardia);
+    return null; // horario de actividad normal: nadie está "fuera del hospital"
+  }, [semanas, diaHoy, ayer, hoy]);
 
   const guardarTelefono = async (persona, valor) => {
     try {
@@ -3548,6 +3572,7 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
         <PersonaModal
           persona={openPerson}
           telefono={telefonoDe(openPerson)}
+          guardiaActiva={guardiaActiva}
           isAdmin={embedded && isAdmin}
           editing={editingPhone}
           draft={phoneDraft}
@@ -3671,8 +3696,12 @@ function ChipPersona({ persona, onPick }) {
   );
 }
 
-function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChange, onEdit, onSave, onCancelEdit, onClose }) {
+function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChange, onEdit, onSave, onCancelEdit, onClose, guardiaActiva }) {
   const esResidente = persona.tipo === "residente";
+  // Si hay una guardia activa (tarde/noche/madrugada) y esta persona no está
+  // en ella, no está en el hospital ahora. Se avisa, pero el teléfono y el
+  // botón de WhatsApp se muestran igual: puede haber motivos para llamarla.
+  const fueraDelHospital = !!guardiaActiva && !guardiaActiva.some((p) => p.key === persona.key);
   const c = esResidente ? (COLOR[LEVEL[persona.key]] || COLOR.R2) : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#94A3B8" };
   const limpio = limpiarTelefono(telefono);
   return (
@@ -3683,6 +3712,15 @@ function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChang
           <div style={{ fontWeight: 800, fontSize: 17, color: "#0F172A" }}>{persona.nombre}</div>
           <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: c.solid, color: "#fff" }}>{esResidente ? LEVEL[persona.key] : "INVITADO/A"}</span>
         </div>
+
+        {fueraDelHospital && (
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
+            <span style={{ fontSize: 15, lineHeight: 1.2 }}>🌙</span>
+            <div style={{ fontSize: 12, color: "#92400E", lineHeight: 1.5, fontWeight: 600 }}>
+              No se encuentra en el hospital en este momento, contáctese con los médicos de guardia.
+            </div>
+          </div>
+        )}
 
         {isAdmin && editing ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
