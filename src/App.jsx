@@ -2863,7 +2863,7 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
   };
 
   return (
-    <div style={{ minHeight: embedded ? "auto" : "100vh", background: embedded ? "transparent" : "#F1F5F9" }}>
+    <div style={{ minHeight: embedded ? "auto" : "100vh", background: embedded ? "transparent" : "#CBD5E1" }}>
       <div style={{ maxWidth: embedded ? "none" : 560, margin: embedded ? 0 : "0 auto", padding: embedded ? 0 : "14px 12px 40px", fontFamily: "'Inter', system-ui, sans-serif" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff", flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -2871,6 +2871,12 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
             <div><div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>¿Quién está en la UTI hoy?</div><div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div></div>
           </div>
           <button onClick={copiarLink} style={{ ...NAV, width: "auto", padding: "6px 12px", fontSize: 11 }}>{copied ? "✓ Copiado" : "🔗 Copiar link"}</button>
+        </div>
+
+        {/* Pista discreta: sin esto no es obvio que los chips son tocables. */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 11.5, color: "#475569", marginBottom: 12 }}>
+          <span style={{ fontSize: 12 }}>💬</span>
+          <span style={{ fontStyle: "italic" }}>Presioná en el nombre para enviar un WhatsApp</span>
         </div>
 
         {loading ? <Skeleton /> : (
@@ -2975,8 +2981,11 @@ function FilaDeGuardia({ texto, onPick }) {
   const personas = useMemo(() => parseDeGuardia(texto), [texto]);
   return (
     <div style={{ background: "#FFF1F2", border: "1.5px solid #FECDD3", borderRadius: 12, padding: "9px 12px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, color: "#9F1239", letterSpacing: 0.4, textTransform: "uppercase", marginBottom: 6 }}>
-        <span style={{ fontSize: 13 }}>🌙</span> De guardia
+      <div style={{ display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: 5, marginBottom: 6 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, color: "#9F1239", letterSpacing: 0.4, textTransform: "uppercase" }}>
+          <span style={{ fontSize: 13 }}>🌙</span> De guardia
+        </span>
+        <span style={{ fontSize: 10.5, fontWeight: 600, color: "#BE586B" }}>(a partir de las 16:00 hs)</span>
       </div>
       {personas.length === 0 ? (
         <div style={{ fontSize: 11.5, color: "#FDA4AF", fontStyle: "italic" }}>Sin cargar.</div>
