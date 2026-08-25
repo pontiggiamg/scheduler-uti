@@ -59,6 +59,26 @@ const RESIDENT_EMAIL = {
 };
 const RESIDENT_BY_EMAIL = Object.fromEntries(Object.entries(RESIDENT_EMAIL).map(([name, email]) => [email.toLowerCase(), name]));
 
+// Nombre completo para mostrar en pantallas públicas (por ahora, solo
+// "¿Quién está hoy?"). El resto de la app sigue usando el nombre corto de
+// siempre como identificador interno (RESIDENTS, LEVEL, COLOR, todas las
+// colecciones de Firestore) — este mapeo es puramente de presentación.
+const DISPLAY_NAME = {
+  Nahuel: "Nahuel",
+  Maca: "Macarena",
+  Gian: "Giancarlo",
+  Nata: "Natacia",
+  Andy: "Andrés",
+  Leo: "Leonardo",
+  Caro: "Carolina",
+  Vani: "Vanina",
+  Dani: "Daniel",
+  Ulloa: "Ulloa",
+  Varoli: "Varoli",
+  Chris: "Christian",
+};
+const nombrePublico = (n) => DISPLAY_NAME[n] || n;
+
 // Registro: llegadas tarde, faltas y guardias son eventos con fecha que carga
 // el admin a mano (colección registro_eventos, campo "tipo"). Procedimientos
 // es aparte: cada residente carga los suyos y el admin los aprueba/rechaza
@@ -2720,6 +2740,30 @@ function limpiarTelefono(raw) {
 // Muestra el día actual y el siguiente, hasta Postguardia inclusive (no
 // incluye Observaciones ni Recordatorios del calendario semanal — esta
 // pantalla tiene su propio campo de observaciones, independiente).
+// Cuánto tiempo se guarda el teléfono de un "invitado" (alguien de guardia
+// que escribieron en el texto libre y que no es ninguno de los 12
+// residentes — ej. un médico de planta cubriendo, o un nombre suelto) antes
+// de descartarse solo, para no ir acumulando contactos viejos para siempre.
+const INVITADO_VIGENCIA_MS = 15 * 24 * 60 * 60 * 1000; // 15 días
+
+// El texto de "De guardia" es libre (lo escribe el admin a mano en el
+// calendario semanal), pero en la práctica siempre termina siendo una lista
+// de nombres separados por coma — los mismos nombres que ya aparecen como
+// chips en UTI 1/2/3 y Postguardia. Esta función intenta reconocer cada
+// nombre contra la lista de residentes (por nombre corto o por el nombre
+// público completo, sin importar mayúsculas) para poder mostrarlo como chip
+// clickeable igual que los demás; lo que no matchea con ningún residente
+// queda marcado como "invitado" (chip gris, sin nivel R2/R3/R4).
+function parseDeGuardia(texto) {
+  if (!texto || !texto.trim()) return [];
+  return texto.split(",").map((s) => s.trim()).filter(Boolean).map((raw) => {
+    const bajo = raw.toLowerCase();
+    const residente = ALL.find((n) => n.toLowerCase() === bajo || nombrePublico(n).toLowerCase() === bajo);
+    if (residente) return { tipo: "residente", key: residente, nombre: nombrePublico(residente) };
+    return { tipo: "invitado", key: bajo, nombre: raw };
+  });
+}
+
 function QuienEstaHoyView({ isAdmin, embedded }) {
   const hoy = useMemo(() => new Date(), []);
   const manana = useMemo(() => shift(hoy, 1), [hoy]);
@@ -2731,11 +2775,11 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
 
   const [weekHoy, setWeekHoy] = useState(null);
   const [weekManana, setWeekManana] = useState(null);
-  const [telefonos, setTelefonos] = useState({});
+  const [telefonosDoc, setTelefonosDoc] = useState({ numeros: {}, invitados: {} });
   const [nota, setNota] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const [openPerson, setOpenPerson] = useState(null);
+  const [openPerson, setOpenPerson] = useState(null); // { tipo, key, nombre }
   const [editingPhone, setEditingPhone] = useState(false);
   const [phoneDraft, setPhoneDraft] = useState("");
   const [editingNota, setEditingNota] = useState(false);
@@ -2756,7 +2800,10 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
   }, [idManana, mismaSemana]);
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "scheduler", "telefonos"), (snap) => setTelefonos(snap.exists() && snap.data().numeros ? snap.data().numeros : {}), () => {});
+    const unsub = onSnapshot(doc(db, "scheduler", "telefonos"), (snap) => {
+      const d = snap.exists() ? snap.data() : {};
+      setTelefonosDoc({ numeros: d.numeros || {}, invitados: d.invitados || {} });
+    }, () => {});
     return unsub;
   }, []);
 
@@ -2765,18 +2812,48 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
     return unsub;
   }, []);
 
+  // Limpieza de invitados vencidos (>15 días): solo la dispara la sesión de
+  // admin dentro de la app (nunca la ruta pública /hoy, para que un visitante
+  // externo jamás escriba en Firestore). Si no hay nada vencido, no hace
+  // ninguna escritura — así no repite el mismo trabajo en cada snapshot.
+  useEffect(() => {
+    if (!(embedded && isAdmin)) return;
+    const invitados = telefonosDoc.invitados || {};
+    const ahora = Date.now();
+    const vigentes = {};
+    let huboVencidos = false;
+    Object.entries(invitados).forEach(([k, v]) => {
+      const creado = v && v.creadoEn ? new Date(v.creadoEn).getTime() : NaN;
+      if (!creado || ahora - creado > INVITADO_VIGENCIA_MS) { huboVencidos = true; return; }
+      vigentes[k] = v;
+    });
+    if (huboVencidos) {
+      setDoc(doc(db, "scheduler", "telefonos"), { invitados: vigentes }, { merge: true }).catch((e) => console.error("limpieza de invitados vencidos", e));
+    }
+  }, [telefonosDoc, embedded, isAdmin]);
+
   const diaHoy = weekHoy ? weekHoy.days[diOfDate(hoy)] : null;
   const diaManana = mismaSemana ? (weekHoy ? weekHoy.days[diOfDate(manana)] : null) : (weekManana ? weekManana.days[diOfDate(manana)] : null);
 
-  const guardarTelefono = async (nombre, valor) => {
-    try { await setDoc(doc(db, "scheduler", "telefonos"), { numeros: { ...telefonos, [nombre]: valor.trim() } }, { merge: true }); } catch (e) { console.error(e); }
+  const guardarTelefono = async (persona, valor) => {
+    try {
+      if (persona.tipo === "residente") {
+        const nuevo = { ...(telefonosDoc.numeros || {}), [persona.key]: valor.trim() };
+        await setDoc(doc(db, "scheduler", "telefonos"), { numeros: nuevo }, { merge: true });
+      } else {
+        const nuevo = { ...(telefonosDoc.invitados || {}), [persona.key]: { nombre: persona.nombre, telefono: valor.trim(), creadoEn: new Date().toISOString() } };
+        await setDoc(doc(db, "scheduler", "telefonos"), { invitados: nuevo }, { merge: true });
+      }
+    } catch (e) { console.error(e); }
   };
 
   const guardarNota = async (valor) => {
     try { await setDoc(doc(db, "scheduler", "quien-esta-hoy"), { observaciones: valor.trim() }, { merge: true }); } catch (e) { console.error(e); }
   };
 
-  const abrirPersona = (nombre) => { setOpenPerson(nombre); setEditingPhone(false); setPhoneDraft(telefonos[nombre] || ""); };
+  const telefonoDe = (persona) => (persona.tipo === "residente" ? (telefonosDoc.numeros || {})[persona.key] : (telefonosDoc.invitados || {})[persona.key]?.telefono) || "";
+
+  const abrirPersona = (persona) => { setOpenPerson(persona); setEditingPhone(false); setPhoneDraft(telefonoDe(persona)); };
   const cerrarPersona = () => { setOpenPerson(null); setEditingPhone(false); };
 
   const copiarLink = async () => {
@@ -2830,8 +2907,8 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
 
       {openPerson && (
         <PersonaModal
-          nombre={openPerson}
-          telefono={telefonos[openPerson] || ""}
+          persona={openPerson}
+          telefono={telefonoDe(openPerson)}
           isAdmin={embedded && isAdmin}
           editing={editingPhone}
           draft={phoneDraft}
@@ -2870,6 +2947,8 @@ function DiaCard({ label, emoji, fecha, dia, onPick }) {
       </div>
 
       <div style={{ padding: "10px 16px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <FilaDeGuardia texto={dia.deGuardia} onPick={onPick} />
+
         {weekend ? (
           <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic" }}>UTI 1, UTI 2 y UTI 3 no aplican los fines de semana — cobertura por guardia y postguardia.</div>
         ) : (
@@ -2878,13 +2957,36 @@ function DiaCard({ label, emoji, fecha, dia, onPick }) {
           ))
         )}
 
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 800, color: "#9F1239", letterSpacing: 0.4, textTransform: "uppercase", marginBottom: 3 }}>De guardia</div>
-          {dia.deGuardia ? <div style={{ fontSize: 12.5, color: "#881337", fontWeight: 600, whiteSpace: "pre-wrap" }}>{dia.deGuardia}</div> : <div style={{ fontSize: 11.5, color: "#CBD5E1", fontStyle: "italic" }}>Sin cargar.</div>}
-        </div>
-
         <FilaResidentes label="Postguardia" color="#A855F7" nombres={dia.postguardia} onPick={onPick} />
       </div>
+    </div>
+  );
+}
+
+// La fila de "De guardia" es la más importante de la pantalla (es a quién
+// hay que llamar primero), así que se destaca con una tarjeta propia en vez
+// de ir mezclada con el resto — más contraste de color, borde e ícono más
+// grande que las demás filas. Los nombres se parsean del texto libre del
+// calendario (parseDeGuardia) para que también sean chips clickeables, con
+// el mismo aspecto que los de UTI/Postguardia para los residentes
+// reconocidos, y un chip gris aparte para cualquier nombre que no matchee
+// con ningún residente (típicamente alguien cubriendo desde otro servicio).
+function FilaDeGuardia({ texto, onPick }) {
+  const personas = useMemo(() => parseDeGuardia(texto), [texto]);
+  return (
+    <div style={{ background: "#FFF1F2", border: "1.5px solid #FECDD3", borderRadius: 12, padding: "9px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, color: "#9F1239", letterSpacing: 0.4, textTransform: "uppercase", marginBottom: 6 }}>
+        <span style={{ fontSize: 13 }}>🌙</span> De guardia
+      </div>
+      {personas.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: "#FDA4AF", fontStyle: "italic" }}>Sin cargar.</div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+          {personas.map((p, i) => (
+            <ChipPersona key={`${p.key}-${i}`} persona={p} onPick={onPick} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2894,16 +2996,10 @@ function FilaResidentes({ label, color, nombres, onPick }) {
     <div>
       <div style={{ fontSize: 10, fontWeight: 800, color, letterSpacing: 0.4, textTransform: "uppercase", marginBottom: 5 }}>{label}</div>
       {nombres && nombres.length > 0 ? (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {nombres.map((n) => {
-            const c = COLOR[LEVEL[n]] || COLOR.R2;
-            return (
-              <button key={n} onClick={() => onPick(n)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 11px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
-                {n}
-                <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: c.solid, color: "#fff" }}>{LEVEL[n]}</span>
-              </button>
-            );
-          })}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+          {nombres.map((n) => (
+            <ChipPersona key={n} persona={{ tipo: "residente", key: n, nombre: nombrePublico(n) }} onPick={onPick} />
+          ))}
         </div>
       ) : (
         <div style={{ fontSize: 11.5, color: "#CBD5E1", fontStyle: "italic" }}>Sin asignar.</div>
@@ -2912,21 +3008,39 @@ function FilaResidentes({ label, color, nombres, onPick }) {
   );
 }
 
-function PersonaModal({ nombre, telefono, isAdmin, editing, draft, onDraftChange, onEdit, onSave, onCancelEdit, onClose }) {
-  const c = COLOR[LEVEL[nombre]] || COLOR.R2;
+// Chip chico y clickeable para una persona: coloreado por nivel (R2/R3/R4)
+// si es un residente reconocido, o gris neutro si es un "invitado" que no
+// matchea con ningún residente (ver parseDeGuardia). Más chico que los chips
+// grandes del calendario semanal — acá lo que importa es poder tocarlo
+// rápido desde el celular, no la lectura a distancia.
+function ChipPersona({ persona, onPick }) {
+  const esResidente = persona.tipo === "residente";
+  const c = esResidente ? (COLOR[LEVEL[persona.key]] || COLOR.R2) : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#94A3B8" };
+  return (
+    <button onClick={() => onPick(persona)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>
+      {persona.nombre}
+      <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: c.solid, color: "#fff" }}>{esResidente ? LEVEL[persona.key] : "—"}</span>
+    </button>
+  );
+}
+
+function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChange, onEdit, onSave, onCancelEdit, onClose }) {
+  const esResidente = persona.tipo === "residente";
+  const c = esResidente ? (COLOR[LEVEL[persona.key]] || COLOR.R2) : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#94A3B8" };
   const limpio = limpiarTelefono(telefono);
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 100 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: "18px 18px 0 0", padding: "18px 20px 26px", width: "100%", maxWidth: 420, boxShadow: "0 -8px 30px rgba(15,23,42,.25)" }}>
         <div style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E8F0", margin: "0 auto 14px" }} />
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-          <div style={{ fontWeight: 800, fontSize: 17, color: "#0F172A" }}>{nombre}</div>
-          <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: c.solid, color: "#fff" }}>{LEVEL[nombre]}</span>
+          <div style={{ fontWeight: 800, fontSize: 17, color: "#0F172A" }}>{persona.nombre}</div>
+          <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: c.solid, color: "#fff" }}>{esResidente ? LEVEL[persona.key] : "INVITADO/A"}</span>
         </div>
 
         {isAdmin && editing ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
             <input value={draft} onChange={(e) => onDraftChange(e.target.value)} placeholder="Ej: 5491122334455 (con 549 adelante, sin espacios ni guiones)" style={{ ...INPUT, width: "100%", boxSizing: "border-box" }} />
+            {!esResidente && <div style={{ fontSize: 10.5, color: "#94A3B8", lineHeight: 1.4 }}>Este contacto no es ninguno de los 12 residentes, así que se guarda solo 15 días y después se borra solo, para no acumular números viejos.</div>}
             <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
               <button onClick={onSave} style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✓ Guardar</button>
               <button onClick={onCancelEdit} style={{ background: "#E2E8F0", color: "#64748B", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
@@ -2937,7 +3051,7 @@ function PersonaModal({ nombre, telefono, isAdmin, editing, draft, onDraftChange
             {telefono ? (
               <div style={{ fontSize: 13, color: "#334155", fontWeight: 600 }}>📞 {telefono}</div>
             ) : (
-              <div style={{ fontSize: 12.5, color: "#94A3B8", fontStyle: "italic" }}>Todavía no hay un teléfono cargado para {nombre}.</div>
+              <div style={{ fontSize: 12.5, color: "#94A3B8", fontStyle: "italic" }}>Todavía no hay un teléfono cargado para {persona.nombre}.</div>
             )}
           </div>
         )}
