@@ -10,7 +10,7 @@ const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 // Pestañas de nivel superior de la app. El orden por defecto se usa si todavía
 // no hay nada guardado en Firestore (scheduler/ui-config); el admin puede
 // reordenarlas arrastrando y ese orden se guarda ahí, compartido para todos.
-const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro"];
+const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy"];
 const TAB_META = {
   scheduler: { icon: "📅", label: "Semana" },
   rotaciones: { icon: "🔄", label: "Rotaciones y Vacaciones" },
@@ -19,7 +19,19 @@ const TAB_META = {
   academico: { icon: "📚", label: "Calendario Académico" },
   articulo: { icon: "📄", label: "Artículo de la semana" },
   registro: { icon: "📋", label: "Registro" },
+  hoy: { icon: "📱", label: "¿Quién está hoy?" },
 };
+
+// Ruta pública sin login para compartir a otros servicios del hospital: entra
+// directo a "¿Quién está en la UTI hoy?" (hasta Postguardia inclusive), sin
+// pasar por la pantalla de login de Google. Como las reglas de Firestore ya
+// son de lectura pública, alcanza con esquivar la pantalla de login de esta
+// SPA en el propio cliente — no hace falta backend aparte.
+const PUBLIC_ROUTE_PATH = "/hoy";
+function isPublicRoute() {
+  if (typeof window === "undefined") return false;
+  return window.location.pathname.replace(/\/+$/, "") === PUBLIC_ROUTE_PATH;
+}
 
 const RESIDENTS = {
   R2: ["Maca", "Andy", "Nata", "Nahuel"],
@@ -114,7 +126,13 @@ const COLOR = {
   R4: { bg: "#FFEDD5", bd: "#FDBA74", tx: "#9A3412", solid: "#F97316" },
 };
 
-const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"];
+const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+// Índice (dentro de DAYS) a partir del cual el día es fin de semana. En sábado
+// y domingo no se arma la grilla de camas fija (UTI 1/2/3): esos días la
+// cobertura de terapia se cubre de otra forma (guardia + postguardia), así
+// que esas tres filas quedan bloqueadas y no se pueden usar.
+const WEEKEND_START_IDX = 5;
+const isWeekendIdx = (di) => di >= WEEKEND_START_IDX;
 const MONTHS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const WEEKDAYS_FULL = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 
@@ -159,7 +177,7 @@ function normalize(raw) {
   if (!raw || typeof raw !== "object") return week;
   const legacyGlobal = Array.isArray(raw.unavailable) ? raw.unavailable : [];
   const src = raw.days || {};
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < DAYS.length; i++) {
     const d = src[i] || {};
     const day = week.days[i];
     for (const k of SLOT_KEYS) {
@@ -228,7 +246,18 @@ function normalizeAcademico(raw) {
 
 /* ══════════════════ APP PRINCIPAL ══════════════════ */
 
-export default function App() {
+// Punto de entrada real. Antes de cualquier hook de autenticación, se fija si
+// la URL pedida es la ruta pública /hoy: en ese caso se renderiza solo
+// QuienEstaHoyView (sin login, de solo lectura) y ni se monta el resto de la
+// app. Esta función no llama ningún hook, así que evaluar la condición acá
+// (en vez de adentro de AuthenticatedApp) no rompe las reglas de hooks de
+// React.
+export default function Root() {
+  if (isPublicRoute()) return <QuienEstaHoyView isAdmin={false} embedded={false} />;
+  return <AuthenticatedApp />;
+}
+
+function AuthenticatedApp() {
   const [user, setUser] = useState(undefined); // undefined = loading, null = no user, object = logged in
   const [tab, setTab] = useState("scheduler");
   const [tabOrder, setTabOrder] = useState(DEFAULT_TAB_ORDER);
@@ -368,6 +397,7 @@ export default function App() {
       {tab === "academico" && <AcademicoView isAdmin={isAdmin} />}
       {tab === "articulo" && <ArticuloSemanaView isAdmin={isAdmin} />}
       {tab === "registro" && <RegistroView isAdmin={isAdmin} user={user} />}
+      {tab === "hoy" && <QuienEstaHoyView isAdmin={isAdmin} embedded />}
     </div>
   );
 }
@@ -481,6 +511,7 @@ function SchedulerView({ isAdmin }) {
 
   const place = (target, di) => {
     if (!sel || !isAdmin) return;
+    if (isWeekendIdx(di) && (target === "uti1" || target === "uti2" || target === "uti3")) return; // fin de semana: UTI 1/2/3 bloqueadas
     const { name, from } = sel; setSel(null);
     if (from && from.di === di && from.key === target) return;
     const next = clone(week);
@@ -534,7 +565,7 @@ function SchedulerView({ isAdmin }) {
     // de abrir el diálogo de impresión.
     const prevTitle = document.title;
     const inicio = shift(monday, 0);
-    const fin = shift(monday, 4);
+    const fin = shift(monday, DAYS.length - 1);
     const mismoMes = inicio.getMonth() === fin.getMonth();
     const rango = mismoMes
       ? `${inicio.getDate()} al ${fin.getDate()} de ${MONTHS[inicio.getMonth()].toLowerCase()}`
@@ -608,29 +639,35 @@ function SchedulerView({ isAdmin }) {
         <div ref={printRef}>
           <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} />
           <div style={{ overflowX: "auto", paddingBottom: 4 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "104px repeat(5, minmax(178px, 1fr))", background: "#fff", borderRadius: "14px 14px 0 0", overflow: "hidden", border: "1px solid #E2E8F0", borderBottom: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 1000 }}>
-            <Corner />{DAYS.map((d, i) => <DayHead key={d} name={d} date={dates[i]} isToday={sameDay(dates[i], today)} />)}
+          <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DAYS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "14px 14px 0 0", overflow: "hidden", border: "1px solid #E2E8F0", borderBottom: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DAYS.length * 150 }}>
+            <Corner />{DAYS.map((d, i) => <DayHead key={d} name={d} date={dates[i]} isToday={sameDay(dates[i], today)} isWeekend={isWeekendIdx(i)} />)}
 
             {SLOTS.filter((s) => s.key !== "postguardia").map((slot, ri) => (
               <Fragment key={slot.key}>
                 <RowLabel label={slot.label} color={slot.accent} />
                 {DAYS.map((_, di) => (
-                  <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === 4}>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
-                      {week.days[di][slot.key].sort((a, b) => { const order = { R4: 0, R3: 1, R2: 2 }; return (order[LEVEL[a]] || 3) - (order[LEVEL[b]] || 3); }).map((n) => (
-                        <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
-                      ))}
-                      {active && <GhostHint color={slot.accent} name={sel.name} />}
-                      {!active && week.days[di][slot.key].length === 0 && <Dash />}
-                    </div>
-                  </Cell>
+                  isWeekendIdx(di) ? (
+                    <Cell key={di} tint="#F1F5F9" lastCol={di === DAYS.length - 1}>
+                      <div style={{ textAlign: "center", fontSize: 9.5, color: "#94A3B8", fontStyle: "italic", padding: "13px 2px", lineHeight: 1.3 }}>No aplica<br />fin de semana</div>
+                    </Cell>
+                  ) : (
+                    <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DAYS.length - 1}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
+                        {week.days[di][slot.key].sort((a, b) => { const order = { R4: 0, R3: 1, R2: 2 }; return (order[LEVEL[a]] || 3) - (order[LEVEL[b]] || 3); }).map((n) => (
+                          <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
+                        ))}
+                        {active && <GhostHint color={slot.accent} name={sel.name} />}
+                        {!active && week.days[di][slot.key].length === 0 && <Dash />}
+                      </div>
+                    </Cell>
+                  )
                 ))}
               </Fragment>
             ))}
 
             <RowLabel label="De guardia" color="#9F1239" sub="texto libre" />
             {DAYS.map((_, di) => (
-              <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
+              <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === DAYS.length - 1}>
                 <textarea className="no-print" value={week.days[di].deGuardia} onChange={(e) => editText(di, "deGuardia", e.target.value)} placeholder="Quién queda de guardia…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 40, background: "#FFF1F2", borderColor: "#FECDD3", color: "#881337", fontWeight: 600, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
                 <div className="print-only-block" style={{ whiteSpace: "pre-wrap", fontSize: 11.5, lineHeight: 1.4, color: "#881337", fontWeight: 600, padding: "6px 8px" }}>{week.days[di].deGuardia || "—"}</div>
               </Cell>
@@ -640,7 +677,7 @@ function SchedulerView({ isAdmin }) {
               <Fragment key={slot.key}>
                 <RowLabel label={slot.label} color={slot.accent} />
                 {DAYS.map((_, di) => (
-                  <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === 4}>
+                  <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DAYS.length - 1}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
                       {week.days[di][slot.key].sort((a, b) => { const order = { R4: 0, R3: 1, R2: 2 }; return (order[LEVEL[a]] || 3) - (order[LEVEL[b]] || 3); }).map((n) => (
                         <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
@@ -655,7 +692,7 @@ function SchedulerView({ isAdmin }) {
 
             <RowLabel label="Observaciones" color="#854D0E" sub="importante" />
             {DAYS.map((_, di) => (
-              <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
+              <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === DAYS.length - 1}>
                 <textarea className="no-print" value={week.days[di].observaciones} onChange={(e) => editText(di, "observaciones", e.target.value)} placeholder="Supervisores, pases, avisos…" readOnly={!isAdmin} style={{ ...TEXTAREA, background: "#FEF9C3", borderColor: "#FDE047", color: "#713F12", fontWeight: 600, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
                 <div className="print-only-block" style={{ whiteSpace: "pre-wrap", fontSize: 11.5, lineHeight: 1.4, color: "#713F12", fontWeight: 600, padding: "6px 8px" }}>{week.days[di].observaciones || "—"}</div>
               </Cell>
@@ -665,7 +702,7 @@ function SchedulerView({ isAdmin }) {
             {DAYS.map((_, di) => {
               const clases = academico.activities.filter((a) => a.date === isoDate(dates[di]));
               return (
-                <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === 4}>
+                <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === DAYS.length - 1}>
                   {clases.length > 0 && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 4 }}>
                       {clases.map((a) => (
@@ -689,12 +726,12 @@ function SchedulerView({ isAdmin }) {
           eso son un segundo grid aparte, fuera de printRef. */}
       {!loading && (
         <div className="no-print" style={{ overflowX: "auto", paddingBottom: 4 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "104px repeat(5, minmax(178px, 1fr))", background: "#fff", borderRadius: "0 0 14px 14px", overflow: "hidden", border: "1px solid #E2E8F0", borderTop: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 1000 }}>
+          <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DAYS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "0 0 14px 14px", overflow: "hidden", border: "1px solid #E2E8F0", borderTop: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DAYS.length * 150 }}>
             <RowLabel label="Disponibles" color="#16A34A" />
             {DAYS.map((_, di) => {
               const free = pool(di);
               return (
-                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === 4}>
+                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === DAYS.length - 1}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 50 }}>
                     {active && <div style={{ fontSize: 10, color: "#16A34A", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>↩ liberar el {DAYS[di].toLowerCase()}</div>}
                     {free.length === 0 ? (!active && <div style={{ fontSize: 10.5, color: "#94A3B8", fontStyle: "italic", textAlign: "center", padding: 6 }}>todos asignados</div>) : free.map((n) => <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "pool" }); }} />)}
@@ -705,7 +742,7 @@ function SchedulerView({ isAdmin }) {
 
             <RowLabel label="No disponibles" color="#DC2626" sub="rotación · vacaciones" />
             {DAYS.map((_, di) => (
-              <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === 4} lastRow>
+              <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === DAYS.length - 1} lastRow>
                 <div style={{ display: "flex", flexDirection: "column", gap: 2, minHeight: 40 }}>
                   {week.days[di].unavailable.map((n) => <OutChip key={n} name={n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "unavailable" }); }} selected={sel?.name === n} />)}
                   {active && <div style={{ fontSize: 10, color: "#EF4444", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>marcar solo el {DAYS[di].toLowerCase()}</div>}
@@ -2660,6 +2697,267 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
   );
 }
 
+/* ══════════════════ ¿QUIÉN ESTÁ HOY? (vista pública, sin login) ══════════════════ */
+
+// Convierte un Date de JS (donde domingo = 0) al índice usado en DAYS y en
+// week.days (donde lunes = 0 … domingo = 6), para poder leer el día
+// correcto dentro del documento semanal que ya arma SchedulerView.
+function diOfDate(d) {
+  return (d.getDay() + 6) % 7;
+}
+
+// Deja solo los dígitos de un teléfono cargado a mano, para armar el link de
+// wa.me (que no acepta espacios, guiones ni el signo +).
+function limpiarTelefono(raw) {
+  return (raw || "").replace(/[^\d]/g, "");
+}
+
+// Se usa en dos lugares con el MISMO componente: como pestaña "¿Quién está
+// hoy?" dentro de la app logueada (embedded=true, con controles de edición
+// si isAdmin) y como el contenido completo de la ruta pública /hoy
+// (embedded=false, isAdmin siempre false, sin ningún control de edición —
+// ver Root() más arriba, que ni siquiera monta el login para esa ruta).
+// Muestra el día actual y el siguiente, hasta Postguardia inclusive (no
+// incluye Observaciones ni Recordatorios del calendario semanal — esta
+// pantalla tiene su propio campo de observaciones, independiente).
+function QuienEstaHoyView({ isAdmin, embedded }) {
+  const hoy = useMemo(() => new Date(), []);
+  const manana = useMemo(() => shift(hoy, 1), [hoy]);
+  const mondayHoy = useMemo(() => mondayOf(hoy), [hoy]);
+  const mondayManana = useMemo(() => mondayOf(manana), [manana]);
+  const idHoy = isoDate(mondayHoy);
+  const idManana = isoDate(mondayManana);
+  const mismaSemana = idHoy === idManana;
+
+  const [weekHoy, setWeekHoy] = useState(null);
+  const [weekManana, setWeekManana] = useState(null);
+  const [telefonos, setTelefonos] = useState({});
+  const [nota, setNota] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const [openPerson, setOpenPerson] = useState(null);
+  const [editingPhone, setEditingPhone] = useState(false);
+  const [phoneDraft, setPhoneDraft] = useState("");
+  const [editingNota, setEditingNota] = useState(false);
+  const [notaDraft, setNotaDraft] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    const ref = doc(db, "scheduler", `week-${idHoy}`);
+    const unsub = onSnapshot(ref, (snap) => { setWeekHoy(snap.exists() ? normalize(snap.data()) : emptyWeek()); setLoading(false); }, () => setLoading(false));
+    return unsub;
+  }, [idHoy]);
+
+  useEffect(() => {
+    if (mismaSemana) { setWeekManana(null); return; }
+    const ref = doc(db, "scheduler", `week-${idManana}`);
+    const unsub = onSnapshot(ref, (snap) => setWeekManana(snap.exists() ? normalize(snap.data()) : emptyWeek()), () => {});
+    return unsub;
+  }, [idManana, mismaSemana]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "scheduler", "telefonos"), (snap) => setTelefonos(snap.exists() && snap.data().numeros ? snap.data().numeros : {}), () => {});
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "scheduler", "quien-esta-hoy"), (snap) => setNota(snap.exists() && typeof snap.data().observaciones === "string" ? snap.data().observaciones : ""), () => {});
+    return unsub;
+  }, []);
+
+  const diaHoy = weekHoy ? weekHoy.days[diOfDate(hoy)] : null;
+  const diaManana = mismaSemana ? (weekHoy ? weekHoy.days[diOfDate(manana)] : null) : (weekManana ? weekManana.days[diOfDate(manana)] : null);
+
+  const guardarTelefono = async (nombre, valor) => {
+    try { await setDoc(doc(db, "scheduler", "telefonos"), { numeros: { ...telefonos, [nombre]: valor.trim() } }, { merge: true }); } catch (e) { console.error(e); }
+  };
+
+  const guardarNota = async (valor) => {
+    try { await setDoc(doc(db, "scheduler", "quien-esta-hoy"), { observaciones: valor.trim() }, { merge: true }); } catch (e) { console.error(e); }
+  };
+
+  const abrirPersona = (nombre) => { setOpenPerson(nombre); setEditingPhone(false); setPhoneDraft(telefonos[nombre] || ""); };
+  const cerrarPersona = () => { setOpenPerson(null); setEditingPhone(false); };
+
+  const copiarLink = async () => {
+    const url = `${window.location.origin}${PUBLIC_ROUTE_PATH}`;
+    try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 2200); }
+    catch (e) { window.prompt("Copiá el link:", url); }
+  };
+
+  return (
+    <div style={{ minHeight: embedded ? "auto" : "100vh", background: embedded ? "transparent" : "#F1F5F9" }}>
+      <div style={{ maxWidth: embedded ? "none" : 560, margin: embedded ? 0 : "0 auto", padding: embedded ? 0 : "14px 12px 40px", fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 22 }}>📱</span>
+            <div><div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>¿Quién está en la UTI hoy?</div><div style={{ fontSize: 10.5, opacity: 0.55 }}>Hospital Británico</div></div>
+          </div>
+          <button onClick={copiarLink} style={{ ...NAV, width: "auto", padding: "6px 12px", fontSize: 11 }}>{copied ? "✓ Copiado" : "🔗 Copiar link"}</button>
+        </div>
+
+        {loading ? <Skeleton /> : (
+          <>
+            {(nota.trim() || (embedded && isAdmin)) && (
+              <div style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 12, padding: "10px 14px", marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "#B45309", letterSpacing: 0.4, textTransform: "uppercase" }}>📌 Observaciones</div>
+                  {embedded && isAdmin && !editingNota && (
+                    <button onClick={() => { setNotaDraft(nota); setEditingNota(true); }} style={{ background: "none", border: "none", color: "#B45309", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{nota.trim() ? "✏️ Editar" : "+ Agregar"}</button>
+                  )}
+                </div>
+                {editingNota ? (
+                  <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+                    <textarea value={notaDraft} onChange={(e) => setNotaDraft(e.target.value)} placeholder="Nota visible en esta pantalla, independiente de las Observaciones del calendario semanal…" style={{ ...TEXTAREA, minHeight: 60, background: "#fff" }} />
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button onClick={() => { guardarNota(notaDraft); setEditingNota(false); }} style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✓ Guardar</button>
+                      <button onClick={() => setEditingNota(false)} style={{ background: "#E2E8F0", color: "#64748B", border: "none", borderRadius: 6, padding: "5px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+                    </div>
+                  </div>
+                ) : nota.trim() ? (
+                  <div style={{ fontSize: 12.5, color: "#78350F", lineHeight: 1.5, marginTop: 4, whiteSpace: "pre-wrap" }}>{nota}</div>
+                ) : (
+                  <div style={{ fontSize: 11.5, color: "#CBD5E1", fontStyle: "italic", marginTop: 4 }}>Sin observaciones cargadas.</div>
+                )}
+              </div>
+            )}
+
+            <DiaCard label="Hoy" emoji="🔵" fecha={hoy} dia={diaHoy} onPick={abrirPersona} />
+            <DiaCard label="Mañana" emoji="🌙" fecha={manana} dia={diaManana} onPick={abrirPersona} />
+          </>
+        )}
+      </div>
+
+      {openPerson && (
+        <PersonaModal
+          nombre={openPerson}
+          telefono={telefonos[openPerson] || ""}
+          isAdmin={embedded && isAdmin}
+          editing={editingPhone}
+          draft={phoneDraft}
+          onDraftChange={setPhoneDraft}
+          onEdit={() => setEditingPhone(true)}
+          onSave={() => { guardarTelefono(openPerson, phoneDraft); setEditingPhone(false); }}
+          onCancelEdit={() => setEditingPhone(false)}
+          onClose={cerrarPersona}
+        />
+      )}
+    </div>
+  );
+}
+
+function DiaCard({ label, emoji, fecha, dia, onPick }) {
+  const di = diOfDate(fecha);
+  const weekend = isWeekendIdx(di);
+  const fechaLabel = `${WEEKDAYS_FULL[fecha.getDay()]} ${fecha.getDate()} de ${MONTHS[fecha.getMonth()].toLowerCase()}`;
+
+  if (!dia) {
+    return (
+      <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 16, marginBottom: 12, textAlign: "center", color: "#94A3B8", fontSize: 12.5 }}>
+        {emoji} {label} — todavía no hay calendario cargado para esta semana.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(15,23,42,.04)", overflow: "hidden", marginBottom: 12 }}>
+      <div style={{ padding: "11px 16px", background: "#F8FAFC", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontSize: 13.5, fontWeight: 800, color: "#0F172A" }}>{emoji} {label}</div>
+          <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 1, textTransform: "capitalize" }}>{fechaLabel}</div>
+        </div>
+        {weekend && <span style={{ fontSize: 9.5, fontWeight: 800, color: "#64748B", background: "#F1F5F9", border: "1px solid #E2E8F0", borderRadius: 999, padding: "2px 9px" }}>FIN DE SEMANA</span>}
+      </div>
+
+      <div style={{ padding: "10px 16px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+        {weekend ? (
+          <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic" }}>UTI 1, UTI 2 y UTI 3 no aplican los fines de semana — cobertura por guardia y postguardia.</div>
+        ) : (
+          SLOTS.filter((s) => s.key !== "postguardia").map((slot) => (
+            <FilaResidentes key={slot.key} label={slot.label} color={slot.accent} nombres={dia[slot.key]} onPick={onPick} />
+          ))
+        )}
+
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#9F1239", letterSpacing: 0.4, textTransform: "uppercase", marginBottom: 3 }}>De guardia</div>
+          {dia.deGuardia ? <div style={{ fontSize: 12.5, color: "#881337", fontWeight: 600, whiteSpace: "pre-wrap" }}>{dia.deGuardia}</div> : <div style={{ fontSize: 11.5, color: "#CBD5E1", fontStyle: "italic" }}>Sin cargar.</div>}
+        </div>
+
+        <FilaResidentes label="Postguardia" color="#A855F7" nombres={dia.postguardia} onPick={onPick} />
+      </div>
+    </div>
+  );
+}
+
+function FilaResidentes({ label, color, nombres, onPick }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 800, color, letterSpacing: 0.4, textTransform: "uppercase", marginBottom: 5 }}>{label}</div>
+      {nombres && nombres.length > 0 ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {nombres.map((n) => {
+            const c = COLOR[LEVEL[n]] || COLOR.R2;
+            return (
+              <button key={n} onClick={() => onPick(n)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 11px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+                {n}
+                <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ fontSize: 11.5, color: "#CBD5E1", fontStyle: "italic" }}>Sin asignar.</div>
+      )}
+    </div>
+  );
+}
+
+function PersonaModal({ nombre, telefono, isAdmin, editing, draft, onDraftChange, onEdit, onSave, onCancelEdit, onClose }) {
+  const c = COLOR[LEVEL[nombre]] || COLOR.R2;
+  const limpio = limpiarTelefono(telefono);
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 100 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: "18px 18px 0 0", padding: "18px 20px 26px", width: "100%", maxWidth: 420, boxShadow: "0 -8px 30px rgba(15,23,42,.25)" }}>
+        <div style={{ width: 36, height: 4, borderRadius: 2, background: "#E2E8F0", margin: "0 auto 14px" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+          <div style={{ fontWeight: 800, fontSize: 17, color: "#0F172A" }}>{nombre}</div>
+          <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: c.solid, color: "#fff" }}>{LEVEL[nombre]}</span>
+        </div>
+
+        {isAdmin && editing ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+            <input value={draft} onChange={(e) => onDraftChange(e.target.value)} placeholder="Ej: 5491122334455 (con 549 adelante, sin espacios ni guiones)" style={{ ...INPUT, width: "100%", boxSizing: "border-box" }} />
+            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+              <button onClick={onSave} style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✓ Guardar</button>
+              <button onClick={onCancelEdit} style={{ background: "#E2E8F0", color: "#64748B", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ marginBottom: 14 }}>
+            {telefono ? (
+              <div style={{ fontSize: 13, color: "#334155", fontWeight: 600 }}>📞 {telefono}</div>
+            ) : (
+              <div style={{ fontSize: 12.5, color: "#94A3B8", fontStyle: "italic" }}>Todavía no hay un teléfono cargado para {nombre}.</div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {limpio && !editing && (
+            <a href={`https://wa.me/${limpio}`} target="_blank" rel="noopener noreferrer" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#16A34A", color: "#fff", textDecoration: "none", borderRadius: 12, padding: "13px 16px", fontWeight: 700, fontSize: 14.5 }}>
+              💬 Enviar WhatsApp
+            </a>
+          )}
+          {isAdmin && !editing && (
+            <button onClick={onEdit} style={{ background: "#F1F5F9", color: "#475569", border: "1px solid #E2E8F0", borderRadius: 12, padding: "11px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>✏️ {telefono ? "Editar teléfono" : "Agregar teléfono"}</button>
+          )}
+          <button onClick={onClose} style={{ background: "none", color: "#94A3B8", border: "none", padding: "8px 16px", fontWeight: 600, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>Cerrar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ══════════════════ DÍAS LIBRES R4 ══════════════════ */
 
 const DIAS_LIBRES_OPCIONES = ["Lunes", "Miércoles", "Viernes"];
@@ -2703,7 +3001,7 @@ function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onC
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button onClick={(e) => { e.stopPropagation(); setMonday(shift(monday, -7)); }} style={NAV}>◀</button>
         <div style={{ textAlign: "center", minWidth: 172 }}>
-          <div style={{ fontWeight: 700, fontSize: 13.5 }}>{dm(monday)} — {dm(shift(monday, 4))}</div>
+          <div style={{ fontWeight: 700, fontSize: 13.5 }}>{dm(monday)} — {dm(shift(monday, DAYS.length - 1))}</div>
           <input type="date" value={isoDate(monday)} onClick={(e) => e.stopPropagation()} onChange={(e) => e.target.value && setMonday(mondayOf(new Date(e.target.value + "T12:00:00")))} style={{ background: "rgba(255,255,255,.14)", border: "none", borderRadius: 6, color: "#fff", padding: "3px 7px", fontSize: 10.5, marginTop: 3, cursor: "pointer", fontFamily: "inherit" }} />
         </div>
         <button onClick={(e) => { e.stopPropagation(); setMonday(shift(monday, 7)); }} style={NAV}>▶</button>
@@ -2732,7 +3030,7 @@ const Banner = ({ tone, children }) => { const c = tone === "warn" ? { bg: "#FEF
 
 const Corner = () => (<div style={{ background: "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "2px solid #E2E8F0" }} />);
 
-const DayHead = ({ name, date, isToday }) => (<div style={{ padding: "9px 4px", textAlign: "center", background: isToday ? "#EFF6FF" : "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "1px solid #F1F5F9" }}><div style={{ fontWeight: 700, fontSize: 12.5, color: isToday ? "#1D4ED8" : "#0F172A" }}>{name}</div><div style={{ fontSize: 10.5, color: isToday ? "#3B82F6" : "#94A3B8", fontWeight: isToday ? 700 : 500 }}>{dm(date)}</div></div>);
+const DayHead = ({ name, date, isToday, isWeekend }) => (<div style={{ padding: "9px 4px", textAlign: "center", background: isToday ? "#EFF6FF" : isWeekend ? "#F1F5F9" : "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "1px solid #F1F5F9" }}><div style={{ fontWeight: 700, fontSize: 12.5, color: isToday ? "#1D4ED8" : isWeekend ? "#94A3B8" : "#0F172A" }}>{name}</div><div style={{ fontSize: 10.5, color: isToday ? "#3B82F6" : "#94A3B8", fontWeight: isToday ? 700 : 500 }}>{dm(date)}</div></div>);
 
 const RowLabel = ({ label, color, sub, className }) => (<div className={className} style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end", textAlign: "right", padding: "8px 10px", background: "#F8FAFC", borderRight: "2px solid #E2E8F0", borderBottom: "2px solid #D1D5DB", borderTop: "2px solid #D1D5DB" }}><div style={{ fontWeight: 700, fontSize: 11, color, letterSpacing: 0.1 }}>{label}</div>{sub && <div style={{ fontSize: 8.5, color: "#94A3B8", marginTop: 1 }}>{sub}</div>}</div>);
 
