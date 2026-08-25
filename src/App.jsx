@@ -220,12 +220,16 @@ function normalize(raw) {
     // Migración transparente: las semanas viejas guardaron deGuardia como un
     // texto libre separado por comas ("Lourdes, Chris, Nahuel"). Se convierte
     // al leer, así no hay que tocar nada a mano en Firestore — la próxima vez
-    // que se guarde esa semana ya queda como array.
-    day.deGuardia = Array.isArray(d.deGuardia)
-      ? d.deGuardia.filter((n) => typeof n === "string" && n.trim()).map((n) => n.trim())
-      : typeof d.deGuardia === "string"
-        ? d.deGuardia.split(",").map((n) => n.trim()).filter(Boolean)
-        : [];
+    // que se guarde esa semana ya queda como array. De paso se canoniza cada
+    // nombre al del residente correspondiente (ver canonizarGuardia), para que
+    // "Daniel" y "Dani" no cuenten como dos personas distintas.
+    day.deGuardia = normalizarListaGuardia(
+      Array.isArray(d.deGuardia)
+        ? d.deGuardia.filter((n) => typeof n === "string")
+        : typeof d.deGuardia === "string"
+          ? d.deGuardia.split(",")
+          : []
+    );
     // Marcar un día como feriado no cambia cómo se arma la semana: es un dato
     // para poder contar después cuántas guardias de cada residente cayeron en
     // día hábil, fin de semana o feriado.
@@ -241,6 +245,35 @@ const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length ==
 
 // Un nombre de guardia puede ser uno de los 12 residentes o alguien de afuera.
 const esResidente = (n) => !!LEVEL[n];
+
+// Los nombres de guardia se escribieron históricamente a mano, así que la
+// misma persona puede aparecer como "Dani" (nombre corto interno) o "Daniel"
+// (nombre público). Esto resuelve cualquiera de las dos formas al residente
+// real; devuelve null si es alguien de afuera.
+function resolverResidente(raw) {
+  const bajo = String(raw || "").trim().toLowerCase();
+  if (!bajo) return null;
+  return ALL.find((n) => n.toLowerCase() === bajo || nombrePublico(n).toLowerCase() === bajo) || null;
+}
+
+// Guarda siempre el nombre corto cuando se trata de un residente. Es clave
+// para poder contar guardias por persona: si un día quedó escrito "Daniel" y
+// otro "Dani", serían dos personas distintas al sumar.
+const canonizarGuardia = (raw) => resolverResidente(raw) || String(raw || "").trim();
+
+function normalizarListaGuardia(lista) {
+  const vistos = new Set();
+  const out = [];
+  (lista || []).forEach((raw) => {
+    const n = canonizarGuardia(raw);
+    if (!n) return;
+    const clave = n.toLowerCase();
+    if (vistos.has(clave)) return;
+    vistos.add(clave);
+    out.push(n);
+  });
+  return out;
+}
 
 /* ══════════════════ MODELO ROTACIONES ══════════════════ */
 
@@ -1140,7 +1173,10 @@ function GuardiaEditor({ fecha, dia, valor, onChange, onClose }) {
   const agregarInvitado = () => {
     const v = nuevo.trim();
     if (!v) return;
-    if (!seleccion.some((x) => x.toLowerCase() === v.toLowerCase())) onChange([...seleccion, v]);
+    // Si lo que escribió es en realidad un residente (por nombre corto o por
+    // nombre público), se guarda como residente en vez de crear un duplicado
+    // suelto que después no sumaría en el conteo.
+    onChange(normalizarListaGuardia([...seleccion, v]));
     setNuevo("");
   };
 
