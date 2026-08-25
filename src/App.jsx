@@ -189,7 +189,16 @@ const fechaHoraAR = (d) => new Intl.DateTimeFormat("es-AR", { dateStyle: "short"
 
 /* ══════════════════ MODELO SEMANA ══════════════════ */
 
-const emptyDay = () => ({ uti1: [], uti2: [], uti3: [], postguardia: [], unavailable: [], observaciones: "", recordatorios: "", deGuardia: "" });
+// Ojo con deGuardia: es un ARRAY de nombres, no un texto. A diferencia de
+// uti1/uti2/uti3/postguardia/unavailable —que son excluyentes entre sí dentro
+// de un mismo día— la guardia NO es un lugar donde la persona está, sino algo
+// que además le toca ese día. Alguien puede estar cubriendo UTI 2 y encima
+// quedar de guardia, o estar rotando afuera (no disponible) y quedar de
+// guardia igual. Por eso la guardia queda fuera de SLOT_KEYS y no la toca
+// detach(): así nunca compite con el resto ni saca a nadie de donde estaba.
+// Cada entrada puede ser el nombre corto de un residente o un nombre suelto
+// de alguien de afuera (ej. un médico de planta cubriendo).
+const emptyDay = () => ({ uti1: [], uti2: [], uti3: [], postguardia: [], unavailable: [], observaciones: "", recordatorios: "", deGuardia: [], feriado: false });
 const emptyDiasLibresR4 = () => Object.fromEntries(RESIDENTS.R4.map((n) => [n, ""]));
 const emptyWeek = () => ({ days: DAYS.map(() => emptyDay()), diasLibresR4: emptyDiasLibresR4() });
 
@@ -208,7 +217,19 @@ function normalize(raw) {
     day.unavailable = Array.isArray(d.unavailable) ? d.unavailable.filter((n) => LEVEL[n]) : [...legacyGlobal];
     day.observaciones = typeof d.observaciones === "string" ? d.observaciones : "";
     day.recordatorios = typeof d.recordatorios === "string" ? d.recordatorios : "";
-    day.deGuardia = typeof d.deGuardia === "string" ? d.deGuardia : "";
+    // Migración transparente: las semanas viejas guardaron deGuardia como un
+    // texto libre separado por comas ("Lourdes, Chris, Nahuel"). Se convierte
+    // al leer, así no hay que tocar nada a mano en Firestore — la próxima vez
+    // que se guarde esa semana ya queda como array.
+    day.deGuardia = Array.isArray(d.deGuardia)
+      ? d.deGuardia.filter((n) => typeof n === "string" && n.trim()).map((n) => n.trim())
+      : typeof d.deGuardia === "string"
+        ? d.deGuardia.split(",").map((n) => n.trim()).filter(Boolean)
+        : [];
+    // Marcar un día como feriado no cambia cómo se arma la semana: es un dato
+    // para poder contar después cuántas guardias de cada residente cayeron en
+    // día hábil, fin de semana o feriado.
+    day.feriado = d.feriado === true;
   }
   const dl = raw.diasLibresR4 || {};
   for (const n of RESIDENTS.R4) week.diasLibresR4[n] = DAYS.includes(dl[n]) ? dl[n] : "";
@@ -216,7 +237,10 @@ function normalize(raw) {
 }
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
-const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length === 0) && d.unavailable.length === 0 && !d.observaciones.trim() && !d.recordatorios.trim() && !d.deGuardia.trim()) && RESIDENTS.R4.every((n) => !w.diasLibresR4[n]);
+const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length === 0) && d.unavailable.length === 0 && !d.observaciones.trim() && !d.recordatorios.trim() && d.deGuardia.length === 0 && !d.feriado) && RESIDENTS.R4.every((n) => !w.diasLibresR4[n]);
+
+// Un nombre de guardia puede ser uno de los 12 residentes o alguien de afuera.
+const esResidente = (n) => !!LEVEL[n];
 
 /* ══════════════════ MODELO ROTACIONES ══════════════════ */
 
@@ -683,6 +707,8 @@ function SchedulerView({ isAdmin }) {
   const [toast, setToast] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [academico, setAcademico] = useState(emptyAcademico);
+  const [guardiaEdit, setGuardiaEdit] = useState(null); // índice del día cuya guardia se está editando
+  const [feriadosOpen, setFeriadosOpen] = useState(false);
 
   const docId = `week-${isoDate(monday)}`;
   const pending = useRef(null);
@@ -744,9 +770,12 @@ function SchedulerView({ isAdmin }) {
     setSel((cur) => cur && cur.name === name && cur.from?.di === from?.di && cur.from?.key === from?.key ? null : { name, from });
   };
 
+  // Sábado, domingo y feriado comparten el mismo régimen: sin camas fijas.
+  const utiBloqueada = (di) => isWeekendIdx(di) || week.days[di].feriado;
+
   const place = (target, di) => {
     if (!sel || !isAdmin) return;
-    if (isWeekendIdx(di) && (target === "uti1" || target === "uti2" || target === "uti3")) return; // fin de semana: UTI 1/2/3 bloqueadas
+    if (utiBloqueada(di) && (target === "uti1" || target === "uti2" || target === "uti3")) return; // fin de semana o feriado: UTI 1/2/3 bloqueadas
     const { name, from } = sel; setSel(null);
     if (from && from.di === di && from.key === target) return;
     const next = clone(week);
@@ -758,6 +787,11 @@ function SchedulerView({ isAdmin }) {
     next.days[di][target].push(name);
     commit(next);
   };
+
+  // La guardia se edita aparte del sistema de "seleccionar y ubicar", porque
+  // ese sistema es excluyente (mueve a la persona de un lugar a otro) y acá
+  // justamente queremos que se superponga con lo que ya tenga ese día.
+  const setGuardia = (di, lista) => { if (!isAdmin) return; const next = clone(week); next.days[di].deGuardia = lista; commit(next, 200); };
 
   const removeChip = (name, di) => { if (!isAdmin) return; const next = clone(week); detach(next, name, di); setSel(null); commit(next); };
   const editText = (di, field, value) => { if (!isAdmin) return; const next = clone(week); next.days[di][field] = value; commit(next, 700); };
@@ -774,6 +808,25 @@ function SchedulerView({ isAdmin }) {
   };
 
   const clearWeek = () => { if (!isAdmin) return; setMenuOpen(false); if (!confirm("¿Vaciar toda la semana?")) return; setSel(null); commit(emptyWeek(), 0); };
+
+  // Un feriado se cubre igual que un fin de semana: no hay grilla fija de
+  // camas, solo guardia y postguardia. Por eso al marcarlo se vacían UTI 1/2/3
+  // de ese día — si no, quedarían asignaciones invisibles (la fila está
+  // bloqueada) pero que igual sacarían a esa gente de "Disponibles", que es
+  // justo el tipo de estado fantasma que después nadie entiende. Se avisa
+  // antes de borrar nada.
+  const toggleFeriado = (di) => {
+    if (!isAdmin) return;
+    const next = clone(week);
+    const d = next.days[di];
+    if (!d.feriado) {
+      const asignados = ["uti1", "uti2", "uti3"].reduce((n, k) => n + d[k].length, 0);
+      if (asignados > 0 && !confirm(`El ${DAYS[di].toLowerCase()} tiene ${asignados} asignación${asignados === 1 ? "" : "es"} en UTI 1/2/3. Al marcarlo como feriado esas filas se bloquean y esas asignaciones se borran. ¿Continuar?`)) return;
+      ["uti1", "uti2", "uti3"].forEach((k) => { d[k] = []; });
+    }
+    d.feriado = !d.feriado;
+    commit(next, 200);
+  };
 
   // Imprimir / PDF: se ajusta solo para que todo el calendario (hasta
   // Recordatorios) entre en una sola hoja A4 horizontal. Medimos el bloque
@@ -864,7 +917,7 @@ function SchedulerView({ isAdmin }) {
 
   return (
     <div onClick={() => { setSel(null); setMenuOpen(false); }}>
-      <SchedulerHeader monday={monday} setMonday={setMonday} status={status} menuOpen={menuOpen} setMenuOpen={setMenuOpen} onCopyPrev={copyPrevWeek} onClear={clearWeek} onPrint={handlePrint} isAdmin={isAdmin} />
+      <SchedulerHeader monday={monday} setMonday={setMonday} status={status} menuOpen={menuOpen} setMenuOpen={setMenuOpen} onCopyPrev={copyPrevWeek} onClear={clearWeek} onPrint={handlePrint} onFeriados={() => { setMenuOpen(false); setFeriadosOpen(true); }} isAdmin={isAdmin} />
 
       <div style={{ minHeight: 34, marginBottom: 6 }} className="no-print">
         {toast ? <Banner tone="warn">{toast}</Banner> : active ? <Banner tone="info"><b>{sel.name}</b> seleccionado — tocá una celda para ubicarlo, o Esc para cancelar</Banner> : <div style={{ fontSize: 12, color: "#94A3B8", padding: "6px 2px" }}>{isAdmin ? "Tocá un residente para seleccionarlo y después la celda donde va." : "Solo lectura — solo el administrador puede editar."}</div>}
@@ -875,15 +928,15 @@ function SchedulerView({ isAdmin }) {
           <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} />
           <div style={{ overflowX: "auto", paddingBottom: 4 }}>
           <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DAYS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "14px 14px 0 0", overflow: "hidden", border: "1px solid #E2E8F0", borderBottom: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DAYS.length * 150 }}>
-            <Corner />{DAYS.map((d, i) => <DayHead key={d} name={d} date={dates[i]} isToday={sameDay(dates[i], today)} isWeekend={isWeekendIdx(i)} />)}
+            <Corner />{DAYS.map((d, i) => <DayHead key={d} name={d} date={dates[i]} isToday={sameDay(dates[i], today)} isWeekend={isWeekendIdx(i)} feriado={week.days[i].feriado} />)}
 
             {SLOTS.filter((s) => s.key !== "postguardia").map((slot, ri) => (
               <Fragment key={slot.key}>
                 <RowLabel label={slot.label} color={slot.accent} />
                 {DAYS.map((_, di) => (
-                  isWeekendIdx(di) ? (
-                    <Cell key={di} tint="#F1F5F9" lastCol={di === DAYS.length - 1}>
-                      <div style={{ textAlign: "center", fontSize: 9.5, color: "#94A3B8", fontStyle: "italic", padding: "13px 2px", lineHeight: 1.3 }}>No aplica<br />fin de semana</div>
+                  utiBloqueada(di) ? (
+                    <Cell key={di} tint={week.days[di].feriado ? "#FEF9E7" : "#F1F5F9"} lastCol={di === DAYS.length - 1}>
+                      <div style={{ textAlign: "center", fontSize: 9.5, color: week.days[di].feriado ? "#B45309" : "#94A3B8", fontStyle: "italic", padding: "13px 2px", lineHeight: 1.3 }}>No aplica<br />{week.days[di].feriado ? "feriado" : "fin de semana"}</div>
                     </Cell>
                   ) : (
                     <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DAYS.length - 1}>
@@ -900,13 +953,20 @@ function SchedulerView({ isAdmin }) {
               </Fragment>
             ))}
 
-            <RowLabel label="De guardia" color="#9F1239" sub="texto libre" />
-            {DAYS.map((_, di) => (
-              <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === DAYS.length - 1}>
-                <textarea className="no-print" value={week.days[di].deGuardia} onChange={(e) => editText(di, "deGuardia", e.target.value)} placeholder="Quién queda de guardia…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 40, background: "#FFF1F2", borderColor: "#FECDD3", color: "#881337", fontWeight: 600, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
-                <div className="print-only-block" style={{ whiteSpace: "pre-wrap", fontSize: 11.5, lineHeight: 1.4, color: "#881337", fontWeight: 600, padding: "6px 8px" }}>{week.days[di].deGuardia || "—"}</div>
-              </Cell>
-            ))}
+            <RowLabel label="De guardia" color="#9F1239" sub="se superpone" />
+            {DAYS.map((_, di) => {
+              const lista = week.days[di].deGuardia;
+              return (
+                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (isAdmin) setGuardiaEdit(di); }} tint="#FFF1F2" pad={5} lastCol={di === DAYS.length - 1}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 3, minHeight: 40, alignContent: "flex-start", cursor: isAdmin ? "pointer" : "default" }}>
+                    {lista.length === 0 ? (
+                      <div className="no-print" style={{ fontSize: 10, color: "#FDA4AF", fontStyle: "italic", padding: "10px 4px", width: "100%", textAlign: "center" }}>{isAdmin ? "+ elegir guardia" : "—"}</div>
+                    ) : lista.map((n) => <ChipGuardia key={n} name={n} />)}
+                  </div>
+                  <div className="print-only-block" style={{ fontSize: 11.5, lineHeight: 1.4, color: "#881337", fontWeight: 600, padding: "6px 8px" }}>{lista.length ? lista.join(", ") : "—"}</div>
+                </Cell>
+              );
+            })}
 
             {SLOTS.filter((s) => s.key === "postguardia").map((slot) => (
               <Fragment key={slot.key}>
@@ -989,6 +1049,145 @@ function SchedulerView({ isAdmin }) {
         </div>
       )}
       <div className="no-print"><Legend /></div>
+
+      {feriadosOpen && isAdmin && (
+        <FeriadosEditor
+          dates={dates}
+          week={week}
+          onToggle={toggleFeriado}
+          onClose={() => setFeriadosOpen(false)}
+        />
+      )}
+
+      {guardiaEdit !== null && isAdmin && (
+        <GuardiaEditor
+          fecha={dates[guardiaEdit]}
+          dia={DAYS[guardiaEdit]}
+          valor={week.days[guardiaEdit].deGuardia}
+          onChange={(lista) => setGuardia(guardiaEdit, lista)}
+          onClose={() => setGuardiaEdit(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Marcar feriados de la semana. Vive en el menú "⋯" en vez de tener un control
+// en cada celda: es algo que se toca pocas veces al año y no queremos sumarle
+// ruido visual a la grilla. Marcar un día NO cambia cómo se arma la semana
+// (las camas se siguen asignando igual); es solo el dato que después permite
+// contar las guardias de cada residente separadas por hábil, fin de semana y
+// feriado.
+function FeriadosEditor({ dates, week, onToggle, onClose }) {
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120, padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "18px 20px 20px", width: "100%", maxWidth: 400, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 12px 40px rgba(15,23,42,.28)", fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+          <div style={{ fontWeight: 800, fontSize: 15.5, color: "#0F172A" }}>🎌 Marcar feriado</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 18, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ fontSize: 11.5, color: "#64748B", marginBottom: 14, lineHeight: 1.5 }}>
+          Tocá los días de esta semana que sean feriado. No cambia las asignaciones — sirve para contar después las guardias por tipo de día.
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {DAYS.map((d, di) => {
+            const on = week.days[di].feriado;
+            return (
+              <div key={d} onClick={() => onToggle(di)} style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "10px 13px", borderRadius: 10, background: on ? "#FEF3C7" : "#F8FAFC", border: `1.5px solid ${on ? "#FCD34D" : "#E2E8F0"}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 14 }}>{on ? "🎌" : "📅"}</span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: on ? "#92400E" : "#334155" }}>{d}</div>
+                    <div style={{ fontSize: 10.5, color: on ? "#B45309" : "#94A3B8" }}>{dm(dates[di])}</div>
+                  </div>
+                </div>
+                {on && <span style={{ fontSize: 9.5, fontWeight: 800, color: "#92400E", background: "#FDE68A", borderRadius: 999, padding: "3px 10px" }}>FERIADO</span>}
+              </div>
+            );
+          })}
+        </div>
+
+        <button onClick={onClose} style={{ width: "100%", marginTop: 16, background: "#16A34A", color: "#fff", border: "none", borderRadius: 10, padding: "11px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Listo</button>
+      </div>
+    </div>
+  );
+}
+
+// Chip compacto para la fila "De guardia" del calendario. Coloreado por nivel
+// si es residente, gris si es alguien de afuera (planta, otro servicio).
+const ChipGuardia = ({ name }) => {
+  const c = esResidente(name) ? COLOR[LEVEL[name]] : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#94A3B8" };
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2.5px 6px", borderRadius: 6, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 600, fontSize: 10.5, lineHeight: 1.25 }}>
+      {name}
+      <span style={{ fontSize: 7, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: c.solid, color: "#fff" }}>{esResidente(name) ? LEVEL[name] : "—"}</span>
+    </span>
+  );
+};
+
+// Editor de la guardia de un día. Se abre tocando la celda y es independiente
+// del sistema de seleccionar-y-ubicar: acá se marcan residentes sin sacarlos
+// de la UTI donde ya estén ni de "no disponibles". Además permite sumar a
+// alguien que no es residente (planta, otro servicio) escribiendo el nombre.
+function GuardiaEditor({ fecha, dia, valor, onChange, onClose }) {
+  const [nuevo, setNuevo] = useState("");
+  const seleccion = valor || [];
+  const invitados = seleccion.filter((n) => !esResidente(n));
+
+  const toggle = (n) => onChange(seleccion.includes(n) ? seleccion.filter((x) => x !== n) : [...seleccion, n]);
+  const quitar = (n) => onChange(seleccion.filter((x) => x !== n));
+  const agregarInvitado = () => {
+    const v = nuevo.trim();
+    if (!v) return;
+    if (!seleccion.some((x) => x.toLowerCase() === v.toLowerCase())) onChange([...seleccion, v]);
+    setNuevo("");
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120, padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "18px 20px 20px", width: "100%", maxWidth: 460, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 12px 40px rgba(15,23,42,.28)", fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+          <div style={{ fontWeight: 800, fontSize: 15.5, color: "#0F172A" }}>🌙 De guardia</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 18, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ fontSize: 11.5, color: "#64748B", marginBottom: 14 }}>{dia} {dm(fecha)}</div>
+
+        <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 6, letterSpacing: 0.3 }}>RESIDENTES</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+          {ALL.map((n) => {
+            const on = seleccion.includes(n);
+            const c = COLOR[LEVEL[n]];
+            return (
+              <div key={n} onClick={() => toggle(n)} style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 5, padding: "6px 11px", borderRadius: 8, background: on ? c.solid : "#F8FAFC", border: `1.5px solid ${on ? c.solid : "#E2E8F0"}`, color: on ? "#fff" : "#64748B", fontWeight: 600, fontSize: 12.5 }}>
+                {on && "✓ "}{n}
+                <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: on ? "rgba(255,255,255,.28)" : c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 10.5, color: "#94A3B8", lineHeight: 1.45, marginBottom: 16 }}>
+          Marcar a alguien acá no lo saca de la UTI que tenga asignada ese día ni de "no disponibles" — la guardia se superpone con el resto.
+        </div>
+
+        <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 6, letterSpacing: 0.3 }}>OTRA PERSONA (PLANTA, OTRO SERVICIO)</div>
+        {invitados.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            {invitados.map((n) => (
+              <div key={n} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 6px 5px 11px", borderRadius: 8, background: "#F1F5F9", border: "1.5px solid #CBD5E1", color: "#475569", fontWeight: 600, fontSize: 12.5 }}>
+                {n}
+                <button onClick={() => quitar(n)} style={{ background: "none", border: "none", color: "#94A3B8", cursor: "pointer", fontSize: 14, fontFamily: "inherit", lineHeight: 1, padding: 0 }}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 6 }}>
+          <input value={nuevo} onChange={(e) => setNuevo(e.target.value)} placeholder="Nombre y apellido…" onKeyDown={(e) => e.key === "Enter" && agregarInvitado()} style={{ ...INPUT, flex: 1, fontSize: 12.5, padding: "8px 10px" }} />
+          <button onClick={agregarInvitado} style={{ background: "#0F172A", color: "#fff", border: "none", borderRadius: 7, padding: "8px 15px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>+ Agregar</button>
+        </div>
+
+        <button onClick={onClose} style={{ width: "100%", marginTop: 18, background: "#16A34A", color: "#fff", border: "none", borderRadius: 10, padding: "11px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Listo</button>
+      </div>
     </div>
   );
 }
@@ -2969,13 +3168,17 @@ const INVITADO_VIGENCIA_MS = 15 * 24 * 60 * 60 * 1000; // 15 días
 // público completo, sin importar mayúsculas) para poder mostrarlo como chip
 // clickeable igual que los demás; lo que no matchea con ningún residente
 // queda marcado como "invitado" (chip gris, sin nivel R2/R3/R4).
-function parseDeGuardia(texto) {
-  if (!texto || !texto.trim()) return [];
-  return texto.split(",").map((s) => s.trim()).filter(Boolean).map((raw) => {
-    const bajo = raw.toLowerCase();
+function parseDeGuardia(lista) {
+  // Tolera tanto el array actual como el texto libre separado por comas de las
+  // semanas viejas, por si alguna todavía no pasó por normalize().
+  const nombres = Array.isArray(lista)
+    ? lista
+    : String(lista || "").split(",").map((s) => s.trim()).filter(Boolean);
+  return nombres.map((raw) => {
+    const bajo = String(raw).trim().toLowerCase();
     const residente = ALL.find((n) => n.toLowerCase() === bajo || nombrePublico(n).toLowerCase() === bajo);
     if (residente) return { tipo: "residente", key: residente, nombre: nombrePublico(residente) };
-    return { tipo: "invitado", key: bajo, nombre: raw };
+    return { tipo: "invitado", key: bajo, nombre: String(raw).trim() };
   });
 }
 
@@ -3147,6 +3350,9 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
 function DiaCard({ label, emoji, fecha, dia, onPick }) {
   const di = diOfDate(fecha);
   const weekend = isWeekendIdx(di);
+  const feriado = !!(dia && dia.feriado);
+  // Un feriado se cubre igual que un fin de semana: sin camas fijas.
+  const sinCamas = weekend || feriado;
   const fechaLabel = `${WEEKDAYS_FULL[fecha.getDay()]} ${fecha.getDate()} de ${MONTHS[fecha.getMonth()].toLowerCase()}`;
 
   if (!dia) {
@@ -3164,14 +3370,16 @@ function DiaCard({ label, emoji, fecha, dia, onPick }) {
           <div style={{ fontSize: 13.5, fontWeight: 800, color: "#0F172A" }}>{emoji} {label}</div>
           <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 1, textTransform: "capitalize" }}>{fechaLabel}</div>
         </div>
-        {weekend && <span style={{ fontSize: 9.5, fontWeight: 800, color: "#64748B", background: "#F1F5F9", border: "1px solid #E2E8F0", borderRadius: 999, padding: "2px 9px" }}>FIN DE SEMANA</span>}
+        {feriado
+          ? <span style={{ fontSize: 9.5, fontWeight: 800, color: "#92400E", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 999, padding: "2px 9px" }}>🎌 FERIADO</span>
+          : weekend && <span style={{ fontSize: 9.5, fontWeight: 800, color: "#64748B", background: "#F1F5F9", border: "1px solid #E2E8F0", borderRadius: 999, padding: "2px 9px" }}>FIN DE SEMANA</span>}
       </div>
 
       <div style={{ padding: "10px 16px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-        <FilaDeGuardia texto={dia.deGuardia} onPick={onPick} />
+        <FilaDeGuardia lista={dia.deGuardia} onPick={onPick} />
 
-        {weekend ? (
-          <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic" }}>UTI 1, UTI 2 y UTI 3 no aplican los fines de semana — cobertura por guardia y postguardia.</div>
+        {sinCamas ? (
+          <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic" }}>UTI 1, UTI 2 y UTI 3 no aplican {feriado ? "los feriados" : "los fines de semana"} — cobertura por guardia y postguardia.</div>
         ) : (
           SLOTS.filter((s) => s.key !== "postguardia").map((slot) => (
             <FilaResidentes key={slot.key} label={slot.label} color={slot.accent} nombres={dia[slot.key]} onPick={onPick} />
@@ -3192,8 +3400,8 @@ function DiaCard({ label, emoji, fecha, dia, onPick }) {
 // el mismo aspecto que los de UTI/Postguardia para los residentes
 // reconocidos, y un chip gris aparte para cualquier nombre que no matchee
 // con ningún residente (típicamente alguien cubriendo desde otro servicio).
-function FilaDeGuardia({ texto, onPick }) {
-  const personas = useMemo(() => parseDeGuardia(texto), [texto]);
+function FilaDeGuardia({ lista, onPick }) {
+  const personas = useMemo(() => parseDeGuardia(lista), [lista]);
   return (
     <div style={{ background: "#FFF1F2", border: "1.5px solid #FECDD3", borderRadius: 12, padding: "9px 12px" }}>
       <div style={{ display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: 5, marginBottom: 6 }}>
@@ -3328,7 +3536,7 @@ function DiasLibresR4({ week, isAdmin, onChange }) {
 
 /* ══════════════════ SCHEDULER HEADER ══════════════════ */
 
-function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onCopyPrev, onClear, onPrint, isAdmin }) {
+function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onCopyPrev, onClear, onPrint, onFeriados, isAdmin }) {
   const S = { saving: { t: "Guardando…", c: "#CBD5E1", b: "rgba(255,255,255,.12)" }, saved: { t: "✓ Guardado", c: "#86EFAC", b: "rgba(34,197,94,.18)" }, error: { t: "⚠ Sin conexión", c: "#FCA5A5", b: "rgba(239,68,68,.18)" } }[status];
   return (
     <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
@@ -3351,6 +3559,7 @@ function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onC
         {menuOpen && isAdmin && (
           <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, background: "#fff", borderRadius: 10, boxShadow: "0 10px 30px rgba(15,23,42,.22)", border: "1px solid #E2E8F0", overflow: "hidden", zIndex: 40, minWidth: 210 }}>
             <MenuItem onClick={onCopyPrev}>📋 Copiar semana anterior</MenuItem>
+            <MenuItem onClick={onFeriados}>🎌 Marcar feriado</MenuItem>
             <MenuItem onClick={() => { setMenuOpen(false); onPrint(); }}>🖨️ Imprimir / PDF</MenuItem>
             <MenuItem onClick={onClear} danger>🗑️ Vaciar semana</MenuItem>
           </div>
@@ -3368,7 +3577,7 @@ const Banner = ({ tone, children }) => { const c = tone === "warn" ? { bg: "#FEF
 
 const Corner = () => (<div style={{ background: "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "2px solid #E2E8F0" }} />);
 
-const DayHead = ({ name, date, isToday, isWeekend }) => (<div style={{ padding: "9px 4px", textAlign: "center", background: isToday ? "#EFF6FF" : isWeekend ? "#F1F5F9" : "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "1px solid #F1F5F9" }}><div style={{ fontWeight: 700, fontSize: 12.5, color: isToday ? "#1D4ED8" : isWeekend ? "#94A3B8" : "#0F172A" }}>{name}</div><div style={{ fontSize: 10.5, color: isToday ? "#3B82F6" : "#94A3B8", fontWeight: isToday ? 700 : 500 }}>{dm(date)}</div></div>);
+const DayHead = ({ name, date, isToday, isWeekend, feriado }) => (<div style={{ padding: "9px 4px", textAlign: "center", background: feriado ? "#FEF3C7" : isToday ? "#EFF6FF" : isWeekend ? "#F1F5F9" : "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "1px solid #F1F5F9" }}><div style={{ fontWeight: 700, fontSize: 12.5, color: feriado ? "#92400E" : isToday ? "#1D4ED8" : isWeekend ? "#94A3B8" : "#0F172A" }}>{name}</div><div style={{ fontSize: 10.5, color: feriado ? "#B45309" : isToday ? "#3B82F6" : "#94A3B8", fontWeight: isToday ? 700 : 500 }}>{dm(date)}</div>{feriado && <div style={{ fontSize: 8, fontWeight: 800, color: "#92400E", background: "#FDE68A", borderRadius: 999, padding: "1px 6px", marginTop: 2, display: "inline-block", letterSpacing: 0.3 }}>🎌 FERIADO</div>}</div>);
 
 const RowLabel = ({ label, color, sub, className }) => (<div className={className} style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end", textAlign: "right", padding: "8px 10px", background: "#F8FAFC", borderRight: "2px solid #E2E8F0", borderBottom: "2px solid #D1D5DB", borderTop: "2px solid #D1D5DB" }}><div style={{ fontWeight: 700, fontSize: 11, color, letterSpacing: 0.1 }}>{label}</div>{sub && <div style={{ fontSize: 8.5, color: "#94A3B8", marginTop: 1 }}>{sub}</div>}</div>);
 
