@@ -277,13 +277,44 @@ function normalizarListaGuardia(lista) {
 
 /* ══════════════════ MODELO ROTACIONES ══════════════════ */
 
-const emptyRotYear = () => { const m = {}; for (let i = 0; i < 12; i++) m[i] = { assignments: [], notes: "" }; return { months: m }; };
+// `vacaciones` es un array de nombres, separado del texto libre de `notes`.
+// Las notas siguen sirviendo para el detalle ("3 primeras semanas", "vacaciones
+// de invierno"), pero para poder marcar a alguien como no disponible hace falta
+// un dato estructurado: adivinar nombres dentro de una nota en prosa se rompe
+// en cuanto alguien escribe algo como "Chris cubre las vacaciones de Ulloa".
+const emptyRotYear = () => { const m = {}; for (let i = 0; i < 12; i++) m[i] = { assignments: [], notes: "", vacaciones: [] }; return { months: m }; };
 
 function normalizeRot(raw) {
   const year = emptyRotYear();
   if (!raw || typeof raw !== "object" || !raw.months) return year;
-  for (let i = 0; i < 12; i++) { const m = raw.months[i]; if (m) { year.months[i].assignments = Array.isArray(m.assignments) ? m.assignments : []; year.months[i].notes = typeof m.notes === "string" ? m.notes : ""; } }
+  for (let i = 0; i < 12; i++) {
+    const m = raw.months[i];
+    if (m) {
+      year.months[i].assignments = Array.isArray(m.assignments) ? m.assignments : [];
+      year.months[i].notes = typeof m.notes === "string" ? m.notes : "";
+      year.months[i].vacaciones = Array.isArray(m.vacaciones) ? m.vacaciones.filter((n) => LEVEL[n]) : [];
+    }
+  }
   return year;
+}
+
+// ── No disponibilidad automática para sala ────────────────────────────────
+// Tres cosas dejan a alguien fuera de la grilla de camas sin que haya que
+// marcarlo a mano: estar rotando en otro servicio ese mes, estar de vacaciones
+// ese mes, o —en el caso de los R4— que sea su día libre de la semana. Se
+// calcula al vuelo desde Rotaciones y desde el día libre, nunca se guarda
+// duplicado: así, si se corrige una rotación, todas las semanas se actualizan
+// solas y nunca queda un dato viejo contradiciendo al nuevo.
+// Devuelve el motivo (texto listo para mostrar) o null si está disponible.
+function motivoNoDisponible(name, date, rotAnio, diaLibre) {
+  if (diaLibre) return `${name} tiene su día libre los ${diaLibre.toLowerCase()}`;
+  if (!rotAnio) return null;
+  const mes = rotAnio.months[date.getMonth()];
+  if (!mes) return null;
+  const rot = (mes.assignments || []).find((a) => a.resident === name);
+  if (rot) return `${name} está rotando en ${rot.place} este mes`;
+  if ((mes.vacaciones || []).includes(name)) return `${name} está de vacaciones este mes`;
+  return null;
 }
 
 /* ══════════════════ MODELO CHIPA DE LA SEMANA ══════════════════ */
@@ -742,6 +773,8 @@ function SchedulerView({ isAdmin }) {
   const [academico, setAcademico] = useState(emptyAcademico);
   const [guardiaEdit, setGuardiaEdit] = useState(null); // índice del día cuya guardia se está editando
   const [feriadosOpen, setFeriadosOpen] = useState(false);
+  const [rotPorAnio, setRotPorAnio] = useState({});
+  const [aplicandoMes, setAplicandoMes] = useState(false);
 
   const docId = `week-${isoDate(monday)}`;
   const pending = useRef(null);
@@ -760,6 +793,25 @@ function SchedulerView({ isAdmin }) {
     }, (err) => { console.error("snapshot", err); setStatus("error"); setLoading(false); });
     return () => { unsub(); if (timer.current) { clearTimeout(timer.current); timer.current = null; } };
   }, [docId]);
+
+  // Rotaciones y vacaciones del año (o de los dos años, si la semana cruza el
+  // 31 de diciembre). Se usan para calcular quién queda fuera de la grilla de
+  // camas sin marcarlo a mano.
+  const aniosEnVista = useMemo(() => {
+    const a = new Set();
+    for (let i = 0; i < DAYS.length; i++) a.add(shift(monday, i).getFullYear());
+    return [...a];
+  }, [monday]);
+  const clavesAnios = aniosEnVista.join(",");
+
+  useEffect(() => {
+    const unsubs = clavesAnios.split(",").map((y) =>
+      onSnapshot(doc(db, "scheduler", `rotaciones-${y}`), (snap) => {
+        setRotPorAnio((cur) => ({ ...cur, [y]: snap.exists() ? normalizeRot(snap.data()) : emptyRotYear() }));
+      }, () => {})
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [clavesAnios]);
 
   // Recordatorios se nutre en modo lectura del Calendario académico: la fuente
   // de verdad es esa pestaña, acá solo se refleja si hay clase ese día.
@@ -792,11 +844,28 @@ function SchedulerView({ isAdmin }) {
   const locationOf = (w, name, di) => { const d = w.days[di]; for (const k of SLOT_KEYS) if (d[k].includes(name)) return k; if (d.unavailable.includes(name)) return "unavailable"; return null; };
   const detach = (w, name, di) => { const d = w.days[di]; for (const k of SLOT_KEYS) d[k] = d[k].filter((n) => n !== name); d.unavailable = d.unavailable.filter((n) => n !== name); };
 
+  // Motivo por el que alguien no debería estar en sala ese día (rotación,
+  // vacaciones o día libre), o null si está disponible. No bloquea: la grilla
+  // igual deja asignarlo, pero avisa antes y después marca el chip.
+  const motivoDe = useCallback((name, di) => {
+    const fecha = shift(monday, di);
+    const diaLibre = RESIDENTS.R4.includes(name) && week.diasLibresR4[name] === DAYS[di] ? week.diasLibresR4[name] : null;
+    return motivoNoDisponible(name, fecha, rotPorAnio[fecha.getFullYear()], diaLibre);
+  }, [monday, week, rotPorAnio]);
+
   const pool = useCallback((di) => {
     const d = week.days[di];
     const used = new Set([...SLOT_KEYS.flatMap((k) => d[k]), ...d.unavailable]);
-    return ALL.filter((n) => !used.has(n));
-  }, [week]);
+    return ALL.filter((n) => !used.has(n) && !motivoDe(n, di));
+  }, [week, motivoDe]);
+
+  // Los que quedan fuera automáticamente ese día, para mostrarlos en la fila de
+  // "No disponibles" sin que nadie los haya marcado a mano.
+  const autoNoDisponibles = useCallback((di) => {
+    const d = week.days[di];
+    const yaPuestos = new Set([...SLOT_KEYS.flatMap((k) => d[k]), ...d.unavailable]);
+    return ALL.filter((n) => !yaPuestos.has(n)).map((n) => ({ name: n, motivo: motivoDe(n, di) })).filter((x) => x.motivo);
+  }, [week, motivoDe]);
 
   const pick = (name, from) => {
     if (!isAdmin) return;
@@ -815,6 +884,12 @@ function SchedulerView({ isAdmin }) {
     if (target === "pool") { detach(next, name, di); commit(next); return; }
     const already = locationOf(next, name, di);
     if (already && already !== from?.key) { const nice = already === "unavailable" ? "no disponible" : already.toUpperCase(); flash(`${name} ya figura el ${DAYS[di]} en ${nice}`); return; }
+    // Avisa pero no frena: la realidad tiene excepciones. Si se asigna igual,
+    // el chip queda marcado con ⚠️ y el motivo al pasar el mouse.
+    if (target !== "unavailable" && target !== "pool") {
+      const motivo = motivoDe(name, di);
+      if (motivo) flash(`⚠️ ${motivo} — igual quedó asignado el ${DAYS[di].toLowerCase()}`);
+    }
     if (from) detach(next, name, from.di);
     detach(next, name, di);
     next.days[di][target].push(name);
@@ -848,6 +923,45 @@ function SchedulerView({ isAdmin }) {
   // bloqueada) pero que igual sacarían a esa gente de "Disponibles", que es
   // justo el tipo de estado fantasma que después nadie entiende. Se avisa
   // antes de borrar nada.
+  // El día libre de los R4 se elige por mes, pero se guarda por semana para
+  // poder hacer excepciones puntuales. Esto propaga lo que está cargado en la
+  // semana actual a todas las semanas del mismo mes: se elige una vez y vale
+  // para todo el mes, y si después hace falta cambiar una semana suelta, se
+  // cambia solo ahí sin romper el resto.
+  const aplicarDiasLibresAlMes = async () => {
+    if (!isAdmin || aplicandoMes) return;
+    const mes = monday.getMonth();
+    const anio = monday.getFullYear();
+    // Semanas del mes por criterio de mayoría: una semana "es" de este mes si
+    // al menos 4 de sus 7 días caen en él. Hace falta porque las semanas cruzan
+    // meses — septiembre 2026 arranca un martes, así que si solo mirara el
+    // lunes se saltearía la primera semana entera.
+    const diasDelMes = (l) => {
+      let n = 0;
+      for (let i = 0; i < DAYS.length; i++) { const d = shift(l, i); if (d.getMonth() === mes && d.getFullYear() === anio) n++; }
+      return n;
+    };
+    const lunes = [];
+    let cur = mondayOf(new Date(anio, mes, 1));
+    const fin = new Date(anio, mes + 1, 0);
+    while (cur <= fin) { if (diasDelMes(cur) >= 4) lunes.push(new Date(cur)); cur = shift(cur, 7); }
+    if (!confirm(`Se van a copiar los días libres de esta semana a las ${lunes.length} semanas de ${MONTHS[mes].toLowerCase()}. ¿Continuar?`)) return;
+    setAplicandoMes(true);
+    try {
+      for (const l of lunes) {
+        const id = `week-${isoDate(l)}`;
+        if (id === docId) continue; // la actual ya está guardada
+        const ref = doc(db, "scheduler", id);
+        const snap = await getDoc(ref);
+        const base = snap.exists() ? normalize(snap.data()) : emptyWeek();
+        base.diasLibresR4 = { ...week.diasLibresR4 };
+        await setDoc(ref, base);
+      }
+      flash(`Días libres aplicados a ${MONTHS[mes].toLowerCase()}`);
+    } catch (e) { console.error(e); flash("No se pudieron aplicar"); }
+    setAplicandoMes(false);
+  };
+
   const toggleFeriado = (di) => {
     if (!isAdmin) return;
     const next = clone(week);
@@ -958,7 +1072,7 @@ function SchedulerView({ isAdmin }) {
 
       {loading ? <Skeleton /> : (
         <div ref={printRef}>
-          <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} />
+          <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} onAplicarAlMes={aplicarDiasLibresAlMes} aplicando={aplicandoMes} />
           <div style={{ overflowX: "auto", paddingBottom: 4 }}>
           <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DAYS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "14px 14px 0 0", overflow: "hidden", border: "1px solid #E2E8F0", borderBottom: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DAYS.length * 150 }}>
             <Corner />{DAYS.map((d, i) => <DayHead key={d} name={d} date={dates[i]} isToday={sameDay(dates[i], today)} isWeekend={isWeekendIdx(i)} feriado={week.days[i].feriado} />)}
@@ -975,7 +1089,7 @@ function SchedulerView({ isAdmin }) {
                     <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DAYS.length - 1}>
                       <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
                         {week.days[di][slot.key].sort((a, b) => { const order = { R4: 0, R3: 1, R2: 2 }; return (order[LEVEL[a]] || 3) - (order[LEVEL[b]] || 3); }).map((n) => (
-                          <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
+                          <Chip key={n} name={n} selected={sel?.name === n} alerta={motivoDe(n, di)} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
                         ))}
                         {active && <GhostHint color={slot.accent} name={sel.name} />}
                         {!active && week.days[di][slot.key].length === 0 && <Dash />}
@@ -1008,7 +1122,7 @@ function SchedulerView({ isAdmin }) {
                   <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DAYS.length - 1}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
                       {week.days[di][slot.key].sort((a, b) => { const order = { R4: 0, R3: 1, R2: 2 }; return (order[LEVEL[a]] || 3) - (order[LEVEL[b]] || 3); }).map((n) => (
-                        <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
+                        <Chip key={n} name={n} selected={sel?.name === n} alerta={motivoDe(n, di)} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
                       ))}
                       {active && <GhostHint color={slot.accent} name={sel.name} />}
                       {!active && week.days[di][slot.key].length === 0 && <Dash />}
@@ -1069,15 +1183,19 @@ function SchedulerView({ isAdmin }) {
             })}
 
             <RowLabel label="No disponibles" color="#DC2626" sub="rotación · vacaciones" />
-            {DAYS.map((_, di) => (
-              <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === DAYS.length - 1} lastRow>
-                <div style={{ display: "flex", flexDirection: "column", gap: 2, minHeight: 40 }}>
-                  {week.days[di].unavailable.map((n) => <OutChip key={n} name={n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "unavailable" }); }} selected={sel?.name === n} />)}
-                  {active && <div style={{ fontSize: 10, color: "#EF4444", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>marcar solo el {DAYS[di].toLowerCase()}</div>}
-                  {!active && week.days[di].unavailable.length === 0 && <Dash />}
-                </div>
-              </Cell>
-            ))}
+            {DAYS.map((_, di) => {
+              const autos = autoNoDisponibles(di);
+              return (
+                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === DAYS.length - 1} lastRow>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2, minHeight: 40 }}>
+                    {week.days[di].unavailable.map((n) => <OutChip key={n} name={n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "unavailable" }); }} selected={sel?.name === n} />)}
+                    {autos.map(({ name, motivo }) => <AutoOutChip key={name} name={name} motivo={motivo} />)}
+                    {active && <div style={{ fontSize: 10, color: "#EF4444", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>marcar solo el {DAYS[di].toLowerCase()}</div>}
+                    {!active && week.days[di].unavailable.length === 0 && autos.length === 0 && <Dash />}
+                  </div>
+                </Cell>
+              );
+            })}
           </div>
         </div>
       )}
@@ -1279,6 +1397,17 @@ function RotacionesView({ isAdmin }) {
 
   const editNotes = (mi, val) => { if (!isAdmin) return; const next = clone(data); next.months[mi].notes = val; save(next); };
 
+  // Marcar a alguien de vacaciones acá lo deja automáticamente fuera de la
+  // grilla de camas todo ese mes (ver motivoNoDisponible). Es un dato aparte
+  // de las notas justamente para poder usarlo con seguridad.
+  const toggleVacaciones = (mi, nombre) => {
+    if (!isAdmin) return;
+    const next = clone(data);
+    const cur = next.months[mi].vacaciones || [];
+    next.months[mi].vacaciones = cur.includes(nombre) ? cur.filter((n) => n !== nombre) : [...cur, nombre];
+    save(next);
+  };
+
   const toggleMonth = (mi) => setExpanded((cur) => ({ ...cur, [mi]: !isMonthOpen(mi) }));
   const isMonthOpen = (mi) => {
     if (expanded[mi] !== undefined) return expanded[mi];
@@ -1309,7 +1438,7 @@ function RotacionesView({ isAdmin }) {
         {MONTHS.map((mName, mi) => {
           const month = data.months[mi];
           const isCurrentMonth = new Date().getFullYear() === year && new Date().getMonth() === mi;
-          const hasData = month.assignments.length > 0 || !!month.notes.trim();
+          const hasData = month.assignments.length > 0 || !!month.notes.trim() || (month.vacaciones || []).length > 0;
           const isOpen = isMonthOpen(mi);
           return (
             <div key={mi} style={{ background: "#fff", borderRadius: 12, border: isCurrentMonth ? "2px solid #3B82F6" : "1px solid #E2E8F0", overflow: "hidden", boxShadow: isCurrentMonth ? "0 0 0 3px #3B82F633" : "0 1px 3px rgba(15,23,42,.04)" }}>
@@ -1349,13 +1478,62 @@ function RotacionesView({ isAdmin }) {
                   {editing && editing.month === mi && editing.mode === "new" && (
                     <EditForm resident={editing.resident} place={editing.place} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place)} onCancel={() => setEditing(null)} />
                   )}
-                  <textarea value={month.notes} onChange={(e) => editNotes(mi, e.target.value)} placeholder="Vacaciones del mes…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 32, marginTop: 4, fontSize: 11, fontStyle: month.notes ? "normal" : "italic", color: month.notes ? "#92400E" : "#94A3B8", background: month.notes ? "#FFFBEB" : "#FAFAFA", borderColor: month.notes ? "#FDE68A" : "#E2E8F0", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
+                  <VacacionesPicker mes={mi} seleccion={month.vacaciones || []} isAdmin={isAdmin} onToggle={toggleVacaciones} />
+                  <textarea value={month.notes} onChange={(e) => editNotes(mi, e.target.value)} placeholder="Detalle de vacaciones (ej: 3 primeras semanas)…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 32, marginTop: 4, fontSize: 11, fontStyle: month.notes ? "normal" : "italic", color: month.notes ? "#92400E" : "#94A3B8", background: month.notes ? "#FFFBEB" : "#FAFAFA", borderColor: month.notes ? "#FDE68A" : "#E2E8F0", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
                 </div>
               )}
             </div>
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// Selector de quién está de vacaciones ese mes. Separado del texto libre de
+// notas: las notas son para el detalle humano ("3 primeras semanas"), esto es
+// el dato que la app usa para dejarlos fuera de sala automáticamente.
+function VacacionesPicker({ mes, seleccion, isAdmin, onToggle }) {
+  const [abierto, setAbierto] = useState(false);
+  if (!isAdmin && seleccion.length === 0) return null;
+  return (
+    <div style={{ marginTop: 6, paddingTop: 8, borderTop: "1px dashed #E2E8F0" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: seleccion.length || abierto ? 6 : 0 }}>
+        <div style={{ fontSize: 10, fontWeight: 800, color: "#94A3B8", letterSpacing: 0.3, textTransform: "uppercase" }}>🏖️ De vacaciones este mes</div>
+        {isAdmin && <button onClick={() => setAbierto((v) => !v)} style={{ background: "none", border: "none", color: "#64748B", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{abierto ? "Listo" : "✏️ Editar"}</button>}
+      </div>
+
+      {!abierto && seleccion.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+          {seleccion.map((n) => {
+            const c = COLOR[LEVEL[n]] || COLOR.R2;
+            return (
+              <span key={n} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 11 }}>
+                {n}
+                <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      {!abierto && seleccion.length === 0 && isAdmin && (
+        <div style={{ fontSize: 10.5, color: "#CBD5E1", fontStyle: "italic" }}>Nadie marcado. Los que marques quedan fuera de sala todo el mes.</div>
+      )}
+
+      {abierto && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+          {ALL.map((n) => {
+            const on = seleccion.includes(n);
+            const c = COLOR[LEVEL[n]];
+            return (
+              <div key={n} onClick={() => onToggle(mes, n)} style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 7, background: on ? c.solid : "#F8FAFC", border: `1.5px solid ${on ? c.solid : "#E2E8F0"}`, color: on ? "#fff" : "#64748B", fontWeight: 600, fontSize: 11.5 }}>
+                {on && "✓ "}{n}
+                <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: on ? "rgba(255,255,255,.28)" : c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -3544,7 +3722,7 @@ function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChang
 
 const DIAS_LIBRES_OPCIONES = ["Lunes", "Miércoles", "Viernes"];
 
-function DiasLibresR4({ week, isAdmin, onChange }) {
+function DiasLibresR4({ week, isAdmin, onChange, onAplicarAlMes, aplicando }) {
   const any = RESIDENTS.R4.some((n) => week.diasLibresR4[n]);
   if (!isAdmin && !any) return null;
   return (
@@ -3566,6 +3744,11 @@ function DiasLibresR4({ week, isAdmin, onChange }) {
           )}
         </div>
       ))}
+      {isAdmin && any && (
+        <button onClick={onAplicarAlMes} disabled={aplicando} className="no-print" title="Copia estos días libres a todas las semanas de este mes" style={{ marginLeft: "auto", background: "#EA580C", color: "#fff", border: "none", borderRadius: 7, padding: "5px 11px", fontSize: 10.5, fontWeight: 700, cursor: aplicando ? "default" : "pointer", fontFamily: "inherit", opacity: aplicando ? 0.6 : 1 }}>
+          {aplicando ? "Aplicando…" : "📅 Aplicar a todo el mes"}
+        </button>
+      )}
     </div>
   );
 }
@@ -3619,9 +3802,10 @@ const RowLabel = ({ label, color, sub, className }) => (<div className={classNam
 
 const Cell = ({ children, onClick, tint, ring, pad = 4, lastCol, lastRow, className }) => (<div className={className} onClick={onClick} style={{ padding: pad, minHeight: 46, display: "flex", flexDirection: "column", gap: 3, background: tint, borderRight: lastCol ? "none" : "1px solid #F1F5F9", borderBottom: lastRow ? "none" : "1px solid #F1F5F9", boxShadow: ring ? `inset 0 0 0 1.5px ${ring}66` : "none", cursor: ring ? "pointer" : "default", transition: "background .12s, box-shadow .12s" }}>{children}</div>);
 
-function Chip({ name, selected, onPick, onRemove }) {
+function Chip({ name, selected, onPick, onRemove, alerta }) {
   const lv = LEVEL[name]; const c = COLOR[lv];
-  return (<div onClick={onPick} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3.5px 6px 3.5px 8px", borderRadius: 7, background: selected ? c.solid : c.bg, border: `1.5px solid ${selected ? c.solid : c.bd}`, color: selected ? "#fff" : c.tx, fontWeight: 600, fontSize: 11.5, cursor: "pointer", userSelect: "none", boxShadow: selected ? `0 0 0 3px ${c.solid}33` : "none", transition: "all .12s" }}>
+  return (<div onClick={onPick} title={alerta || undefined} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3.5px 6px 3.5px 8px", borderRadius: 7, background: selected ? c.solid : c.bg, border: alerta && !selected ? "1.5px solid #F59E0B" : `1.5px solid ${selected ? c.solid : c.bd}`, color: selected ? "#fff" : c.tx, fontWeight: 600, fontSize: 11.5, cursor: "pointer", userSelect: "none", boxShadow: selected ? `0 0 0 3px ${c.solid}33` : alerta ? "0 0 0 2px #FDE68A" : "none", transition: "all .12s" }}>
+    {alerta && <span title={alerta} style={{ fontSize: 10, lineHeight: 1, cursor: "help" }}>⚠️</span>}
     <span style={{ flex: 1, lineHeight: 1.3 }}>{name}</span>
     <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 3.5px", borderRadius: 3, background: selected ? "rgba(255,255,255,.28)" : c.solid, color: "#fff", letterSpacing: 0.2 }}>{lv}</span>
     {onRemove && <span onClick={onRemove} title="Quitar" style={{ fontSize: 11, lineHeight: 1, opacity: 0.45, cursor: "pointer", padding: "0 1px" }}>×</span>}
@@ -3629,6 +3813,18 @@ function Chip({ name, selected, onPick, onRemove }) {
 }
 
 const OutChip = ({ name, onPick, selected }) => (<div onClick={onPick} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 7px", borderRadius: 6, background: selected ? "#94A3B8" : "#E2E8F0", border: `1.5px solid ${selected ? "#94A3B8" : "#CBD5E1"}`, color: selected ? "#fff" : "#64748B", fontSize: 10.5, fontWeight: 600, textDecoration: "line-through", cursor: "pointer", userSelect: "none" }}><span style={{ flex: 1 }}>{name}</span><span style={{ fontSize: 7.5, fontWeight: 800, background: "#94A3B8", color: "#fff", padding: "1px 3px", borderRadius: 2.5 }}>{LEVEL[name]}</span></div>);
+
+// Igual que OutChip pero para los que quedaron fuera automáticamente (rotación,
+// vacaciones o día libre). No se puede tocar: no lo puso nadie a mano, sale de
+// Rotaciones o del día libre, así que se corrige allá. El candado y el tooltip
+// explican por qué está ahí.
+const AutoOutChip = ({ name, motivo }) => (
+  <div title={motivo} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 7px", borderRadius: 6, background: "#F8FAFC", border: "1.5px dashed #CBD5E1", color: "#94A3B8", fontSize: 10.5, fontWeight: 600, cursor: "help", userSelect: "none" }}>
+    <span style={{ fontSize: 9 }}>🔒</span>
+    <span style={{ flex: 1 }}>{name}</span>
+    <span style={{ fontSize: 7.5, fontWeight: 800, background: "#CBD5E1", color: "#fff", padding: "1px 3px", borderRadius: 2.5 }}>{LEVEL[name]}</span>
+  </div>
+);
 
 const GhostHint = ({ color, name }) => (<div style={{ fontSize: 10, color, opacity: 0.75, fontStyle: "italic", textAlign: "center", padding: "1px 0" }}>+ {name}</div>);
 const Dash = () => (<div style={{ color: "#CBD5E1", fontSize: 11, textAlign: "center", padding: "10px 0" }}>—</div>);
