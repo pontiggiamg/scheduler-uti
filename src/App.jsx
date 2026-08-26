@@ -443,6 +443,10 @@ function vacacionesEseDia(name, fecha, rotPorAnio) {
 // Año nuevo arranca en diciembre pero se estira hasta los primeros días de
 // enero, que ya son del año siguiente.
 function semanaLibreEseDia(name, fecha, rotPorAnio) {
+  // Va de lunes a viernes, no la semana entera: Navidad es del lunes 21 al
+  // viernes 25 y Año nuevo del lunes 28 al viernes 1. El sábado y el domingo
+  // siguientes quedan disponibles, también para guardia.
+  if (diOfDate(fecha) >= WEEKEND_START_IDX) return null;
   const lunes = isoDate(mondayOf(fecha));
   for (const anio of [fecha.getFullYear(), fecha.getFullYear() - 1]) {
     const rotAnio = rotPorAnio[anio];
@@ -1783,7 +1787,8 @@ function VacacionesPicker({ mes, seleccion, isAdmin, onToggle, onTramo }) {
 // Solo aparece en diciembre. A fin de año se arma con dos equipos: unos
 // trabajan la semana de Navidad y quedan libres la de Año nuevo, y al revés.
 // Lo que se marca acá sale directo en la grilla: quien queda libre aparece
-// automáticamente como no disponible toda esa semana, igual que las vacaciones.
+// automáticamente como no disponible de lunes a viernes de esa semana, y
+// tampoco puede hacer guardia esas noches. Es una desconexión total.
 // Las dos semanas se deducen del calendario (la del 25/12 y la del 1/1), así
 // que no hay que cargar fechas: alcanza con tildar quién queda libre.
 function SemanasLibresPicker({ mes, datos, isAdmin, onToggle }) {
@@ -1803,7 +1808,7 @@ function SemanasLibresPicker({ mes, datos, isAdmin, onToggle }) {
       </div>
 
       {!abierto && !hayAlgo && isAdmin && (
-        <div style={{ fontSize: 11, color: "#64748B", fontStyle: "italic" }}>Sin definir todavía. A medida que cada uno elija, se lo marca acá y queda fuera de la grilla esa semana.</div>
+        <div style={{ fontSize: 11, color: "#64748B", fontStyle: "italic" }}>Sin definir todavía. A medida que cada uno elija, se lo marca acá: queda fuera de la sala y de las guardias de lunes a viernes de esa semana.</div>
       )}
 
       {grupos.map((g) => {
@@ -1811,7 +1816,7 @@ function SemanasLibresPicker({ mes, datos, isAdmin, onToggle }) {
         if (!abierto && gente.length === 0) return null;
         return (
           <div key={g.clave} style={{ marginBottom: 6 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: g.color, marginBottom: 4 }}>{g.label} <span style={{ color: "#64748B", fontWeight: 500 }}>— quedan libres</span></div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: g.color, marginBottom: 4 }}>{g.label} <span style={{ color: "#64748B", fontWeight: 500 }}>— libres de lunes a viernes, sin sala ni guardia</span></div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
               {(abierto ? ALL : gente).map((n) => {
                 const on = gente.includes(n);
@@ -4826,6 +4831,9 @@ const TOPE_DIA_LIBRE = { Lunes: 1, Miércoles: 2, Viernes: 2 };
 function motivoNoPuedeGuardia(name, date, rotPorAnio) {
   const vac = vacacionesEseDia(name, date, rotPorAnio);
   if (vac) return `${name} está ${textoTramo(vac)}`;
+  // La semana libre de fin de año es una desconexión total: ni sala ni guardia.
+  const libre = semanaLibreEseDia(name, date, rotPorAnio);
+  if (libre) return `${name} tiene su semana libre de ${libre}`;
   const rotAnio = rotPorAnio[date.getFullYear()];
   if (!rotAnio) return null;
   const mes = rotAnio.months[date.getMonth()];
