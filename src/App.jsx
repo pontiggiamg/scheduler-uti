@@ -4005,7 +4005,7 @@ function BorradoresView() {
   const [y, m] = mesSel.split("-").map(Number);
   const anio = y, mes = m - 1;
 
-  const generar = async () => {
+  const generar = async (tipo) => {
     setGenerando(true); setAviso(null);
     try {
       const lunes = lunesDelMes(anio, mes);
@@ -4018,7 +4018,7 @@ function BorradoresView() {
       const rot = rotSnap.exists() ? normalizeRot(rotSnap.data()) : emptyRotYear();
       const eqSnap = await getDoc(doc(db, "scheduler", "equipos"));
       const equipos = (eqSnap.exists() ? eqSnap.data() : {})[mesSel] || {};
-      abrirBorrador({ anio, mes, lunes, semanas, rot, equipos });
+      abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo });
     } catch (e) {
       console.error(e); setAviso("No se pudo generar el borrador.");
     }
@@ -4045,7 +4045,17 @@ function BorradoresView() {
 
       <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 16 }}>
         <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.6, marginBottom: 14 }}>
-          Genera una hoja A4 horizontal con el mes entero: las tres salas día por día, la postguardia, quién está de guardia, los equipos por UTI, los días libres de los R4 y quién está afuera por rotación o vacaciones. Se abre el diálogo de impresión — elegí "Guardar como PDF" si querés el archivo.
+          Dos formatos, los dos en una hoja A4 horizontal. Se abre el diálogo de impresión — elegí "Guardar como PDF" si querés el archivo.
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+          <div style={{ flex: "1 1 240px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 13px" }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: "#0F172A", marginBottom: 3 }}>🏥 Cobertura de Salas del Mes</div>
+            <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.5 }}>Todo: las tres salas día por día, postguardia, guardia, equipos por UTI, días libres de los R4 y quién está afuera por rotación o vacaciones. Es el cronograma completo de trabajo.</div>
+          </div>
+          <div style={{ flex: "1 1 240px", background: "#FFF1F2", border: "1px solid #FECDD3", borderRadius: 10, padding: "10px 13px" }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: "#9F1239", marginBottom: 3 }}>🌙 Guardias del Mes</div>
+            <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.5 }}>Solo quién está de guardia cada día, en grande. Suma el conteo por persona y por nivel. Es el que conviene pegar en la pared.</div>
+          </div>
         </div>
 
         <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
@@ -4055,8 +4065,11 @@ function BorradoresView() {
               {opciones.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
             </select>
           </div>
-          <button onClick={generar} disabled={generando} style={{ background: "#0F172A", color: "#fff", border: "none", borderRadius: 9, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: generando ? "default" : "pointer", fontFamily: "inherit", opacity: generando ? 0.6 : 1 }}>
-            {generando ? "Armando…" : "🖨️ Generar borrador"}
+          <button onClick={() => generar("salas")} disabled={generando} style={{ background: "#0F172A", color: "#fff", border: "none", borderRadius: 9, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: generando ? "default" : "pointer", fontFamily: "inherit", opacity: generando ? 0.6 : 1 }}>
+            {generando ? "Armando…" : "🏥 Cobertura de Salas del Mes"}
+          </button>
+          <button onClick={() => generar("guardias")} disabled={generando} style={{ background: "#9F1239", color: "#fff", border: "none", borderRadius: 9, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: generando ? "default" : "pointer", fontFamily: "inherit", opacity: generando ? 0.6 : 1 }}>
+            {generando ? "Armando…" : "🌙 Guardias del Mes"}
           </button>
         </div>
 
@@ -4066,7 +4079,8 @@ function BorradoresView() {
   );
 }
 
-function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos }) {
+function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo }) {
+  const soloGuardias = tipo === "guardias";
   const win = window.open("", "_blank");
   if (!win) return;
   const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
@@ -4085,6 +4099,11 @@ function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos }) {
     const d = w.days[diOfDate(fecha)];
     const finde = isWeekendIdx(diOfDate(fecha)) || d.feriado;
     const fila = (lbl, cls, gente) => gente && gente.length ? `<div class="fila"><span class="lbl ${cls}">${lbl}</span>${[...gente].sort(porJerarquia).map(chip).join("")}</div>` : "";
+    if (soloGuardias) {
+      const g = [...(d.deGuardia || [])].sort(porJerarquia);
+      return `<td class="${finde ? "finde" : ""} g-solo"><div class="num">${fecha.getDate()}${d.feriado ? ' <span class="fer">FERIADO</span>' : ""}</div>` +
+        (g.length ? `<div class="gbig">${g.map(chip).join("")}</div>` : '<div class="nota">sin cargar</div>') + "</td>";
+    }
     return `<td class="${finde ? "finde" : ""}"><div class="num">${fecha.getDate()}${d.feriado ? ' <span class="fer">FERIADO</span>' : ""}</div>` +
       (finde ? '<div class="nota">sin sala</div>' : fila("U1", "u1", d.uti1) + fila("U2", "u2", d.uti2) + fila("U3", "u3", d.uti3) + fila("PG", "pgl", d.postguardia)) +
       fila("G", "gl", d.deGuardia) +
@@ -4093,17 +4112,35 @@ function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos }) {
   };
 
   const filas = lunes.map((l) => `<tr>${DAYS.map((_, i) => celda(shift(l, i))).join("")}</tr>`).join("");
+
+  // Conteo de guardias del mes, por persona y por nivel
+  const cuenta = {};
+  lunes.forEach((l) => DAYS.forEach((_, i) => {
+    const f = shift(l, i);
+    if (f.getMonth() !== mes) return;
+    const w = semanas[isoDate(mondayOf(f))];
+    if (!w) return;
+    (w.days[diOfDate(f)].deGuardia || []).forEach((n) => { cuenta[n] = (cuenta[n] || 0) + 1; });
+  }));
+  const porNivel = { R4: 0, R3: 0, R2: 0 };
+  Object.entries(cuenta).forEach(([n, c]) => { if (porNivel[LEVEL[n]] !== undefined) porNivel[LEVEL[n]] += c; });
+  const bloqueConteo = ["R4", "R3", "R2"].map((lv) => {
+    const gente = ALL.filter((n) => LEVEL[n] === lv && cuenta[n]);
+    if (!gente.length) return "";
+    return `<div class="eq"><span class="eqn" style="background:${COL[lv][0]};color:${COL[lv][2]}">${lv} · ${porNivel[lv]}</span>${gente.map((n) => `${chip(n)}<span class="cnt">${cuenta[n]}</span>`).join("")}</div>`;
+  }).join("");
   const eqHtml = EQUIPO_SLOTS.filter((s) => (equipos[s.key] || []).length).map((s) =>
     `<div class="eq"><span class="eqn" style="background:${s.tint};color:${s.accent}">${s.label}</span>${[...(equipos[s.key] || [])].sort(porJerarquia).map(chip).join("")}</div>`).join("") || '<div class="nota">Sin equipos armados</div>';
   const libresHtml = RESIDENTS.R4.filter((n) => diaLibrePrimeraSemana[n]).map((n) =>
     `<div class="eq">${chip(n)}<span class="txt">${diaLibrePrimeraSemana[n]}</span></div>`).join("") || '<div class="nota">Sin días libres cargados</div>';
   const rotan = (datosMes.assignments || []).map((a) => `${a.resident} (${a.place}${a.exterior ? " ✈️" : ""})`).join(" · ") || "nadie";
+  const exterior = (datosMes.assignments || []).filter((a) => a.exterior).map((a) => `${a.resident} (${a.place})`).join(" · ") || "nadie";
   const vac = (datosMes.vacaciones || []).map((v) => `${v.nombre} (${(TRAMOS_VACACIONES[v.tramo] || TRAMOS_VACACIONES.mes).corto})`).join(" · ") || "nadie";
 
-  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Borrador ${MONTHS[mes]} ${anio} — Scheduler UTI</title><style>
+  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${soloGuardias ? "Guardias" : "Cobertura de salas"} — ${MONTHS[mes]} ${anio}</title><style>
 @page{size:A4 landscape;margin:8mm}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Inter',system-ui,sans-serif;color:#0F172A;font-size:10px;zoom:.88}
+body{font-family:'Inter',system-ui,sans-serif;color:#0F172A;font-size:10px;zoom:${soloGuardias ? ".97" : ".88"}}
 h1{font-size:18px;letter-spacing:-.3px}
 .sub{font-size:11px;color:#475569}
 .head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #0F172A;padding-bottom:5px;margin-bottom:7px}
@@ -4119,6 +4156,12 @@ h1{font-size:18px;letter-spacing:-.3px}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 th{font-size:10px;background:#0F172A;color:#fff;padding:4px;border:1px solid #0F172A}
 td{border:1px solid #CBD5E1;vertical-align:top;padding:2.5px;height:70px}
+td.g-solo{height:88px;text-align:center;vertical-align:middle}
+td.g-solo .num{font-size:15px;text-align:left}
+.gbig{display:flex;flex-direction:column;align-items:center;gap:3px;margin-top:5px}
+.gbig .chip{font-size:13px;padding:3px 10px;border-width:1.8px;border-radius:14px}
+.gbig .chip b{font-size:8px;padding:1px 3.5px}
+.cnt{font-size:11px;font-weight:800;color:#334155;margin:0 7px 0 1px}
 td.off{background:#F1F5F9}td.finde{background:#F8FAFC}
 .num{font-size:12px;font-weight:800;margin-bottom:2px}
 .fer{font-size:7px;background:#FDE68A;color:#92400E;padding:1px 4px;border-radius:6px;vertical-align:middle}
@@ -4129,14 +4172,17 @@ td.off{background:#F1F5F9}td.finde{background:#F8FAFC}
 .obs{font-size:7.5px;color:#713F12;background:#FEF9C3;border-radius:3px;padding:1px 3px;margin-top:2px;line-height:1.25}
 .pie{margin-top:6px;font-size:8.5px;color:#475569;line-height:1.45;border-top:1px solid #CBD5E1;padding-top:6px}
 </style></head><body>
-<div class="head"><div><h1>${MONTHS[mes]} ${anio} · Borrador</h1><div class="sub">Residencia de Terapia Intensiva — Hospital Británico</div></div><div class="tag">BORRADOR SUJETO A CAMBIOS</div></div>
+<div class="head"><div><h1>${soloGuardias ? "Guardias" : "Cobertura de salas"} · ${MONTHS[mes]} ${anio}</h1><div class="sub">Residencia de Terapia Intensiva — Hospital Británico</div></div><div class="tag">BORRADOR SUJETO A CAMBIOS</div></div>
 <div class="bloques">
-<div class="bloque"><h3>Equipos por UTI</h3>${eqHtml}</div>
-<div class="bloque"><h3>Días libres R4</h3>${libresHtml}</div>
-<div class="bloque"><h3>Fuera de sala este mes</h3><div class="txt" style="line-height:1.6"><b>Rotan:</b> ${esc(rotan)}<br><b>Vacaciones:</b> ${esc(vac)}<br><span style="color:#94A3B8">Los que rotan dentro del país siguen haciendo guardias.</span></div></div>
+${soloGuardias
+  ? `<div class="bloque"><h3>Guardias del mes por residente</h3>${bloqueConteo || '<div class="nota">Sin guardias cargadas</div>'}</div>
+     <div class="bloque" style="flex:0 0 250px"><h3>No hacen guardia este mes</h3><div class="txt" style="line-height:1.6"><b>Fuera del país:</b> ${esc(exterior)}<br><b>Vacaciones:</b> ${esc(vac)}</div></div>`
+  : `<div class="bloque"><h3>Equipos por UTI</h3>${eqHtml}</div>
+     <div class="bloque"><h3>Días libres R4</h3>${libresHtml}</div>
+     <div class="bloque"><h3>Fuera de sala este mes</h3><div class="txt" style="line-height:1.6"><b>Rotan:</b> ${esc(rotan)}<br><b>Vacaciones:</b> ${esc(vac)}<br><span style="color:#94A3B8">Los que rotan dentro del país siguen haciendo guardias.</span></div></div>`}
 </div>
 <table><thead><tr>${DAYS.map((d) => `<th>${d}</th>`).join("")}</tr></thead><tbody>${filas}</tbody></table>
-<div class="pie"><b>Referencias:</b> U1/U2/U3 = sala · PG = postguardia · G = de guardia (desde las 16 h). Los recuadros amarillos son las observaciones del día.</div>
+<div class="pie">${soloGuardias ? "<b>La guardia empieza a las 16 h.</b> Siempre dos residentes, uno de ellos R3 o R4. Los fines de semana, un R3 con un R2." : "<b>Referencias:</b> U1/U2/U3 = sala · PG = postguardia · G = de guardia (desde las 16 h). Los recuadros amarillos son las observaciones del día."}</div>
 </body></html>`);
   win.document.close();
   win.focus();
