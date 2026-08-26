@@ -424,18 +424,46 @@ function vacacionesEseDia(name, fecha, rotPorAnio) {
   return null;
 }
 
+// ── Semanas libres de Navidad y Año nuevo ─────────────────────────────────
+// A fin de año el servicio se parte en dos: unos trabajan la semana de Navidad
+// y quedan libres la de Año nuevo, y al revés. Quién queda libre en cada una se
+// carga en diciembre (campo semanasLibres), y de ahí se deduce el día.
+//
+// Las dos semanas se calculan solas, no se guardan: la de Navidad es la que
+// contiene el 25 de diciembre y la de Año nuevo la que contiene el 1 de enero
+// siguiente. Nunca coinciden, porque hay exactamente siete días entre ambas
+// fechas. Se mira también el diciembre del año anterior, porque la semana de
+// Año nuevo arranca en diciembre pero se estira hasta los primeros días de
+// enero, que ya son del año siguiente.
+function semanaLibreEseDia(name, fecha, rotPorAnio) {
+  const lunes = isoDate(mondayOf(fecha));
+  for (const anio of [fecha.getFullYear(), fecha.getFullYear() - 1]) {
+    const rotAnio = rotPorAnio[anio];
+    if (!rotAnio) continue;
+    const dic = rotAnio.months[11];
+    if (!dic) continue;
+    const sl = dic.semanasLibres || {};
+    if (isoDate(mondayOf(new Date(anio, 11, 25))) === lunes && (sl.navidad || []).includes(name)) return "Navidad";
+    if (isoDate(mondayOf(new Date(anio + 1, 0, 1))) === lunes && (sl.anioNuevo || []).includes(name)) return "Año nuevo";
+  }
+  return null;
+}
+
 // ── No disponibilidad automática para sala ────────────────────────────────
-// Tres cosas dejan a alguien fuera de la grilla de camas sin que haya que
+// Cuatro cosas dejan a alguien fuera de la grilla de camas sin que haya que
 // marcarlo a mano: estar rotando en otro servicio ese mes, estar de vacaciones
-// ese mes, o —en el caso de los R4— que sea su día libre de la semana. Se
-// calcula al vuelo desde Rotaciones y desde el día libre, nunca se guarda
-// duplicado: así, si se corrige una rotación, todas las semanas se actualizan
-// solas y nunca queda un dato viejo contradiciendo al nuevo.
+// ese mes, tener la semana libre de Navidad o de Año nuevo, o —en el caso de
+// los R4— que sea su día libre de la semana. Se calcula al vuelo desde
+// Rotaciones y desde el día libre, nunca se guarda duplicado: así, si se
+// corrige una rotación, todas las semanas se actualizan solas y nunca queda un
+// dato viejo contradiciendo al nuevo.
 // Devuelve el motivo (texto listo para mostrar) o null si está disponible.
 function motivoNoDisponible(name, date, rotPorAnio, diaLibre) {
   if (diaLibre) return `${name} tiene su día libre los ${diaLibre.toLowerCase()}`;
   const vac = vacacionesEseDia(name, date, rotPorAnio);
   if (vac) return `${name} está ${textoTramo(vac)}`;
+  const libre = semanaLibreEseDia(name, date, rotPorAnio);
+  if (libre) return `${name} tiene su semana libre de ${libre}`;
   const rotAnio = rotPorAnio[date.getFullYear()];
   if (!rotAnio) return null;
   const mes = rotAnio.months[date.getMonth()];
@@ -1727,8 +1755,10 @@ function VacacionesPicker({ mes, seleccion, isAdmin, onToggle, onTramo }) {
 
 // Solo aparece en diciembre. A fin de año se arma con dos equipos: unos
 // trabajan la semana de Navidad y quedan libres la de Año nuevo, y al revés.
-// Por ahora esto solo deja constancia de quién queda libre en cada una; todavía
-// no los saca de la grilla. Se termina de configurar en diciembre.
+// Lo que se marca acá sale directo en la grilla: quien queda libre aparece
+// automáticamente como no disponible toda esa semana, igual que las vacaciones.
+// Las dos semanas se deducen del calendario (la del 25/12 y la del 1/1), así
+// que no hay que cargar fechas: alcanza con tildar quién queda libre.
 function SemanasLibresPicker({ mes, datos, isAdmin, onToggle }) {
   const [abierto, setAbierto] = useState(false);
   const grupos = [
@@ -1746,7 +1776,7 @@ function SemanasLibresPicker({ mes, datos, isAdmin, onToggle }) {
       </div>
 
       {!abierto && !hayAlgo && isAdmin && (
-        <div style={{ fontSize: 11, color: "#64748B", fontStyle: "italic" }}>Sin definir todavía. Se termina de armar en diciembre.</div>
+        <div style={{ fontSize: 11, color: "#64748B", fontStyle: "italic" }}>Sin definir todavía. A medida que cada uno elija, se lo marca acá y queda fuera de la grilla esa semana.</div>
       )}
 
       {grupos.map((g) => {
