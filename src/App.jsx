@@ -1167,8 +1167,11 @@ function SchedulerView({ isAdmin }) {
       return;
     }
 
-    const PAGE_W = 1050; // ancho aprox. del área imprimible en A4 horizontal (96dpi, margen 8mm)
-    const PAGE_H = 700; // alto aprox. del área imprimible en A4 horizontal (96dpi, margen 8mm)
+    const PAGE_W = 1020; // ancho útil en A4 horizontal (96dpi). Va con margen de
+    const PAGE_H = 690;  // sobra sobre los 1062px teóricos: si el usuario deja
+    // los márgenes "predeterminados" en el diálogo en vez de los 8mm de @page,
+    // Chrome ignora la regla y el área imprimible se achica. Con este colchón
+    // entra igual y solo se pierde un 3% de tamaño.
 
     const noPrintEls = el.querySelectorAll(".no-print");
     const printOnlyEls = el.querySelectorAll(".print-only, .print-only-block");
@@ -1180,12 +1183,27 @@ function SchedulerView({ isAdmin }) {
     noPrintEls.forEach((n) => { n.style.display = "none"; });
     printOnlyEls.forEach((n) => { n.style.display = n.classList.contains("print-only-block") ? "block" : "inline"; });
 
+    // La grilla vive dentro de un contenedor con overflow-x:auto para poder
+    // scrollearla en pantalla. Eso rompía la impresión de dos maneras a la vez:
+    // el contenedor recortaba la última columna (el domingo), y además su
+    // scroll propio hacía que el ancho real de la grilla NO apareciera en el
+    // scrollWidth del bloque de impresión — así que la medición daba "entra
+    // justo", el zoom quedaba en 1 y nadie achicaba nada. Por eso, antes de
+    // medir, abrimos esos contenedores.
+    const scrollers = el.querySelectorAll(".print-scroll");
+    const prevOverflow = Array.from(scrollers).map((n) => n.style.overflowX);
+    scrollers.forEach((n) => { n.style.overflowX = "visible"; });
+
     const prevWidth = el.style.width;
     const prevZoom = el.style.zoom;
     el.style.zoom = "1";
     el.style.width = PAGE_W + "px";
 
-    const naturalW = el.scrollWidth;
+    // Con los contenedores abiertos, scrollWidth ya incluye lo que se desborda.
+    // Igual medimos también los hijos directos por si alguno desborda por su
+    // cuenta, para no volver a subestimar el ancho.
+    const anchoHijos = Array.from(el.querySelectorAll(".print-scroll > *")).map((n) => n.scrollWidth);
+    const naturalW = Math.max(el.scrollWidth, ...anchoHijos, 1);
     const naturalH = el.scrollHeight;
     const scale = Math.min(1, PAGE_W / naturalW, PAGE_H / naturalH);
 
@@ -1198,6 +1216,7 @@ function SchedulerView({ isAdmin }) {
       el.style.width = prevWidth;
       el.style.zoom = prevZoom;
       document.title = prevTitle;
+      scrollers.forEach((n, i) => { n.style.overflowX = prevOverflow[i]; });
       noPrintEls.forEach((n, i) => { n.style.display = prevNoPrint[i]; });
       printOnlyEls.forEach((n, i) => { n.style.display = prevPrintOnly[i]; });
       window.removeEventListener("afterprint", cleanup);
@@ -1231,7 +1250,7 @@ function SchedulerView({ isAdmin }) {
           {isAdmin && <PanelAlertas duras={alertas.duras} suaves={alertas.suaves} />}
           <EquiposMes monday={monday} isAdmin={isAdmin} />
           <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} onAplicarAlMes={aplicarDiasLibresAlMes} aplicando={aplicandoMes} />
-          <div style={{ overflowX: "auto", paddingBottom: 4 }}>
+          <div className="print-scroll" style={{ overflowX: "auto", paddingBottom: 4 }}>
           <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DAYS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "14px 14px 0 0", overflow: "hidden", border: "1px solid #E2E8F0", borderBottom: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DAYS.length * 150 }}>
             <Corner />{DAYS.map((d, i) => <DayHead key={d} name={d} date={dates[i]} isToday={sameDay(dates[i], today)} isWeekend={isWeekendIdx(i)} feriado={week.days[i].feriado} />)}
 

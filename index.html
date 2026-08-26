@@ -29,6 +29,10 @@
         .no-print { display: none !important; }
         .print-only { display: inline; }
         .print-only-block { display: block; }
+        /* En pantalla la grilla se scrollea de costado; al imprimir eso
+           recortaba la última columna (el domingo). Acá se abre el contenedor
+           para que el bloque entero se pinte y el ajuste de escala lo mida. */
+        .print-scroll { overflow: visible !important; }
       }
     </style>
   </head>
