@@ -4312,9 +4312,18 @@ function analizarSemana(week, monday, rotPorAnio, equiposMes) {
         });
       });
 
-      // Postguardia: lo ideal es que se quede un R4, no un R2 ni un R3.
-      (d.postguardia || []).filter((n) => LEVEL[n] === "R2" || LEVEL[n] === "R3").forEach((n) => {
-        agregar(suaves, di, `${n} (${LEVEL[n]}) se queda postguardia — lo ideal es que sea un R4`);
+      // Postguardia. Quién queda postguardia no se elige: es quien estuvo de
+      // guardia la noche anterior, así que avisar "lo ideal sería otro" no
+      // sirve de nada y ensucia el panel. Lo que sí es un error real es que
+      // aparezca acá un R4 que no está rotando: ese trabaja igual en sala al
+      // día siguiente y no debería estar ocupando la fila de postguardia.
+      (d.postguardia || []).filter((n) => LEVEL[n] === "R4").forEach((n) => {
+        const rotAnio = rotPorAnio[fecha.getFullYear()];
+        const mesRot = rotAnio && rotAnio.months[fecha.getMonth()];
+        const rota = mesRot && (mesRot.assignments || []).some((a) => a.resident === n);
+        if (!rota) {
+          agregar(suaves, di, `${n} es R4 y no está rotando — su postguardia la trabaja en sala, no debería figurar acá`);
+        }
       });
     }
 
