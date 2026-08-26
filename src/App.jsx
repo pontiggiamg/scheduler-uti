@@ -10,7 +10,7 @@ const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 // Pestañas de nivel superior de la app. El orden por defecto se usa si todavía
 // no hay nada guardado en Firestore (scheduler/ui-config); el admin puede
 // reordenarlas arrastrando y ese orden se guarda ahí, compartido para todos.
-const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy", "accesos"];
+const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy", "accesos", "borradores"];
 const TAB_META = {
   scheduler: { icon: "📅", label: "Semana" },
   rotaciones: { icon: "🔄", label: "Rotaciones y Vacaciones" },
@@ -21,6 +21,7 @@ const TAB_META = {
   registro: { icon: "📋", label: "Registro" },
   hoy: { icon: "📱", label: "¿Quién está hoy?" },
   accesos: { icon: "🔐", label: "Accesos", soloAdmin: true },
+  borradores: { icon: "🖨️", label: "Borradores", soloAdmin: true },
 };
 
 // Ruta pública sin login para compartir a otros servicios del hospital: entra
@@ -687,6 +688,7 @@ function AuthenticatedApp() {
       {tab === "registro" && <RegistroView isAdmin={isAdmin} user={user} />}
       {tab === "hoy" && <QuienEstaHoyView isAdmin={isAdmin} embedded />}
       {tab === "accesos" && isAdmin && <AccesosView user={user} />}
+      {tab === "borradores" && isAdmin && <BorradoresView />}
     </div>
   );
 }
@@ -3989,6 +3991,158 @@ function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChang
   );
 }
 
+/* ══════════════════ BORRADORES (mes completo para imprimir) ══════════════════ */
+
+// Arma el mes entero en una sola hoja A4 horizontal, listo para imprimir o
+// guardar como PDF y repartir en papel. Lee las semanas reales de Firestore,
+// así que siempre refleja lo que está cargado hoy. Se abre en una ventana
+// nueva con su propio CSS de impresión, igual que el PDF de procedimientos.
+function BorradoresView() {
+  const [mesSel, setMesSel] = useState(() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, "0")}`; });
+  const [generando, setGenerando] = useState(false);
+  const [aviso, setAviso] = useState(null);
+
+  const [y, m] = mesSel.split("-").map(Number);
+  const anio = y, mes = m - 1;
+
+  const generar = async () => {
+    setGenerando(true); setAviso(null);
+    try {
+      const lunes = lunesDelMes(anio, mes);
+      const semanas = {};
+      for (const l of lunes) {
+        const snap = await getDoc(doc(db, "scheduler", `week-${isoDate(l)}`));
+        semanas[isoDate(l)] = snap.exists() ? normalize(snap.data()) : emptyWeek();
+      }
+      const rotSnap = await getDoc(doc(db, "scheduler", `rotaciones-${anio}`));
+      const rot = rotSnap.exists() ? normalizeRot(rotSnap.data()) : emptyRotYear();
+      const eqSnap = await getDoc(doc(db, "scheduler", "equipos"));
+      const equipos = (eqSnap.exists() ? eqSnap.data() : {})[mesSel] || {};
+      abrirBorrador({ anio, mes, lunes, semanas, rot, equipos });
+    } catch (e) {
+      console.error(e); setAviso("No se pudo generar el borrador.");
+    }
+    setGenerando(false);
+  };
+
+  const opciones = useMemo(() => {
+    const hoy = new Date();
+    return Array.from({ length: 8 }, (_, i) => {
+      const d = new Date(hoy.getFullYear(), hoy.getMonth() - 2 + i, 1);
+      return { clave: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: `${MONTHS[d.getMonth()]} ${d.getFullYear()}` };
+    });
+  }, []);
+
+  return (
+    <div>
+      <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
+        <span style={{ fontSize: 22 }}>🖨️</span>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Borradores</div>
+          <div style={{ fontSize: 10.5, opacity: 0.7 }}>El mes completo en una hoja, para imprimir y repartir</div>
+        </div>
+      </div>
+
+      <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 16 }}>
+        <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.6, marginBottom: 14 }}>
+          Genera una hoja A4 horizontal con el mes entero: las tres salas día por día, la postguardia, quién está de guardia, los equipos por UTI, los días libres de los R4 y quién está afuera por rotación o vacaciones. Se abre el diálogo de impresión — elegí "Guardar como PDF" si querés el archivo.
+        </div>
+
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>MES</div>
+            <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
+              {opciones.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
+            </select>
+          </div>
+          <button onClick={generar} disabled={generando} style={{ background: "#0F172A", color: "#fff", border: "none", borderRadius: 9, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: generando ? "default" : "pointer", fontFamily: "inherit", opacity: generando ? 0.6 : 1 }}>
+            {generando ? "Armando…" : "🖨️ Generar borrador"}
+          </button>
+        </div>
+
+        {aviso && <div style={{ marginTop: 12 }}><Banner tone="warn">{aviso}</Banner></div>}
+      </div>
+    </div>
+  );
+}
+
+function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos }) {
+  const win = window.open("", "_blank");
+  if (!win) return;
+  const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const COL = { R2: ["#DBEAFE", "#93C5FD", "#1E3A8A", "#3B82F6"], R3: ["#D1FAE5", "#6EE7B7", "#065F46", "#10B981"], R4: ["#FFEDD5", "#FDBA74", "#9A3412", "#F97316"], JR: ["#FEF3C7", "#FCD34D", "#78350F", "#D97706"] };
+  const chip = (n) => {
+    const c = COL[LEVEL[n]] || ["#F1F5F9", "#CBD5E1", "#475569", "#94A3B8"];
+    return `<span class="chip" style="background:${c[0]};border-color:${c[1]};color:${c[2]}">${esc(n)}<b style="background:${c[3]}">${LEVEL[n] || "—"}</b></span>`;
+  };
+  const datosMes = rot.months[mes] || { assignments: [], vacaciones: [] };
+  const diaLibrePrimeraSemana = (semanas[isoDate(lunes[0])] || emptyWeek()).diasLibresR4;
+
+  const celda = (fecha) => {
+    const dentro = fecha.getMonth() === mes;
+    const w = semanas[isoDate(mondayOf(fecha))];
+    if (!dentro || !w) return `<td class="off"><div class="num">${fecha.getDate()}/${fecha.getMonth() + 1}</div><div class="nota">${dentro ? "" : "otro mes"}</div></td>`;
+    const d = w.days[diOfDate(fecha)];
+    const finde = isWeekendIdx(diOfDate(fecha)) || d.feriado;
+    const fila = (lbl, cls, gente) => gente && gente.length ? `<div class="fila"><span class="lbl ${cls}">${lbl}</span>${[...gente].sort(porJerarquia).map(chip).join("")}</div>` : "";
+    return `<td class="${finde ? "finde" : ""}"><div class="num">${fecha.getDate()}${d.feriado ? ' <span class="fer">FERIADO</span>' : ""}</div>` +
+      (finde ? '<div class="nota">sin sala</div>' : fila("U1", "u1", d.uti1) + fila("U2", "u2", d.uti2) + fila("U3", "u3", d.uti3) + fila("PG", "pgl", d.postguardia)) +
+      fila("G", "gl", d.deGuardia) +
+      (d.observaciones ? `<div class="obs">${esc(d.observaciones)}</div>` : "") +
+      "</td>";
+  };
+
+  const filas = lunes.map((l) => `<tr>${DAYS.map((_, i) => celda(shift(l, i))).join("")}</tr>`).join("");
+  const eqHtml = EQUIPO_SLOTS.filter((s) => (equipos[s.key] || []).length).map((s) =>
+    `<div class="eq"><span class="eqn" style="background:${s.tint};color:${s.accent}">${s.label}</span>${[...(equipos[s.key] || [])].sort(porJerarquia).map(chip).join("")}</div>`).join("") || '<div class="nota">Sin equipos armados</div>';
+  const libresHtml = RESIDENTS.R4.filter((n) => diaLibrePrimeraSemana[n]).map((n) =>
+    `<div class="eq">${chip(n)}<span class="txt">${diaLibrePrimeraSemana[n]}</span></div>`).join("") || '<div class="nota">Sin días libres cargados</div>';
+  const rotan = (datosMes.assignments || []).map((a) => `${a.resident} (${a.place}${a.exterior ? " ✈️" : ""})`).join(" · ") || "nadie";
+  const vac = (datosMes.vacaciones || []).map((v) => `${v.nombre} (${(TRAMOS_VACACIONES[v.tramo] || TRAMOS_VACACIONES.mes).corto})`).join(" · ") || "nadie";
+
+  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Borrador ${MONTHS[mes]} ${anio} — Scheduler UTI</title><style>
+@page{size:A4 landscape;margin:8mm}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;color:#0F172A;font-size:10px;zoom:.88}
+h1{font-size:18px;letter-spacing:-.3px}
+.sub{font-size:11px;color:#475569}
+.head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #0F172A;padding-bottom:5px;margin-bottom:7px}
+.tag{font-size:9.5px;font-weight:800;background:#0F172A;color:#fff;padding:3px 9px;border-radius:5px}
+.bloques{display:flex;gap:8px;margin-bottom:7px}
+.bloque{flex:1;border:1.5px solid #CBD5E1;border-radius:7px;padding:5px 8px}
+.bloque h3{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin-bottom:5px}
+.eq{display:flex;align-items:center;gap:5px;margin-bottom:2px;flex-wrap:wrap}
+.eqn{font-size:9px;font-weight:800;padding:2px 6px;border-radius:4px;min-width:38px;text-align:center}
+.txt{font-size:9.5px;color:#475569}
+.chip{display:inline-flex;align-items:center;gap:2px;border:1.2px solid;border-radius:9px;padding:.5px 4.5px;font-size:9.5px;font-weight:700;margin:.5px}
+.chip b{font-size:6.5px;color:#fff;padding:0 2.5px;border-radius:2px;font-weight:800}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+th{font-size:10px;background:#0F172A;color:#fff;padding:4px;border:1px solid #0F172A}
+td{border:1px solid #CBD5E1;vertical-align:top;padding:2.5px;height:70px}
+td.off{background:#F1F5F9}td.finde{background:#F8FAFC}
+.num{font-size:12px;font-weight:800;margin-bottom:2px}
+.fer{font-size:7px;background:#FDE68A;color:#92400E;padding:1px 4px;border-radius:6px;vertical-align:middle}
+.nota{font-size:8.5px;color:#94A3B8;font-style:italic}
+.fila{display:flex;align-items:flex-start;gap:2px;margin-bottom:.5px;flex-wrap:wrap;line-height:1.15}
+.lbl{font-size:7px;font-weight:800;color:#fff;border-radius:3px;padding:1.5px 3px;min-width:15px;text-align:center;flex-shrink:0;margin-top:1.5px}
+.u1{background:#0E7490}.u2{background:#BE185D}.u3{background:#A16207}.pgl{background:#A855F7}.gl{background:#9F1239}
+.obs{font-size:7.5px;color:#713F12;background:#FEF9C3;border-radius:3px;padding:1px 3px;margin-top:2px;line-height:1.25}
+.pie{margin-top:6px;font-size:8.5px;color:#475569;line-height:1.45;border-top:1px solid #CBD5E1;padding-top:6px}
+</style></head><body>
+<div class="head"><div><h1>${MONTHS[mes]} ${anio} · Borrador</h1><div class="sub">Residencia de Terapia Intensiva — Hospital Británico</div></div><div class="tag">BORRADOR SUJETO A CAMBIOS</div></div>
+<div class="bloques">
+<div class="bloque"><h3>Equipos por UTI</h3>${eqHtml}</div>
+<div class="bloque"><h3>Días libres R4</h3>${libresHtml}</div>
+<div class="bloque"><h3>Fuera de sala este mes</h3><div class="txt" style="line-height:1.6"><b>Rotan:</b> ${esc(rotan)}<br><b>Vacaciones:</b> ${esc(vac)}<br><span style="color:#94A3B8">Los que rotan dentro del país siguen haciendo guardias.</span></div></div>
+</div>
+<table><thead><tr>${DAYS.map((d) => `<th>${d}</th>`).join("")}</tr></thead><tbody>${filas}</tbody></table>
+<div class="pie"><b>Referencias:</b> U1/U2/U3 = sala · PG = postguardia · G = de guardia (desde las 16 h). Los recuadros amarillos son las observaciones del día.</div>
+</body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 400);
+}
+
 /* ══════════════════ ALERTAS DE LA SEMANA ══════════════════ */
 
 // Un "superior" es quien puede quedar a cargo de una sala o una guardia.
@@ -4230,7 +4384,7 @@ function EquiposMes({ monday, isAdmin }) {
           conGente.map((s) => (
             <span key={s.key} style={{ display: "inline-flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
               <span style={{ fontSize: 9.5, fontWeight: 800, color: s.accent, background: s.tint, borderRadius: 5, padding: "2px 6px", whiteSpace: "nowrap" }}>{s.label}</span>
-              {(equipos[s.key] || []).map((n) => {
+              {[...(equipos[s.key] || [])].sort(porJerarquia).map((n) => {
                 const c = COLOR[LEVEL[n]] || COLOR.R2;
                 return (
                   <span key={n} style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 7px", borderRadius: 999, background: c.bg, border: `1px solid ${c.bd}`, color: c.tx, fontWeight: 600, fontSize: 10.5 }}>
@@ -4273,7 +4427,7 @@ function EquiposEditor({ clave, equipos, onToggle, onClose }) {
         </div>
 
         {EQUIPO_SLOTS.map((s) => {
-          const miembros = equipos[s.key] || [];
+          const miembros = [...(equipos[s.key] || [])].sort(porJerarquia);
           const lleno = miembros.length >= EQUIPO_MAX;
           return (
             <div key={s.key} style={{ marginBottom: 14 }}>
