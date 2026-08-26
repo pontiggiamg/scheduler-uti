@@ -182,6 +182,14 @@ const SLOTS = [
 
 const SLOT_KEYS = SLOTS.map((s) => s.key);
 
+// Orden en que se muestran los chips dentro de una celda: del más senior al
+// menos. Ojo con el detalle que hacía que los R4 aparecieran últimos: si el
+// primer nivel vale 0, un `order[x] || 9` lo convierte en 9 porque el cero es
+// falsy en JavaScript. Por eso se usa ?? y no ||.
+const ORDEN_JERARQUIA = { JR: 0, R4: 1, R3: 2, R2: 3 };
+const porJerarquia = (a, b) => (ORDEN_JERARQUIA[LEVEL[a]] ?? 9) - (ORDEN_JERARQUIA[LEVEL[b]] ?? 9);
+
+
 // "Skin" del jefe de residentes: degradado dorado con brillo diagonal, para
 // que su ficha se distinga al instante de las de los tres niveles. Se aplica
 // encima del estilo normal del chip, así el resto del layout no cambia.
@@ -1195,7 +1203,7 @@ function SchedulerView({ isAdmin }) {
                   ) : (
                     <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DAYS.length - 1}>
                       <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
-                        {week.days[di][slot.key].sort((a, b) => { const order = { R4: 0, R3: 1, R2: 2 }; return (order[LEVEL[a]] || 3) - (order[LEVEL[b]] || 3); }).map((n) => (
+                        {[...week.days[di][slot.key]].sort(porJerarquia).map((n) => (
                           <Chip key={n} name={n} selected={sel?.name === n} alerta={motivoDe(n, di)} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
                         ))}
                         {active && <GhostHint color={slot.accent} name={sel.name} />}
@@ -1228,7 +1236,7 @@ function SchedulerView({ isAdmin }) {
                 {DAYS.map((_, di) => (
                   <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DAYS.length - 1}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
-                      {week.days[di][slot.key].sort((a, b) => { const order = { R4: 0, R3: 1, R2: 2 }; return (order[LEVEL[a]] || 3) - (order[LEVEL[b]] || 3); }).map((n) => (
+                      {[...week.days[di][slot.key]].sort(porJerarquia).map((n) => (
                         <Chip key={n} name={n} selected={sel?.name === n} alerta={motivoDe(n, di)} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
                       ))}
                       {active && <GhostHint color={slot.accent} name={sel.name} />}
