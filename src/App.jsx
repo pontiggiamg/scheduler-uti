@@ -366,6 +366,19 @@ function lunesDelMes(anio, mes) {
   return out;
 }
 
+// Todas las semanas que TOCAN el mes, aunque sea por un día. Distinto de
+// lunesDelMes, que usa el criterio de mayoría para decidir a qué mes
+// pertenece cada semana: eso sirve para los equipos o el día libre, pero para
+// imprimir un calendario hay que mostrar el mes completo. Si no, un mes que
+// termina martes se queda sin sus últimos días.
+function lunesQueTocanElMes(anio, mes) {
+  const out = [];
+  let cur = mondayOf(new Date(anio, mes, 1));
+  const fin = new Date(anio, mes + 1, 0);
+  while (cur <= fin) { out.push(new Date(cur)); cur = shift(cur, 7); }
+  return out;
+}
+
 // Los R4 se toman el mes entero; los R2 y R3, tres semanas seguidas que pueden
 // arrancar la primera o la segunda semana del mes.
 // Verano: mes entero (R4) o tres semanas seguidas (R2 y R3).
@@ -4008,7 +4021,7 @@ function BorradoresView() {
   const generar = async (tipo) => {
     setGenerando(true); setAviso(null);
     try {
-      const lunes = lunesDelMes(anio, mes);
+      const lunes = lunesQueTocanElMes(anio, mes);
       const semanas = {};
       for (const l of lunes) {
         const snap = await getDoc(doc(db, "scheduler", `week-${isoDate(l)}`));
