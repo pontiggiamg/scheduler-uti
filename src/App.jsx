@@ -10,7 +10,7 @@ const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 // Pestañas de nivel superior de la app. El orden por defecto se usa si todavía
 // no hay nada guardado en Firestore (scheduler/ui-config); el admin puede
 // reordenarlas arrastrando y ese orden se guarda ahí, compartido para todos.
-const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy", "accesos", "impresiones"];
+const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy", "accesos", "impresiones", "guardias"];
 // La pestaña se llamaba "borradores" y pasó a llamarse "impresiones": lo que
 // sale de ahí es definitivo salvo que se lo marque expresamente como borrador.
 // El orden de pestañas guardado en Firestore puede tener todavía el nombre
@@ -27,7 +27,8 @@ const TAB_META = {
   registro: { icon: "📋", label: "Registro" },
   hoy: { icon: "📱", label: "¿Quién está hoy?" },
   accesos: { icon: "🔐", label: "Accesos", soloAdmin: true },
-  impresiones: { icon: "🖨️", label: "Impresiones", soloAdmin: true },
+  impresiones: { icon: "🖨️", label: "Impresiones" },
+  guardias: { icon: "🌙", label: "Guardias" },
 };
 
 // Ruta pública sin login para compartir a otros servicios del hospital: entra
@@ -736,7 +737,8 @@ function AuthenticatedApp() {
       {tab === "registro" && <RegistroView isAdmin={isAdmin} user={user} />}
       {tab === "hoy" && <QuienEstaHoyView isAdmin={isAdmin} embedded />}
       {tab === "accesos" && isAdmin && <AccesosView user={user} />}
-      {tab === "impresiones" && isAdmin && <ImpresionesView />}
+      {tab === "impresiones" && <ImpresionesView user={user} isAdmin={isAdmin} />}
+      {tab === "guardias" && <GuardiasView />}
     </div>
   );
 }
@@ -4072,10 +4074,16 @@ function hoyTexto() {
   return `${h.getDate()} de ${MONTHS[h.getMonth()].toLowerCase()} de ${h.getFullYear()}`;
 }
 
-function ImpresionesView() {
+function ImpresionesView({ user, isAdmin }) {
   const [mesSel, setMesSel] = useState(() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, "0")}`; });
   const [semanaSel, setSemanaSel] = useState(() => isoDate(mondayOf(new Date())));
-  const [borrador, setBorrador] = useState(false);
+  const [borradorPedido, setBorradorPedido] = useState(false);
+  const [bn, setBn] = useState(true);
+  // Solo la jefatura puede emitir una hoja con sello DEFINITIVO. Para todos los
+  // demás la hoja sale marcada como borrador, con marca de agua y con su mail
+  // impreso al pie, así una copia que circule siempre se puede rastrear.
+  const borrador = isAdmin ? borradorPedido : true;
+  const emisor = user ? [user.displayName, user.email].filter(Boolean).join(" · ") : "";
   const [generando, setGenerando] = useState(false);
   const [aviso, setAviso] = useState(null);
 
@@ -4103,7 +4111,7 @@ function ImpresionesView() {
       const rot = (await leerRot([anio]))[anio];
       const eqSnap = await getDoc(doc(db, "scheduler", "equipos"));
       const equipos = (eqSnap.exists() ? eqSnap.data() : {})[mesSel] || {};
-      abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador });
+      abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador, emisor, bn });
     } catch (e) {
       console.error(e); setAviso("No se pudo generar la hoja del mes.");
     }
@@ -4118,7 +4126,7 @@ function ImpresionesView() {
       const week = snap.exists() ? normalize(snap.data()) : emptyWeek();
       const eqSnap = await getDoc(doc(db, "scheduler", "equipos"));
       const equipos = (eqSnap.exists() ? eqSnap.data() : {})[mesDeLaSemana(lunes)] || {};
-      abrirSemana({ lunes, week, equipos, borrador });
+      abrirSemana({ lunes, week, equipos, borrador, emisor, bn });
     } catch (e) {
       console.error(e); setAviso("No se pudo generar la hoja de la semana.");
     }
@@ -4162,19 +4170,47 @@ function ImpresionesView() {
         </div>
       </div>
 
-      {/* El interruptor de borrador vale para todas las hojas de abajo. */}
+      {/* Estas dos opciones valen para las tres hojas de abajo. */}
       <div style={{ ...caja, background: borrador ? "#FEF2F2" : "#fff", borderColor: borrador ? "#FECACA" : "#E2E8F0" }}>
-        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
-          <input type="checkbox" checked={borrador} onChange={(e) => setBorrador(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, accentColor: "#B91C1C", cursor: "pointer" }} />
-          <span>
-            <span style={{ fontSize: 13, fontWeight: 800, color: borrador ? "#B91C1C" : "#0F172A" }}>Marcar como borrador</span>
-            <span style={{ display: "block", fontSize: 11.5, color: "#475569", lineHeight: 1.5, marginTop: 2 }}>
-              {borrador
-                ? "Las hojas salen con el sello rojo BORRADOR y una marca de agua, para que nadie las tome como firmes."
-                : "Las hojas salen como DEFINITIVO, con la fecha de emisión. Tildá esto solo si todavía puede cambiar algo."}
-            </span>
-          </span>
-        </label>
+        <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
+
+          <div style={{ flex: "1 1 260px" }}>
+            <div style={{ ...rotulo, marginBottom: 6 }}>CÓMO SE VE</div>
+            <div style={{ display: "inline-flex", borderRadius: 9, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+              {[{ v: true, t: "◻︎ Blanco y negro" }, { v: false, t: "🎨 Color" }].map((o) => (
+                <button key={String(o.v)} onClick={() => setBn(o.v)} style={{ border: "none", padding: "8px 14px", fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", background: bn === o.v ? "#0F172A" : "#fff", color: bn === o.v ? "#fff" : "#475569" }}>{o.t}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.5, marginTop: 7 }}>
+              {bn
+                ? "Para la impresora del servicio. El nivel se distingue por el borde del chip —R4 grueso, R3 fino, R2 punteado— así que no hace falta color para leerlo."
+                : "Para mandar por WhatsApp o mirar en el celular. Cada nivel con su color, como en la app."}
+            </div>
+          </div>
+
+          <div style={{ flex: "1 1 300px", borderLeft: "1px solid #E2E8F0", paddingLeft: 20 }}>
+            <div style={{ ...rotulo, marginBottom: 6 }}>SELLO</div>
+            {isAdmin ? (
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
+                <input type="checkbox" checked={borradorPedido} onChange={(e) => setBorradorPedido(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, accentColor: "#B91C1C", cursor: "pointer" }} />
+                <span>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: borrador ? "#B91C1C" : "#0F172A" }}>Marcar como borrador</span>
+                  <span style={{ display: "block", fontSize: 11.5, color: "#475569", lineHeight: 1.5, marginTop: 2 }}>
+                    {borrador
+                      ? "Sale con sello rojo y marca de agua, para que nadie la tome como firme."
+                      : "Sale como DEFINITIVO con la fecha de emisión. Tildá esto si todavía puede cambiar algo."}
+                  </span>
+                </span>
+              </label>
+            ) : (
+              <div style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.55 }}>
+                <span style={{ display: "inline-block", fontSize: 10, fontWeight: 800, background: "#B91C1C", color: "#fff", padding: "2px 7px", borderRadius: 4, marginBottom: 5 }}>BORRADOR</span>
+                <br />Todo lo que descargues sale marcado como borrador, con tu nombre y tu mail al pie de la hoja. La versión definitiva la emite únicamente la jefatura de residentes.
+              </div>
+            )}
+          </div>
+
+        </div>
       </div>
 
       {/* ── Semana suelta ── */}
@@ -4229,6 +4265,10 @@ function ImpresionesView() {
       </div>
 
       {aviso && <Banner tone="warn">{aviso}</Banner>}
+
+      <div style={{ fontSize: 11, color: "#64748B", lineHeight: 1.55, padding: "4px 2px" }}>
+        Las hojas se abren en una pestaña nueva y se dispara el diálogo de impresión. Para guardar el PDF, elegí "Guardar como PDF" en Destino. Todo lo que se emita queda firmado con {emisor ? <b>{emisor}</b> : "la cuenta con la que entraste"}.
+      </div>
     </div>
   );
 }
@@ -4237,15 +4277,132 @@ function ImpresionesView() {
 // tabla propia, en vez de imprimir el DOM de la app. Se genera igual que las
 // hojas del mes (ventana nueva con su CSS), así se puede imprimir cualquier
 // semana sin tener que navegar hasta ella primero.
-function abrirSemana({ lunes, week, equipos, borrador }) {
+// ── Cocina común de las hojas impresas ────────────────────────────────────
+// Las tres hojas (semana, cobertura del mes, guardias del mes) comparten la
+// paleta, el sello, la marca de agua y el ajuste a una sola página. Todo lo que
+// cambie acá cambia en las tres a la vez, que es justamente lo que se quiere.
+
+// Modo color y modo blanco y negro. El modo B/N no es "el color pasado a
+// gris": los grises quedan todos parecidos al imprimir en láser. Lo que hace
+// es cambiar el canal por el que se distingue el nivel — en vez del color del
+// chip, el borde: R4 grueso, R3 fino, R2 punteado, JR doble — y dejar el resto
+// en blanco y negro puro, que es lo que mejor sale en cualquier impresora.
+function paletaImpresion(bn) {
+  if (!bn) {
+    return {
+      bn: false,
+      chips: { R2: ["#DBEAFE", "#93C5FD", "#1E3A8A", "#3B82F6"], R3: ["#D1FAE5", "#6EE7B7", "#065F46", "#10B981"], R4: ["#FFEDD5", "#FDBA74", "#9A3412", "#F97316"], JR: ["#FEF3C7", "#FCD34D", "#78350F", "#D97706"] },
+      borde: { R2: "1.2px solid", R3: "1.2px solid", R4: "1.2px solid", JR: "1.2px solid" },
+      fila: { uti1: "#0E7490", uti2: "#BE185D", uti3: "#A16207", postguardia: "#A855F7", guardia: "#9F1239", fuera: "#475569" },
+      finde: "#F8FAFC", off: "#F1F5F9", obs: ["#FEF9C3", "#713F12"], rec: ["#EFF6FF", "#1E3A8A"],
+      leyenda: "",
+      tagBorrador: "#B91C1C",
+    };
+  }
+  return {
+    bn: true,
+    chips: { R2: ["#fff", "#111827", "#111827", "#111827"], R3: ["#fff", "#111827", "#111827", "#111827"], R4: ["#fff", "#111827", "#111827", "#111827"], JR: ["#fff", "#111827", "#111827", "#111827"] },
+    borde: { R2: "1.2px dashed", R3: "1.2px solid", R4: "2.2px solid", JR: "3px double" },
+    fila: { uti1: "#111827", uti2: "#374151", uti3: "#4B5563", postguardia: "#6B7280", guardia: "#111827", fuera: "#6B7280" },
+    finde: "#EEEEEE", off: "#DDDDDD", obs: ["#fff", "#111827"], rec: ["#fff", "#111827"],
+    leyenda: " · <b>Niveles:</b> R4 borde grueso · R3 borde fino · R2 borde punteado · JR borde doble.",
+    tagBorrador: "#111827",
+  };
+}
+
+// Un chip de residente, en el modo que corresponda. Se usa igual en las tres
+// hojas para que un papel se lea igual que otro.
+function chipImpreso(n, P, esc) {
+  const lv = LEVEL[n];
+  const c = P.chips[lv] || (P.bn ? ["#fff", "#6B7280", "#374151", "#6B7280"] : ["#F1F5F9", "#CBD5E1", "#475569", "#94A3B8"]);
+  const b = P.borde[lv] || (P.bn ? "1px dotted" : "1.2px solid");
+  return `<span class="chip" style="background:${c[0]};border:${b} ${c[1]};color:${c[2]}">${esc(n)}${lv ? `<b style="background:${c[3]}">${lv}</b>` : ""}</span>`;
+}
+
+// Sello, marca de agua y pie de autoría. Solo el admin puede emitir una hoja
+// con sello DEFINITIVO: para cualquier otra persona la hoja sale marcada como
+// borrador, con marca de agua y con su mail impreso, así una copia que circule
+// siempre se puede rastrear hasta quién la sacó.
+function selloImpresion({ borrador, emisor, esc }) {
+  const fecha = hoyTexto();
+  if (borrador) {
+    return {
+      sello: '<div class="tag borrador">BORRADOR — SUJETO A CAMBIOS</div>',
+      agua: '<div class="agua">BORRADOR</div>',
+      pie: `<b>Borrador.</b> No es la versión definitiva del cronograma. Descargado por ${esc(emisor || "usuario sin identificar")} el ${fecha}.`,
+    };
+  }
+  return {
+    sello: `<div class="tag firme">DEFINITIVO<span>emitido el ${fecha}</span></div>`,
+    agua: "",
+    pie: `<b>Versión definitiva.</b> Emitida por la jefatura de residentes el ${fecha}.`,
+  };
+}
+
+// CSS que comparten las tres hojas.
+const CSS_IMPRESION = `
+@page{size:A4 landscape;margin:8mm}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;color:#0F172A;font-size:10px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+h1{font-size:18px;letter-spacing:-.3px}
+.sub{font-size:11px;color:#475569}
+.head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #0F172A;padding-bottom:5px;margin-bottom:7px}
+.tag{font-size:9.5px;font-weight:800;color:#fff;padding:3px 9px;border-radius:5px;white-space:nowrap}
+.tag.firme{background:#0F172A}
+.tag.firme span{display:block;font-size:7.5px;font-weight:600;opacity:.75;letter-spacing:.2px}
+.tag.borrador{background:#B91C1C}
+.agua{position:fixed;top:30%;left:0;right:0;text-align:center;font-size:130px;font-weight:800;color:rgba(120,120,120,.13);letter-spacing:16px;transform:rotate(-18deg);pointer-events:none;z-index:0}
+.head,.bloques,table,.pie{position:relative;z-index:1}
+.bloques{display:flex;gap:8px;margin-bottom:7px}
+.bloque{flex:1;border:1.5px solid #94A3B8;border-radius:7px;padding:5px 8px}
+.bloque h3{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#334155;margin-bottom:4px}
+.eq,.par{display:inline-flex;align-items:center;gap:5px;margin:0 9px 2px 0;flex-wrap:wrap}
+.eqn{font-size:9px;font-weight:800;padding:2px 6px;border-radius:4px}
+.txt{font-size:9.5px;color:#334155}
+.chip{display:inline-flex;align-items:center;gap:2px;border-radius:9px;padding:1px 5px;font-size:10px;font-weight:700;margin:1px}
+.chip b{font-size:6.5px;color:#fff;padding:0 2.5px;border-radius:2px;font-weight:800}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+.nota{font-size:8.5px;color:#64748B;font-style:italic}
+.pie{margin-top:6px;font-size:8.5px;color:#334155;line-height:1.45;border-top:1px solid #94A3B8;padding-top:6px}
+`;
+
+// Ajusta la hoja para que entre en UNA sola página y recién ahí imprime.
+// Antes el zoom era un número fijo y por eso los meses de seis semanas —agosto
+// de 2026, por ejemplo— se partían en dos páginas. Ahora se mide la altura
+// real y se calcula el zoom necesario. Se itera un par de veces porque al
+// achicar entra más ancho y el alto vuelve a cambiar.
+function ajustarYImprimir(win, maxZoom) {
+  const hacerlo = () => {
+    try {
+      const body = win.document.body;
+      const PW = 1030, PH = 712; // A4 apaisada a 96dpi, con colchón de margen
+      let z = maxZoom;
+      for (let i = 0; i < 5; i++) {
+        body.style.zoom = "1";
+        body.style.width = PW / z + "px";
+        const alto = Math.max(body.scrollHeight, win.document.documentElement.scrollHeight);
+        const necesario = Math.min(maxZoom, PH / alto);
+        if (Math.abs(necesario - z) < 0.005) { z = necesario; break; }
+        z = necesario;
+      }
+      body.style.width = PW / z + "px";
+      body.style.zoom = String(z);
+    } catch (e) { /* si algo falla, se imprime igual sin ajustar */ }
+    setTimeout(() => { win.focus(); win.print(); }, 150);
+  };
+  const fuentes = win.document.fonts && win.document.fonts.ready;
+  if (fuentes && typeof fuentes.then === "function") fuentes.then(() => setTimeout(hacerlo, 80)).catch(() => setTimeout(hacerlo, 400));
+  else setTimeout(hacerlo, 400);
+}
+
+function abrirSemana({ lunes, week, equipos, borrador, emisor, bn }) {
   const win = window.open("", "_blank");
   if (!win) return;
   const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  const COL = { R2: ["#DBEAFE", "#93C5FD", "#1E3A8A", "#3B82F6"], R3: ["#D1FAE5", "#6EE7B7", "#065F46", "#10B981"], R4: ["#FFEDD5", "#FDBA74", "#9A3412", "#F97316"], JR: ["#FEF3C7", "#FCD34D", "#78350F", "#D97706"] };
-  const chip = (n) => {
-    const c = COL[LEVEL[n]] || ["#F1F5F9", "#CBD5E1", "#475569", "#94A3B8"];
-    return `<span class="chip" style="background:${c[0]};border-color:${c[1]};color:${c[2]}">${esc(n)}<b style="background:${c[3]}">${LEVEL[n] || "—"}</b></span>`;
-  };
+  const P = paletaImpresion(bn);
+  const chip = (n) => chipImpreso(n, P, esc);
+  const { sello, agua, pie } = selloImpresion({ borrador, emisor, esc });
+
   const fechas = DAYS.map((_, i) => shift(lunes, i));
   const fin = fechas[6];
   const rango = lunes.getMonth() === fin.getMonth()
@@ -4255,70 +4412,42 @@ function abrirSemana({ lunes, week, equipos, borrador }) {
   const celdaSlot = (key, di) => {
     const d = week.days[di];
     const bloqueada = (isWeekendIdx(di) || d.feriado) && key !== "postguardia";
-    if (bloqueada) return '<td class="finde"><span class="nota">sin sala</span></td>';
+    if (bloqueada) return `<td class="finde"><span class="nota">sin sala</span></td>`;
     const gente = [...(d[key] || [])].sort(porJerarquia);
     return `<td class="${isWeekendIdx(di) || d.feriado ? "finde" : ""}">${gente.length ? gente.map(chip).join("") : '<span class="nota">—</span>'}</td>`;
   };
-  const filaSlot = (sl) => `<tr><th class="lbl" style="background:${sl.accent}">${sl.label}</th>${DAYS.map((_, di) => celdaSlot(sl.key, di)).join("")}</tr>`;
+  const filaSlot = (sl) => `<tr><th class="lbl" style="background:${P.fila[sl.key]}">${sl.label}</th>${DAYS.map((_, di) => celdaSlot(sl.key, di)).join("")}</tr>`;
 
-  const filaGuardia = `<tr><th class="lbl" style="background:#9F1239">De guardia<span>desde las 16 h</span></th>${DAYS.map((_, di) => {
+  const filaGuardia = `<tr><th class="lbl" style="background:${P.fila.guardia}">De guardia<span>desde las 16 h</span></th>${DAYS.map((_, di) => {
     const g = [...(week.days[di].deGuardia || [])].sort(porJerarquia);
-    return `<td class="g">${g.length ? g.map((n) => LEVEL[n] ? chip(n) : `<span class="chip" style="background:#F1F5F9;border-color:#CBD5E1;color:#475569">${esc(n)}</span>`).join("") : '<span class="nota">sin cargar</span>'}</td>`;
+    return `<td class="g">${g.length ? g.map(chip).join("") : '<span class="nota">sin cargar</span>'}</td>`;
   }).join("")}</tr>`;
 
   const filaTexto = (label, campo, clase) => {
-    const hay = DAYS.some((_, di) => (week.days[di][campo] || "").trim());
-    if (!hay) return "";
+    if (!DAYS.some((_, di) => (week.days[di][campo] || "").trim())) return "";
     return `<tr><th class="lbl" style="background:#94A3B8">${label}</th>${DAYS.map((_, di) =>
-      `<td class="${clase}">${esc((week.days[di][campo] || "").trim()) || ""}</td>`).join("")}</tr>`;
+      `<td class="${clase}">${esc((week.days[di][campo] || "").trim())}</td>`).join("")}</tr>`;
   };
 
   const libresHtml = RESIDENTS.R4.filter((n) => week.diasLibresR4[n]).map((n) =>
     `<span class="par">${chip(n)}<span class="txt">${week.diasLibresR4[n]}</span></span>`).join("") || '<span class="nota">sin cargar</span>';
   const eqHtml = EQUIPO_SLOTS.filter((sl) => (equipos[sl.key] || []).length).map((sl) =>
-    `<span class="par"><span class="eqn" style="background:${sl.tint};color:${sl.accent}">${sl.label}</span>${[...(equipos[sl.key] || [])].sort(porJerarquia).map(chip).join("")}</span>`).join("") || '<span class="nota">sin equipos armados</span>';
-
-  const sello = borrador
-    ? '<div class="tag borrador">BORRADOR — SUJETO A CAMBIOS</div>'
-    : `<div class="tag firme">DEFINITIVO<span>emitido el ${hoyTexto()}</span></div>`;
-  const agua = borrador ? '<div class="agua">BORRADOR</div>' : "";
+    `<span class="par"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : sl.tint};color:${P.bn ? "#111827" : sl.accent}">${sl.label}</span>${[...(equipos[sl.key] || [])].sort(porJerarquia).map(chip).join("")}</span>`).join("") || '<span class="nota">sin equipos armados</span>';
 
   win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${borrador ? "Borrador — " : ""}Scheduler UTI — Semana del ${rango}</title><style>
-@page{size:A4 landscape;margin:8mm}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Inter',system-ui,sans-serif;color:#0F172A;font-size:10px}
-h1{font-size:18px;letter-spacing:-.3px}
-.sub{font-size:11px;color:#475569}
-.head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #0F172A;padding-bottom:5px;margin-bottom:7px}
-.tag{font-size:9.5px;font-weight:800;color:#fff;padding:3px 9px;border-radius:5px;white-space:nowrap}
-.tag.firme{background:#0F172A}
-.tag.firme span{display:block;font-size:7.5px;font-weight:600;opacity:.75;letter-spacing:.2px}
-.tag.borrador{background:#B91C1C}
-.agua{position:fixed;top:30%;left:0;right:0;text-align:center;font-size:130px;font-weight:800;color:rgba(185,28,28,.07);letter-spacing:16px;transform:rotate(-18deg);pointer-events:none;z-index:0}
-.head,.bloques,table,.pie{position:relative;z-index:1}
-.bloques{display:flex;gap:8px;margin-bottom:7px}
-.bloque{flex:1;border:1.5px solid #CBD5E1;border-radius:7px;padding:5px 8px}
-.bloque h3{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin-bottom:4px}
-.par{display:inline-flex;align-items:center;gap:4px;margin:0 9px 2px 0}
-.eqn{font-size:9px;font-weight:800;padding:2px 6px;border-radius:4px}
-.txt{font-size:9.5px;color:#475569}
-.chip{display:inline-flex;align-items:center;gap:2px;border:1.2px solid;border-radius:9px;padding:1px 5px;font-size:10px;font-weight:700;margin:1px}
-.chip b{font-size:6.5px;color:#fff;padding:0 2.5px;border-radius:2px;font-weight:800}
-table{width:100%;border-collapse:collapse;table-layout:fixed}
+${CSS_IMPRESION}
+.tag.borrador{background:${P.tagBorrador}}
 col.lblcol{width:86px}
 thead th{font-size:10.5px;background:#0F172A;color:#fff;padding:4px 3px;border:1px solid #0F172A}
-thead th small{display:block;font-size:8.5px;font-weight:600;opacity:.75}
-thead th.fs{background:#334155}
-th.lbl{font-size:8.5px;font-weight:800;color:#fff;border:1px solid #CBD5E1;padding:3px;vertical-align:middle;line-height:1.2}
+thead th small{display:block;font-size:8.5px;font-weight:600;opacity:.8}
+thead th.fs{background:#475569}
+th.lbl{font-size:8.5px;font-weight:800;color:#fff;border:1px solid #94A3B8;padding:3px;vertical-align:middle;line-height:1.2}
 th.lbl span{display:block;font-size:6.5px;font-weight:600;opacity:.85}
-td{border:1px solid #CBD5E1;vertical-align:top;padding:3px;height:52px}
-td.finde{background:#F8FAFC}
-td.g{background:#FFF1F2;height:44px}
-td.obs{background:#FEF9C3;color:#713F12;font-size:8.5px;line-height:1.3;height:auto;padding:4px}
-td.rec{background:#EFF6FF;color:#1E3A8A;font-size:8.5px;line-height:1.3;height:auto;padding:4px}
-.nota{font-size:8.5px;color:#94A3B8;font-style:italic}
-.fer{font-size:7px;background:#FDE68A;color:#92400E;padding:1px 4px;border-radius:6px}
-.pie{margin-top:6px;font-size:8.5px;color:#475569;line-height:1.45;border-top:1px solid #CBD5E1;padding-top:6px}
+td{border:1px solid #94A3B8;vertical-align:top;padding:3px;height:52px}
+td.finde{background:${P.finde}}
+td.g{background:${P.bn ? "#F3F4F6" : "#FFF1F2"};height:46px}
+td.obs{background:${P.obs[0]};color:${P.obs[1]};font-size:8.5px;line-height:1.3;height:auto;padding:4px;${P.bn ? "border-left:3px solid #111827;" : ""}}
+td.rec{background:${P.rec[0]};color:${P.rec[1]};font-size:8.5px;line-height:1.3;height:auto;padding:4px;${P.bn ? "border-left:3px dashed #111827;" : ""}}
 </style></head><body>
 ${agua}
 <div class="head"><div><h1>Semana del ${rango}</h1><div class="sub">Residencia de Terapia Intensiva — Hospital Británico</div></div>${sello}</div>
@@ -4335,23 +4464,21 @@ ${filaGuardia}
 ${filaTexto("Observaciones", "observaciones", "obs")}
 ${filaTexto("Recordatorios", "recordatorios", "rec")}
 </tbody></table>
-<div class="pie"><b>Referencias:</b> la guardia empieza a las 16 h. Sábados, domingos y feriados no llevan grilla de salas.</div>
+<div class="pie">${pie}<br><b>Referencias:</b> la guardia empieza a las 16 h. Sábados, domingos y feriados no llevan grilla de salas.${P.leyenda}</div>
 </body></html>`);
   win.document.close();
-  win.focus();
-  setTimeout(() => win.print(), 400);
+  ajustarYImprimir(win, 1);
 }
 
-function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador }) {
+function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador, emisor, bn }) {
   const soloGuardias = tipo === "guardias";
   const win = window.open("", "_blank");
   if (!win) return;
   const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  const COL = { R2: ["#DBEAFE", "#93C5FD", "#1E3A8A", "#3B82F6"], R3: ["#D1FAE5", "#6EE7B7", "#065F46", "#10B981"], R4: ["#FFEDD5", "#FDBA74", "#9A3412", "#F97316"], JR: ["#FEF3C7", "#FCD34D", "#78350F", "#D97706"] };
-  const chip = (n) => {
-    const c = COL[LEVEL[n]] || ["#F1F5F9", "#CBD5E1", "#475569", "#94A3B8"];
-    return `<span class="chip" style="background:${c[0]};border-color:${c[1]};color:${c[2]}">${esc(n)}<b style="background:${c[3]}">${LEVEL[n] || "—"}</b></span>`;
-  };
+  const P = paletaImpresion(bn);
+  const chip = (n) => chipImpreso(n, P, esc);
+  const { sello, agua, pie } = selloImpresion({ borrador, emisor, esc });
+
   const datosMes = rot.months[mes] || { assignments: [], vacaciones: [] };
   const diaLibrePrimeraSemana = (semanas[isoDate(lunes[0])] || emptyWeek()).diasLibresR4;
 
@@ -4361,22 +4488,21 @@ function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador
     if (!dentro || !w) return `<td class="off"><div class="num">${fecha.getDate()}/${fecha.getMonth() + 1}</div><div class="nota">${dentro ? "" : "otro mes"}</div></td>`;
     const d = w.days[diOfDate(fecha)];
     const finde = isWeekendIdx(diOfDate(fecha)) || d.feriado;
-    const fila = (lbl, cls, gente) => gente && gente.length ? `<div class="fila"><span class="lbl ${cls}">${lbl}</span>${[...gente].sort(porJerarquia).map(chip).join("")}</div>` : "";
+    const fila = (lbl, key, gente) => gente && gente.length ? `<div class="fila"><span class="lbl" style="background:${P.fila[key]}">${lbl}</span>${[...gente].sort(porJerarquia).map(chip).join("")}</div>` : "";
     if (soloGuardias) {
       const g = [...(d.deGuardia || [])].sort(porJerarquia);
       return `<td class="${finde ? "finde" : ""} g-solo"><div class="num">${fecha.getDate()}${d.feriado ? ' <span class="fer">FERIADO</span>' : ""}</div>` +
         (g.length ? `<div class="gbig">${g.map(chip).join("")}</div>` : '<div class="nota">sin cargar</div>') + "</td>";
     }
     return `<td class="${finde ? "finde" : ""}"><div class="num">${fecha.getDate()}${d.feriado ? ' <span class="fer">FERIADO</span>' : ""}</div>` +
-      (finde ? '<div class="nota">sin sala</div>' : fila("U1", "u1", d.uti1) + fila("U2", "u2", d.uti2) + fila("U3", "u3", d.uti3) + fila("PG", "pgl", d.postguardia)) +
-      fila("G", "gl", d.deGuardia) +
+      (finde ? '<div class="nota">sin sala</div>' : fila("U1", "uti1", d.uti1) + fila("U2", "uti2", d.uti2) + fila("U3", "uti3", d.uti3) + fila("PG", "postguardia", d.postguardia)) +
+      fila("G", "guardia", d.deGuardia) +
       (d.observaciones ? `<div class="obs">${esc(d.observaciones)}</div>` : "") +
       "</td>";
   };
 
   const filas = lunes.map((l) => `<tr>${DAYS.map((_, i) => celda(shift(l, i))).join("")}</tr>`).join("");
 
-  // Conteo de guardias del mes, por persona y por nivel
   const cuenta = {};
   lunes.forEach((l) => DAYS.forEach((_, i) => {
     const f = shift(l, i);
@@ -4390,62 +4516,33 @@ function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador
   const bloqueConteo = ["R4", "R3", "R2"].map((lv) => {
     const gente = ALL.filter((n) => LEVEL[n] === lv && cuenta[n]);
     if (!gente.length) return "";
-    return `<div class="eq"><span class="eqn" style="background:${COL[lv][0]};color:${COL[lv][2]}">${lv} · ${porNivel[lv]}</span>${gente.map((n) => `${chip(n)}<span class="cnt">${cuenta[n]}</span>`).join("")}</div>`;
+    return `<div class="eq"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : P.chips[lv][0]};color:#111827">${lv} · ${porNivel[lv]}</span>${gente.map((n) => `${chip(n)}<span class="cnt">${cuenta[n]}</span>`).join("")}</div>`;
   }).join("");
-  const eqHtml = EQUIPO_SLOTS.filter((s) => (equipos[s.key] || []).length).map((s) =>
-    `<div class="eq"><span class="eqn" style="background:${s.tint};color:${s.accent}">${s.label}</span>${[...(equipos[s.key] || [])].sort(porJerarquia).map(chip).join("")}</div>`).join("") || '<div class="nota">Sin equipos armados</div>';
+  const eqHtml = EQUIPO_SLOTS.filter((sl) => (equipos[sl.key] || []).length).map((sl) =>
+    `<div class="eq"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : sl.tint};color:${P.bn ? "#111827" : sl.accent}">${sl.label}</span>${[...(equipos[sl.key] || [])].sort(porJerarquia).map(chip).join("")}</div>`).join("") || '<div class="nota">Sin equipos armados</div>';
   const libresHtml = RESIDENTS.R4.filter((n) => diaLibrePrimeraSemana[n]).map((n) =>
     `<div class="eq">${chip(n)}<span class="txt">${diaLibrePrimeraSemana[n]}</span></div>`).join("") || '<div class="nota">Sin días libres cargados</div>';
-  const rotan = (datosMes.assignments || []).map((a) => `${a.resident} (${a.place}${a.exterior ? " ✈️" : ""})`).join(" · ") || "nadie";
-  const exterior = (datosMes.assignments || []).filter((a) => a.exterior).map((a) => `${a.resident} (${a.place})`).join(" · ") || "nadie";
+  const rotan = (datosMes.assignments || []).map((x) => `${x.resident} (${x.place}${x.exterior ? " ✈️" : ""})`).join(" · ") || "nadie";
+  const exterior = (datosMes.assignments || []).filter((x) => x.exterior).map((x) => `${x.resident} (${x.place})`).join(" · ") || "nadie";
   const vac = (datosMes.vacaciones || []).map((v) => `${v.nombre} (${(TRAMOS_VACACIONES[v.tramo] || TRAMOS_VACACIONES.mes).corto})`).join(" · ") || "nadie";
 
-  // Lo que sale de acá es definitivo salvo que se pida lo contrario. El sello
-  // y la marca de agua son la única diferencia: el contenido es el mismo.
-  const sello = borrador
-    ? '<div class="tag borrador">BORRADOR — SUJETO A CAMBIOS</div>'
-    : `<div class="tag firme">DEFINITIVO<span>emitido el ${hoyTexto()}</span></div>`;
-  const agua = borrador ? '<div class="agua">BORRADOR</div>' : "";
-
-  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${(borrador ? "Borrador — " : "")}${soloGuardias ? "Guardias" : "Cobertura de salas"} — ${MONTHS[mes]} ${anio}</title><style>
-@page{size:A4 landscape;margin:8mm}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Inter',system-ui,sans-serif;color:#0F172A;font-size:10px;zoom:${soloGuardias ? ".97" : ".88"}}
-h1{font-size:18px;letter-spacing:-.3px}
-.sub{font-size:11px;color:#475569}
-.head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #0F172A;padding-bottom:5px;margin-bottom:7px}
-.tag{font-size:9.5px;font-weight:800;color:#fff;padding:3px 9px;border-radius:5px;white-space:nowrap}
-.tag.firme{background:#0F172A}
-.tag.firme span{display:block;font-size:7.5px;font-weight:600;opacity:.75;letter-spacing:.2px}
-.tag.borrador{background:#B91C1C}
-.agua{position:fixed;top:30%;left:0;right:0;text-align:center;font-size:120px;font-weight:800;color:rgba(185,28,28,.07);letter-spacing:14px;transform:rotate(-18deg);pointer-events:none;z-index:0}
-.head,.bloques,table,.pie{position:relative;z-index:1}
-.bloques{display:flex;gap:8px;margin-bottom:7px}
-.bloque{flex:1;border:1.5px solid #CBD5E1;border-radius:7px;padding:5px 8px}
-.bloque h3{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin-bottom:5px}
-.eq{display:flex;align-items:center;gap:5px;margin-bottom:2px;flex-wrap:wrap}
-.eqn{font-size:9px;font-weight:800;padding:2px 6px;border-radius:4px;min-width:38px;text-align:center}
-.txt{font-size:9.5px;color:#475569}
-.chip{display:inline-flex;align-items:center;gap:2px;border:1.2px solid;border-radius:9px;padding:.5px 4.5px;font-size:9.5px;font-weight:700;margin:.5px}
-.chip b{font-size:6.5px;color:#fff;padding:0 2.5px;border-radius:2px;font-weight:800}
-table{width:100%;border-collapse:collapse;table-layout:fixed}
-th{font-size:10px;background:#0F172A;color:#fff;padding:4px;border:1px solid #0F172A}
-td{border:1px solid #CBD5E1;vertical-align:top;padding:2.5px;height:70px}
-td.g-solo{height:88px;text-align:center;vertical-align:middle}
-td.g-solo .num{font-size:15px;text-align:left}
-.gbig{display:flex;flex-direction:column;align-items:center;gap:3px;margin-top:5px}
-.gbig .chip{font-size:13px;padding:3px 10px;border-width:1.8px;border-radius:14px}
+  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${borrador ? "Borrador — " : ""}${soloGuardias ? "Guardias" : "Cobertura de salas"} — ${MONTHS[mes]} ${anio}</title><style>
+${CSS_IMPRESION}
+.tag.borrador{background:${P.tagBorrador}}
+thead th{font-size:10px;background:#0F172A;color:#fff;padding:4px;border:1px solid #0F172A}
+td{border:1px solid #94A3B8;vertical-align:top;padding:2.5px;height:62px}
+td.g-solo{height:80px;text-align:center;vertical-align:middle}
+td.g-solo .num{font-size:14px;text-align:left}
+.gbig{display:flex;flex-direction:column;align-items:center;gap:3px;margin-top:4px}
+.gbig .chip{font-size:12.5px;padding:3px 10px;border-radius:14px}
 .gbig .chip b{font-size:8px;padding:1px 3.5px}
-.cnt{font-size:11px;font-weight:800;color:#334155;margin:0 7px 0 1px}
-td.off{background:#F1F5F9}td.finde{background:#F8FAFC}
+.cnt{font-size:11px;font-weight:800;color:#1F2937;margin:0 7px 0 1px}
+td.off{background:${P.off}}td.finde{background:${P.finde}}
 .num{font-size:12px;font-weight:800;margin-bottom:2px}
-.fer{font-size:7px;background:#FDE68A;color:#92400E;padding:1px 4px;border-radius:6px;vertical-align:middle}
-.nota{font-size:8.5px;color:#94A3B8;font-style:italic}
+.fer{font-size:7px;background:${P.bn ? "#111827" : "#FDE68A"};color:${P.bn ? "#fff" : "#92400E"};padding:1px 4px;border-radius:6px;vertical-align:middle}
 .fila{display:flex;align-items:flex-start;gap:2px;margin-bottom:.5px;flex-wrap:wrap;line-height:1.15}
-.lbl{font-size:7px;font-weight:800;color:#fff;border-radius:3px;padding:1.5px 3px;min-width:15px;text-align:center;flex-shrink:0;margin-top:1.5px}
-.u1{background:#0E7490}.u2{background:#BE185D}.u3{background:#A16207}.pgl{background:#A855F7}.gl{background:#9F1239}
-.obs{font-size:7.5px;color:#713F12;background:#FEF9C3;border-radius:3px;padding:1px 3px;margin-top:2px;line-height:1.25}
-.pie{margin-top:6px;font-size:8.5px;color:#475569;line-height:1.45;border-top:1px solid #CBD5E1;padding-top:6px}
+.fila .lbl{font-size:7px;font-weight:800;color:#fff;border-radius:3px;padding:1.5px 3px;min-width:15px;text-align:center;flex-shrink:0;margin-top:1.5px}
+.obs{font-size:7.5px;color:${P.obs[1]};background:${P.obs[0]};border-radius:3px;padding:1px 3px;margin-top:2px;line-height:1.25;${P.bn ? "border-left:2.5px solid #111827;" : ""}}
 </style></head><body>
 ${agua}
 <div class="head"><div><h1>${soloGuardias ? "Guardias" : "Cobertura de salas"} · ${MONTHS[mes]} ${anio}</h1><div class="sub">Residencia de Terapia Intensiva — Hospital Británico</div></div>${sello}</div>
@@ -4455,14 +4552,220 @@ ${soloGuardias
      <div class="bloque" style="flex:0 0 250px"><h3>No hacen guardia este mes</h3><div class="txt" style="line-height:1.6"><b>Fuera del país:</b> ${esc(exterior)}<br><b>Vacaciones:</b> ${esc(vac)}</div></div>`
   : `<div class="bloque"><h3>Equipos por UTI</h3>${eqHtml}</div>
      <div class="bloque"><h3>Días libres R4</h3>${libresHtml}</div>
-     <div class="bloque"><h3>Fuera de sala este mes</h3><div class="txt" style="line-height:1.6"><b>Rotan:</b> ${esc(rotan)}<br><b>Vacaciones:</b> ${esc(vac)}<br><span style="color:#94A3B8">Los que rotan dentro del país siguen haciendo guardias.</span></div></div>`}
+     <div class="bloque"><h3>Fuera de sala este mes</h3><div class="txt" style="line-height:1.6"><b>Rotan:</b> ${esc(rotan)}<br><b>Vacaciones:</b> ${esc(vac)}<br><span style="color:#64748B">Los que rotan dentro del país siguen haciendo guardias.</span></div></div>`}
 </div>
 <table><thead><tr>${DAYS.map((d) => `<th>${d}</th>`).join("")}</tr></thead><tbody>${filas}</tbody></table>
-<div class="pie">${soloGuardias ? "<b>La guardia empieza a las 16 h.</b> Siempre dos residentes, uno de ellos R3 o R4. Los fines de semana, un R3 con un R2." : "<b>Referencias:</b> U1/U2/U3 = sala · PG = postguardia · G = de guardia (desde las 16 h). Los recuadros amarillos son las observaciones del día."}</div>
+<div class="pie">${pie}<br>${soloGuardias ? "<b>La guardia empieza a las 16 h.</b> Siempre dos residentes, uno de ellos R3 o R4. Los fines de semana, un R3 con un R2." : "<b>Referencias:</b> U1/U2/U3 = sala · PG = postguardia · G = de guardia (desde las 16 h)."}${P.leyenda}</div>
 </body></html>`);
   win.document.close();
-  win.focus();
-  setTimeout(() => win.print(), 400);
+  ajustarYImprimir(win, soloGuardias ? 1 : 0.95);
+}
+
+
+/* ══════════════════ REGISTRO DE GUARDIAS ══════════════════ */
+
+// Cupo de guardias por nivel y por mes. Cada noche lleva dos residentes, así
+// que el total del mes son días × 2. R4 y R3 tienen cupo fijo y los R2 se
+// llevan el resto: por eso en un mes de 30 días los R2 hacen 26 y no 28.
+const CUPO_MES = { R4: 14, R3: 20 };
+const cupoR2 = (anio, mes) => new Date(anio, mes + 1, 0).getDate() * 2 - CUPO_MES.R4 - CUPO_MES.R3;
+
+// Lee las semanas del mes y cuenta las guardias de cada uno, separando día de
+// semana, fin de semana y feriado. Es el registro que hasta ahora había que
+// contar a mano sobre el papel.
+function GuardiasView() {
+  const [mesSel, setMesSel] = useState(() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, "0")}`; });
+  const [datos, setDatos] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [y, m] = mesSel.split("-").map(Number);
+  const anio = y, mes = m - 1;
+
+  useEffect(() => {
+    let vivo = true;
+    setCargando(true);
+    (async () => {
+      const semanas = lunesQueTocanElMes(anio, mes);
+      const dias = [];
+      for (const l of semanas) {
+        const snap = await getDoc(doc(db, "scheduler", `week-${isoDate(l)}`));
+        const w = snap.exists() ? normalize(snap.data()) : emptyWeek();
+        DAYS.forEach((_, i) => {
+          const f = shift(l, i);
+          if (f.getMonth() !== mes || f.getFullYear() !== anio) return;
+          dias.push({ fecha: f, di: i, guardia: w.days[i].deGuardia || [], feriado: w.days[i].feriado });
+        });
+      }
+      dias.sort((a, b) => a.fecha - b.fecha);
+      const rotSnap = await getDoc(doc(db, "scheduler", `rotaciones-${anio}`));
+      const rot = rotSnap.exists() ? normalizeRot(rotSnap.data()) : emptyRotYear();
+      if (!vivo) return;
+      setDatos({ dias, rot });
+      setCargando(false);
+    })().catch(() => { if (vivo) { setDatos(null); setCargando(false); } });
+    return () => { vivo = false; };
+  }, [anio, mes]);
+
+  const resumen = useMemo(() => {
+    if (!datos) return null;
+    const base = () => ({ total: 0, semana: 0, finde: 0, feriado: 0, fechas: [] });
+    const conteo = {}; const externos = {};
+    let huecos = [], sobrantes = [];
+    datos.dias.forEach((d) => {
+      const g = d.guardia;
+      if (g.length < 2) huecos.push({ ...d, faltan: 2 - g.length });
+      if (g.length > 2) sobrantes.push({ ...d, sobran: g.length - 2 });
+      g.forEach((n) => {
+        if (!LEVEL[n]) { externos[n] = (externos[n] || 0) + 1; return; }
+        const c = (conteo[n] = conteo[n] || base());
+        c.total++;
+        if (d.feriado) c.feriado++;
+        else if (isWeekendIdx(d.di)) c.finde++;
+        else c.semana++;
+        c.fechas.push(d.fecha.getDate());
+      });
+    });
+    const porNivel = { R4: 0, R3: 0, R2: 0, JR: 0 };
+    Object.entries(conteo).forEach(([n, c]) => { porNivel[LEVEL[n]] += c.total; });
+    const mesRot = datos.rot.months[mes] || { assignments: [], vacaciones: [] };
+    const fuera = {};
+    (mesRot.assignments || []).forEach((a) => { fuera[a.resident] = a.exterior ? `fuera del país (${a.place})` : `rota en ${a.place}`; });
+    (mesRot.vacaciones || []).forEach((v) => { fuera[v.nombre] = `de vacaciones (${(TRAMOS_VACACIONES[v.tramo] || TRAMOS_VACACIONES.mes).corto})`; });
+    return { conteo, externos, porNivel, huecos, sobrantes, fuera, totalDias: datos.dias.length };
+  }, [datos, mes]);
+
+  const opciones = useMemo(() => {
+    const hoy = new Date();
+    return Array.from({ length: 14 }, (_, i) => {
+      const d = new Date(hoy.getFullYear(), hoy.getMonth() - 6 + i, 1);
+      return { clave: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: `${MONTHS[d.getMonth()]} ${d.getFullYear()}` };
+    });
+  }, []);
+
+  const cupos = { R4: CUPO_MES.R4, R3: CUPO_MES.R3, R2: cupoR2(anio, mes) };
+  const caja = { background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 16, marginBottom: 12 };
+
+  return (
+    <div>
+      <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#4C0519,#9F1239 60%,#BE185D)", color: "#fff" }}>
+        <span style={{ fontSize: 22 }}>🌙</span>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Guardias del mes</div>
+          <div style={{ fontSize: 10.5, opacity: 0.75 }}>Cuántas hizo cada uno, cuándo, y si el mes cierra</div>
+        </div>
+        <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={{ fontSize: 13, padding: "7px 10px", borderRadius: 8, border: "none", fontFamily: "inherit", color: "#0F172A", fontWeight: 700 }}>
+          {opciones.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
+        </select>
+      </div>
+
+      {cargando && <div style={caja}><div style={{ fontSize: 12.5, color: "#64748B" }}>Leyendo las semanas del mes…</div></div>}
+
+      {!cargando && resumen && (
+        <>
+          {/* Estado del mes: lo primero que hay que ver es si cierra o no. */}
+          <div style={{ ...caja, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {["R4", "R3", "R2"].map((lv) => {
+              const hecho = resumen.porNivel[lv], cupo = cupos[lv], dif = hecho - cupo;
+              const c = COLOR[lv];
+              return (
+                <div key={lv} style={{ flex: "1 1 150px", border: `1.5px solid ${dif === 0 ? "#BBF7D0" : "#FECACA"}`, background: dif === 0 ? "#F0FDF4" : "#FEF2F2", borderRadius: 10, padding: "9px 12px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 800, color: "#fff", background: c.solid, padding: "2px 6px", borderRadius: 4 }}>{lv}</span>
+                    <span style={{ fontSize: 19, fontWeight: 800, color: "#0F172A", fontVariantNumeric: "tabular-nums" }}>{hecho}</span>
+                    <span style={{ fontSize: 12, color: "#64748B" }}>/ {cupo}</span>
+                  </div>
+                  <div style={{ fontSize: 11, marginTop: 3, fontWeight: 600, color: dif === 0 ? "#15803D" : "#B91C1C" }}>
+                    {dif === 0 ? "cupo exacto" : dif > 0 ? `${dif} de más` : `faltan ${-dif}`}
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{ flex: "1 1 150px", border: "1.5px solid #E2E8F0", background: "#F8FAFC", borderRadius: 10, padding: "9px 12px" }}>
+              <div style={{ fontSize: 19, fontWeight: 800, color: "#0F172A", fontVariantNumeric: "tabular-nums" }}>{resumen.totalDias * 2}</div>
+              <div style={{ fontSize: 11, color: "#64748B", marginTop: 3 }}>lugares en el mes ({resumen.totalDias} días × 2)</div>
+            </div>
+          </div>
+
+          {(resumen.huecos.length > 0 || resumen.sobrantes.length > 0) && (
+            <div style={{ ...caja, background: "#FEF2F2", borderColor: "#FECACA" }}>
+              <div style={{ fontSize: 12.5, fontWeight: 800, color: "#B91C1C", marginBottom: 6 }}>Días que no cierran en dos</div>
+              {resumen.sobrantes.map((d) => (
+                <div key={"s" + d.fecha.getDate()} style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 2 }}>
+                  <b>{DAYS[d.di]} {d.fecha.getDate()}</b> — {d.guardia.length} personas: {d.guardia.join(", ")}
+                </div>
+              ))}
+              {resumen.huecos.map((d) => (
+                <div key={"h" + d.fecha.getDate()} style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 2 }}>
+                  <b>{DAYS[d.di]} {d.fecha.getDate()}</b> — {d.guardia.length === 0 ? "sin nadie" : `solo ${d.guardia.join(", ")}`}, {d.faltan === 1 ? "falta 1" : `faltan ${d.faltan}`}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* El detalle por persona, agrupado por nivel. */}
+          {["JR", "R4", "R3", "R2"].map((lv) => {
+            const gente = ASIGNABLES.filter((n) => LEVEL[n] === lv);
+            if (!gente.length) return null;
+            const hayAlguno = gente.some((n) => resumen.conteo[n] || resumen.fuera[n]);
+            if (!hayAlguno) return null;
+            const cupo = cupos[lv];
+            const cuantos = gente.filter((n) => resumen.conteo[n]).length;
+            const ideal = cupo && cuantos ? Math.round((cupo / cuantos) * 10) / 10 : null;
+            return (
+              <div key={lv} style={caja}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 9 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: COLOR[lv].solid, padding: "3px 8px", borderRadius: 5 }}>{lv}</span>
+                  {ideal !== null && <span style={{ fontSize: 11.5, color: "#64748B" }}>parejo serían {ideal} por cabeza</span>}
+                </div>
+                {gente.map((n) => {
+                  const c = resumen.conteo[n];
+                  const motivo = resumen.fuera[n];
+                  const maxTot = Math.max(...ASIGNABLES.map((x) => (resumen.conteo[x] || { total: 0 }).total), 1);
+                  return (
+                    <div key={n} style={{ display: "grid", gridTemplateColumns: "104px 34px 1fr 150px", alignItems: "center", gap: 10, padding: "5px 0", borderTop: "1px solid #F1F5F9" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        <Chip name={n} />
+                      </div>
+                      <div style={{ fontSize: 15, fontWeight: 800, textAlign: "right", color: c ? "#0F172A" : "#CBD5E1", fontVariantNumeric: "tabular-nums" }}>{c ? c.total : 0}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 2, height: 15 }}>
+                        {c ? (
+                          <>
+                            {c.semana > 0 && <div title={`${c.semana} de semana`} style={{ width: `${(c.semana / maxTot) * 100}%`, height: 13, background: "#334155", borderRadius: "3px 0 0 3px" }} />}
+                            {c.finde > 0 && <div title={`${c.finde} de fin de semana`} style={{ width: `${(c.finde / maxTot) * 100}%`, height: 13, background: "#F59E0B" }} />}
+                            {c.feriado > 0 && <div title={`${c.feriado} en feriado`} style={{ width: `${(c.feriado / maxTot) * 100}%`, height: 13, background: "#DC2626" }} />}
+                          </>
+                        ) : (
+                          <span style={{ fontSize: 11, color: "#94A3B8", fontStyle: "italic" }}>{motivo || "sin guardias este mes"}</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 10.5, color: "#64748B", fontVariantNumeric: "tabular-nums" }}>
+                        {c ? `${c.semana} sem · ${c.finde} finde${c.feriado ? ` · ${c.feriado} fer` : ""}  ·  ${c.fechas.join(" ")}` : ""}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+
+          {Object.keys(resumen.externos).length > 0 && (
+            <div style={caja}>
+              <div style={{ fontSize: 12.5, fontWeight: 800, color: "#0F172A", marginBottom: 6 }}>De fuera del plantel</div>
+              {Object.entries(resumen.externos).map(([n, c]) => (
+                <div key={n} style={{ fontSize: 12, color: "#475569" }}>{n} — {c} {c === 1 ? "guardia" : "guardias"}</div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11, color: "#64748B", padding: "2px 4px" }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><i style={{ width: 11, height: 11, background: "#334155", borderRadius: 2, display: "inline-block" }} />día de semana</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><i style={{ width: 11, height: 11, background: "#F59E0B", borderRadius: 2, display: "inline-block" }} />fin de semana</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><i style={{ width: 11, height: 11, background: "#DC2626", borderRadius: 2, display: "inline-block" }} />feriado</span>
+            <span>Los números de la derecha son los días del mes en que le tocó.</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 /* ══════════════════ ALERTAS DE LA SEMANA ══════════════════ */
@@ -4567,7 +4870,11 @@ function analizarSemana(week, monday, rotPorAnio, equiposMes) {
       agregar(duras, di, "Sin nadie de guardia");
     } else {
       if (guardia.length !== 2) {
-        agregar(duras, di, `${guardia.length} personas de guardia (${guardia.join(", ")}) — tienen que ser 2`);
+        // Nunca tres. Si sobran cupos porque las noches ya estaban completas,
+        // esos cupos no se usan: esa persona se salva de la guardia y listo.
+        agregar(duras, di, guardia.length > 2
+          ? `${guardia.length} personas de guardia (${guardia.join(", ")}) — nunca pueden ser 3, sacá a uno`
+          : `${guardia.length} persona de guardia (${guardia.join(", ")}) — tienen que ser 2`);
       }
       if (residentesGuardia.length > 0 && !residentesGuardia.some(esSuperior)) {
         agregar(duras, di, `Guardia sin ningún R3 ni R4 (${guardia.join(", ")})`);
