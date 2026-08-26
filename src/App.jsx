@@ -186,7 +186,7 @@ const SLOT_KEYS = SLOTS.map((s) => s.key);
 // que su ficha se distinga al instante de las de los tres niveles. Se aplica
 // encima del estilo normal del chip, así el resto del layout no cambia.
 const SKIN_JR = {
-  background: "linear-gradient(115deg,#7C2D12 0%,#B45309 28%,#FDE68A 47%,#FFFBEB 52%,#FDE68A 57%,#B45309 78%,#7C2D12 100%)",
+  background: "linear-gradient(115deg,#7C2D12 0%,#B45309 32%,#D97706 50%,#B45309 68%,#7C2D12 100%)",
   borderColor: "#FCD34D",
   color: "#FFFBEB",
   textShadow: "0 1px 2px rgba(69,26,3,.75)",
@@ -308,7 +308,7 @@ function normalizarListaGuardia(lista) {
 // de invierno"), pero para poder marcar a alguien como no disponible hace falta
 // un dato estructurado: adivinar nombres dentro de una nota en prosa se rompe
 // en cuanto alguien escribe algo como "Chris cubre las vacaciones de Ulloa".
-const emptyRotYear = () => { const m = {}; for (let i = 0; i < 12; i++) m[i] = { assignments: [], notes: "", vacaciones: [] }; return { months: m }; };
+const emptyRotYear = () => { const m = {}; for (let i = 0; i < 12; i++) m[i] = { assignments: [], notes: "", vacaciones: [], semanasLibres: { navidad: [], anioNuevo: [] } }; return { months: m }; };
 
 function normalizeRot(raw) {
   const year = emptyRotYear();
@@ -327,6 +327,14 @@ function normalizeRot(raw) {
             .map((v) => (typeof v === "string" ? { nombre: v, tramo: "mes" } : { nombre: v.nombre, tramo: v.tramo || "mes" }))
             .filter((v) => LEVEL[v.nombre])
         : [];
+      // Solo se usa en diciembre: quién queda libre la semana de Navidad y
+      // quién la de Año nuevo. Por ahora es puramente informativo — todavía no
+      // deja a nadie fuera de la grilla.
+      const sl = m.semanasLibres || {};
+      year.months[i].semanasLibres = {
+        navidad: Array.isArray(sl.navidad) ? sl.navidad.filter((n) => LEVEL[n]) : [],
+        anioNuevo: Array.isArray(sl.anioNuevo) ? sl.anioNuevo.filter((n) => LEVEL[n]) : [],
+      };
     }
   }
   return year;
@@ -351,12 +359,20 @@ function lunesDelMes(anio, mes) {
 
 // Los R4 se toman el mes entero; los R2 y R3, tres semanas seguidas que pueden
 // arrancar la primera o la segunda semana del mes.
+// Verano: mes entero (R4) o tres semanas seguidas (R2 y R3).
+// Invierno: una sola semana, la que corresponda del mes.
 const TRAMOS_VACACIONES = {
-  mes: { label: "Todo el mes", corto: "mes", semanas: null },
-  "1-3": { label: "1ª a 3ª semana", corto: "1ª-3ª", semanas: [0, 1, 2] },
-  "2-4": { label: "2ª a 4ª semana", corto: "2ª-4ª", semanas: [1, 2, 3] },
+  mes: { label: "Todo el mes", corto: "mes", tipo: "verano", semanas: null },
+  "1-3": { label: "1ª a 3ª semana", corto: "1ª-3ª", tipo: "verano", semanas: [0, 1, 2] },
+  "2-4": { label: "2ª a 4ª semana", corto: "2ª-4ª", tipo: "verano", semanas: [1, 2, 3] },
+  "inv-1": { label: "Primera semana", corto: "1ª sem", tipo: "invierno", semanas: [0] },
+  "inv-2": { label: "Segunda semana", corto: "2ª sem", tipo: "invierno", semanas: [1] },
+  "inv-3": { label: "Tercera semana", corto: "3ª sem", tipo: "invierno", semanas: [2] },
+  "inv-4": { label: "Cuarta semana", corto: "4ª sem", tipo: "invierno", semanas: [3] },
 };
 const tramoPorDefecto = (nombre) => (LEVEL[nombre] === "R4" ? "mes" : "1-3");
+// Texto para los avisos: "de vacaciones de invierno (primera semana)".
+const textoTramo = (t) => `de vacaciones de ${t.tipo} (${t.label.toLowerCase()})`;
 
 // ¿Está esta persona de vacaciones ese día? Hay que mirar dos meses: el del
 // propio día y el de la semana a la que pertenece, porque no siempre coinciden
@@ -397,7 +413,7 @@ function vacacionesEseDia(name, fecha, rotPorAnio) {
 function motivoNoDisponible(name, date, rotPorAnio, diaLibre) {
   if (diaLibre) return `${name} tiene su día libre los ${diaLibre.toLowerCase()}`;
   const vac = vacacionesEseDia(name, date, rotPorAnio);
-  if (vac) return `${name} está de vacaciones (${vac.label.toLowerCase()})`;
+  if (vac) return `${name} está ${textoTramo(vac)}`;
   const rotAnio = rotPorAnio[date.getFullYear()];
   if (!rotAnio) return null;
   const mes = rotAnio.months[date.getMonth()];
@@ -604,13 +620,13 @@ function AuthenticatedApp() {
     return unsub;
   }, [user]);
 
-  if (user === undefined) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#94A3B8", fontSize: 14 }}>Cargando…</div>;
+  if (user === undefined) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#64748B", fontSize: 14 }}>Cargando…</div>;
 
   if (user === null) return <LoginScreen />;
 
   const isAdmin = user.email === ADMIN_EMAIL;
 
-  if (acceso === "cargando") return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#94A3B8", fontSize: 14 }}>Verificando acceso…</div>;
+  if (acceso === "cargando") return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#64748B", fontSize: 14 }}>Verificando acceso…</div>;
   if (acceso !== "ok") return <PantallaEspera user={user} rechazado={acceso === "rechazado"} />;
 
   return (
@@ -623,11 +639,11 @@ function AuthenticatedApp() {
           {isAdmin && <span style={{ fontSize: 9, fontWeight: 700, background: "#0F172A", color: "#fff", padding: "2px 6px", borderRadius: 4 }}>ADMIN</span>}
           {!isAdmin && <span style={{ fontSize: 9, fontWeight: 600, background: "#E2E8F0", color: "#64748B", padding: "2px 6px", borderRadius: 4 }}>SOLO LECTURA</span>}
         </div>
-        <button onClick={() => signOut(auth)} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 11, cursor: "pointer", fontFamily: "inherit", fontWeight: 500 }}>Cerrar sesión</button>
+        <button onClick={() => signOut(auth)} style={{ background: "none", border: "none", color: "#64748B", fontSize: 11, cursor: "pointer", fontFamily: "inherit", fontWeight: 500 }}>Cerrar sesión</button>
       </div>
 
       {/* Tabs */}
-      {isAdmin && <div className="no-print" style={{ fontSize: 10, color: "#94A3B8", marginBottom: 4, paddingLeft: 2 }}>Arrastrá una pestaña para reordenarlas</div>}
+      {isAdmin && <div className="no-print" style={{ fontSize: 10, color: "#64748B", marginBottom: 4, paddingLeft: 2 }}>Arrastrá una pestaña para reordenarlas</div>}
       <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 14, flexWrap: "wrap" }}>
         {tabOrder.map((key, i) => {
           const meta = TAB_META[key];
@@ -677,7 +693,7 @@ function LoginScreen() {
       <div style={{ textAlign: "center", padding: "40px 36px", background: "#fff", borderRadius: 16, boxShadow: "0 4px 24px rgba(15,23,42,.1)", border: "1px solid #E2E8F0", maxWidth: 340 }}>
         <div style={{ fontSize: 36, marginBottom: 8 }}>🏥</div>
         <div style={{ fontWeight: 800, fontSize: 18, color: "#0F172A", marginBottom: 4 }}>Scheduler UTI</div>
-        <div style={{ fontSize: 12, color: "#94A3B8", marginBottom: 24 }}>Hospital Británico</div>
+        <div style={{ fontSize: 12, color: "#64748B", marginBottom: 24 }}>Hospital Británico</div>
         <button onClick={login} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: "11px 16px", borderRadius: 10, border: "1px solid #E2E8F0", background: "#fff", fontSize: 13.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: "#334155", boxShadow: "0 1px 3px rgba(15,23,42,.08)", transition: "box-shadow .15s" }}>
           <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
           Iniciar sesión con Google
@@ -711,7 +727,7 @@ function PantallaEspera({ user, rechazado }) {
           {user.photoURL && <img src={user.photoURL} alt="" style={{ width: 22, height: 22, borderRadius: "50%" }} />}
           <span style={{ fontSize: 11.5, color: "#475569", fontWeight: 600, wordBreak: "break-all" }}>{user.email}</span>
         </div>
-        <button onClick={() => signOut(auth)} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>Cerrar sesión</button>
+        <button onClick={() => signOut(auth)} style={{ background: "none", border: "none", color: "#64748B", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>Cerrar sesión</button>
       </div>
     </div>
   );
@@ -796,7 +812,7 @@ function AccesosView({ user }) {
                 <button onClick={() => setConfirmId(null)} style={{ fontSize: 10, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 5, padding: "4px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
               </span>
             ) : (
-              <button onClick={() => setConfirmId(s.id)} title="Borrar el registro (si vuelve a entrar, pide permiso de nuevo)" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+              <button onClick={() => setConfirmId(s.id)} title="Borrar el registro (si vuelve a entrar, pide permiso de nuevo)" style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
             )}
           </>
         )}
@@ -810,7 +826,7 @@ function SeccionAccesos({ titulo, vacio, items, color, bg, bd, children }) {
     <div style={{ marginBottom: 18 }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>{titulo}</div>
       {items.length === 0 ? (
-        <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px" }}>{vacio}</div>
+        <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", padding: "4px 2px" }}>{vacio}</div>
       ) : (
         <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
           {items.map((s, i) => (
@@ -821,7 +837,7 @@ function SeccionAccesos({ titulo, vacio, items, color, bg, bd, children }) {
               <div style={{ flex: 1, minWidth: 150 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A" }}>{s.displayName || "Sin nombre"}</div>
                 <div style={{ fontSize: 11, color: "#64748B", wordBreak: "break-all" }}>{s.email || s.id}</div>
-                <div style={{ fontSize: 10, color: "#94A3B8", marginTop: 1 }}>Pidió acceso: {s.solicitadoEnAR || "—"}</div>
+                <div style={{ fontSize: 10, color: "#64748B", marginTop: 1 }}>Pidió acceso: {s.solicitadoEnAR || "—"}</div>
               </div>
               <span style={{ fontSize: 9.5, fontWeight: 700, color, background: bg, border: `1px solid ${bd}`, borderRadius: 999, padding: "2px 9px" }}>{s.estado}</span>
               {children(s)}
@@ -1156,7 +1172,7 @@ function SchedulerView({ isAdmin }) {
       <SchedulerHeader monday={monday} setMonday={setMonday} status={status} menuOpen={menuOpen} setMenuOpen={setMenuOpen} onCopyPrev={copyPrevWeek} onClear={clearWeek} onPrint={handlePrint} onFeriados={() => { setMenuOpen(false); setFeriadosOpen(true); }} isAdmin={isAdmin} />
 
       <div style={{ minHeight: 34, marginBottom: 6 }} className="no-print">
-        {toast ? <Banner tone="warn">{toast}</Banner> : active ? <Banner tone="info"><b>{sel.name}</b> seleccionado — tocá una celda para ubicarlo, o Esc para cancelar</Banner> : <div style={{ fontSize: 12, color: "#94A3B8", padding: "6px 2px" }}>{isAdmin ? "Tocá un residente para seleccionarlo y después la celda donde va." : "Solo lectura — solo el administrador puede editar."}</div>}
+        {toast ? <Banner tone="warn">{toast}</Banner> : active ? <Banner tone="info"><b>{sel.name}</b> seleccionado — tocá una celda para ubicarlo, o Esc para cancelar</Banner> : <div style={{ fontSize: 12, color: "#64748B", padding: "6px 2px" }}>{isAdmin ? "Tocá un residente para seleccionarlo y después la celda donde va." : "Solo lectura — solo el administrador puede editar."}</div>}
       </div>
 
       {loading ? <Skeleton /> : (
@@ -1267,7 +1283,7 @@ function SchedulerView({ isAdmin }) {
                 <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === DAYS.length - 1}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 50 }}>
                     {active && <div style={{ fontSize: 10, color: "#16A34A", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>↩ liberar el {DAYS[di].toLowerCase()}</div>}
-                    {free.length === 0 ? (!active && <div style={{ fontSize: 10.5, color: "#94A3B8", fontStyle: "italic", textAlign: "center", padding: 6 }}>todos asignados</div>) : free.map((n) => <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "pool" }); }} />)}
+                    {free.length === 0 ? (!active && <div style={{ fontSize: 10.5, color: "#64748B", fontStyle: "italic", textAlign: "center", padding: 6 }}>todos asignados</div>) : free.map((n) => <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "pool" }); }} />)}
                   </div>
                 </Cell>
               );
@@ -1326,7 +1342,7 @@ function FeriadosEditor({ dates, week, onToggle, onClose }) {
       <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "18px 20px 20px", width: "100%", maxWidth: 400, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 12px 40px rgba(15,23,42,.28)", fontFamily: "'Inter', system-ui, sans-serif" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
           <div style={{ fontWeight: 800, fontSize: 15.5, color: "#0F172A" }}>🎌 Marcar feriado</div>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 18, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>×</button>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#64748B", fontSize: 18, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>×</button>
         </div>
         <div style={{ fontSize: 11.5, color: "#64748B", marginBottom: 14, lineHeight: 1.5 }}>
           Tocá los días de esta semana que sean feriado. No cambia las asignaciones — sirve para contar después las guardias por tipo de día.
@@ -1396,11 +1412,11 @@ function GuardiaEditor({ fecha, dia, valor, onChange, onClose }) {
       <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "18px 20px 20px", width: "100%", maxWidth: 460, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 12px 40px rgba(15,23,42,.28)", fontFamily: "'Inter', system-ui, sans-serif" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
           <div style={{ fontWeight: 800, fontSize: 15.5, color: "#0F172A" }}>🌙 De guardia</div>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 18, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>×</button>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#64748B", fontSize: 18, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>×</button>
         </div>
         <div style={{ fontSize: 11.5, color: "#64748B", marginBottom: 14 }}>{dia} {dm(fecha)}</div>
 
-        <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 6, letterSpacing: 0.3 }}>RESIDENTES</div>
+        <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 6, letterSpacing: 0.3 }}>RESIDENTES</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
           {ASIGNABLES.map((n) => {
             const on = seleccion.includes(n);
@@ -1413,17 +1429,17 @@ function GuardiaEditor({ fecha, dia, valor, onChange, onClose }) {
             );
           })}
         </div>
-        <div style={{ fontSize: 10.5, color: "#94A3B8", lineHeight: 1.45, marginBottom: 16 }}>
+        <div style={{ fontSize: 10.5, color: "#64748B", lineHeight: 1.45, marginBottom: 16 }}>
           Marcar a alguien acá no lo saca de la UTI que tenga asignada ese día ni de "no disponibles" — la guardia se superpone con el resto.
         </div>
 
-        <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 6, letterSpacing: 0.3 }}>OTRA PERSONA (PLANTA, OTRO SERVICIO)</div>
+        <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 6, letterSpacing: 0.3 }}>OTRA PERSONA (PLANTA, OTRO SERVICIO)</div>
         {invitados.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
             {invitados.map((n) => (
               <div key={n} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 6px 5px 11px", borderRadius: 8, background: "#F1F5F9", border: "1.5px solid #CBD5E1", color: "#475569", fontWeight: 600, fontSize: 12.5 }}>
                 {n}
-                <button onClick={() => quitar(n)} style={{ background: "none", border: "none", color: "#94A3B8", cursor: "pointer", fontSize: 14, fontFamily: "inherit", lineHeight: 1, padding: 0 }}>×</button>
+                <button onClick={() => quitar(n)} style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 14, fontFamily: "inherit", lineHeight: 1, padding: 0 }}>×</button>
               </div>
             ))}
           </div>
@@ -1504,6 +1520,15 @@ function RotacionesView({ isAdmin }) {
     save(next);
   };
 
+  const toggleSemanaLibre = (mi, grupo, nombre) => {
+    if (!isAdmin) return;
+    const next = clone(data);
+    const base = next.months[mi].semanasLibres || { navidad: [], anioNuevo: [] };
+    const cur = base[grupo] || [];
+    next.months[mi].semanasLibres = { ...base, [grupo]: cur.includes(nombre) ? cur.filter((n) => n !== nombre) : [...cur, nombre] };
+    save(next);
+  };
+
   const setTramoVacaciones = (mi, nombre, tramo) => {
     if (!isAdmin) return;
     const next = clone(data);
@@ -1541,22 +1566,23 @@ function RotacionesView({ isAdmin }) {
         {MONTHS.map((mName, mi) => {
           const month = data.months[mi];
           const isCurrentMonth = new Date().getFullYear() === year && new Date().getMonth() === mi;
-          const hasData = month.assignments.length > 0 || !!month.notes.trim() || (month.vacaciones || []).length > 0;
+          const sl = month.semanasLibres || {};
+          const hasData = month.assignments.length > 0 || !!month.notes.trim() || (month.vacaciones || []).length > 0 || (sl.navidad || []).length > 0 || (sl.anioNuevo || []).length > 0;
           const isOpen = isMonthOpen(mi);
           return (
             <div key={mi} style={{ background: "#fff", borderRadius: 12, border: isCurrentMonth ? "2px solid #3B82F6" : "1px solid #E2E8F0", overflow: "hidden", boxShadow: isCurrentMonth ? "0 0 0 3px #3B82F633" : "0 1px 3px rgba(15,23,42,.04)" }}>
               <div onClick={() => toggleMonth(mi)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: isCurrentMonth ? "#EFF6FF" : "#F8FAFC", borderBottom: isOpen ? "1px solid #E2E8F0" : "none", cursor: "pointer" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                  <span style={{ fontSize: 9, color: "#94A3B8", display: "inline-block", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
+                  <span style={{ fontSize: 9, color: "#64748B", display: "inline-block", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
                   <div style={{ fontWeight: 700, fontSize: 13, color: isCurrentMonth ? "#1D4ED8" : hasData ? "#0F172A" : "#94A3B8" }}>{mName}</div>
-                  {!hasData && <span style={{ fontSize: 10, color: "#CBD5E1", fontStyle: "italic" }}>vacío</span>}
+                  {!hasData && <span style={{ fontSize: 10, color: "#64748B", fontStyle: "italic" }}>vacío</span>}
                 </div>
                 {isOpen && isAdmin && <button onClick={(e) => { e.stopPropagation(); addAssignment(mi); }} style={{ background: "#E2E8F0", border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer", color: "#475569", fontFamily: "inherit" }}>+ Agregar</button>}
               </div>
               {isOpen && (
                 <div style={{ padding: "8px 14px" }}>
                   {month.assignments.length === 0 && !(editing && editing.month === mi) ? (
-                    <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "6px 0" }}>Sin rotaciones este mes</div>
+                    <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", padding: "6px 0" }}>Sin rotaciones este mes</div>
                   ) : (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: month.assignments.length > 0 ? 8 : 0 }}>
                       {month.assignments.map((a, idx) => {
@@ -1583,6 +1609,7 @@ function RotacionesView({ isAdmin }) {
                     <EditForm resident={editing.resident} place={editing.place} exterior={editing.exterior} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onExteriorChange={(v) => setEditing({ ...editing, exterior: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place, undefined, editing.exterior)} onCancel={() => setEditing(null)} />
                   )}
                   <VacacionesPicker mes={mi} seleccion={month.vacaciones || []} isAdmin={isAdmin} onToggle={toggleVacaciones} onTramo={setTramoVacaciones} />
+                  {mi === 11 && <SemanasLibresPicker mes={mi} datos={month.semanasLibres || { navidad: [], anioNuevo: [] }} isAdmin={isAdmin} onToggle={toggleSemanaLibre} />}
                   <textarea value={month.notes} onChange={(e) => editNotes(mi, e.target.value)} placeholder="Detalle de vacaciones (ej: 3 primeras semanas)…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 32, marginTop: 4, fontSize: 11, fontStyle: month.notes ? "normal" : "italic", color: month.notes ? "#92400E" : "#94A3B8", background: month.notes ? "#FFFBEB" : "#FAFAFA", borderColor: month.notes ? "#FDE68A" : "#E2E8F0", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
                 </div>
               )}
@@ -1618,7 +1645,7 @@ function VacacionesPicker({ mes, seleccion, isAdmin, onToggle, onTramo }) {
               <span key={v.nombre} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 11 }}>
                 {v.nombre}
                 <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: c.solid, color: "#fff" }}>{LEVEL[v.nombre]}</span>
-                <span style={{ fontSize: 9.5, fontWeight: 700, color: "#0F766E", background: "#F0FDFA", border: "1px solid #99F6E4", borderRadius: 999, padding: "0 5px" }}>{t.corto}</span>
+                <span title={textoTramo(t)} style={{ fontSize: 9.5, fontWeight: 700, color: t.tipo === "invierno" ? "#0369A1" : "#B45309", background: t.tipo === "invierno" ? "#F0F9FF" : "#FFFBEB", border: `1px solid ${t.tipo === "invierno" ? "#BAE6FD" : "#FDE68A"}`, borderRadius: 999, padding: "0 5px" }}>{t.tipo === "invierno" ? "❄️ " : "☀️ "}{t.corto}</span>
               </span>
             );
           })}
@@ -1646,26 +1673,87 @@ function VacacionesPicker({ mes, seleccion, isAdmin, onToggle, onTramo }) {
           {/* Los R4 se toman el mes entero, así que no hace falta preguntarles
               el tramo; a los R2 y R3 sí, porque son tres semanas seguidas que
               pueden arrancar la primera o la segunda semana. */}
-          {seleccion.filter((v) => LEVEL[v.nombre] !== "R4").map((v) => (
+          {seleccion.map((v) => (
             <div key={v.nombre} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 5 }}>
               <span style={{ fontSize: 11.5, fontWeight: 700, color: "#334155", minWidth: 62 }}>{v.nombre}</span>
-              {Object.entries(TRAMOS_VACACIONES).map(([clave, t]) => {
-                const on = (v.tramo || "1-3") === clave;
-                return (
-                  <button key={clave} onClick={() => onTramo(mes, v.nombre, clave)} style={{ background: on ? "#0F766E" : "#fff", color: on ? "#fff" : "#475569", border: `1.5px solid ${on ? "#0F766E" : "#E2E8F0"}`, borderRadius: 7, padding: "4px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                    {t.label}
-                  </button>
-                );
-              })}
+              {["verano", "invierno"].map((grupo) => (
+                <span key={grupo} style={{ display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 9.5, fontWeight: 800, color: grupo === "verano" ? "#B45309" : "#0369A1", textTransform: "uppercase", letterSpacing: 0.3 }}>{grupo === "verano" ? "☀️ verano" : "❄️ invierno"}</span>
+                  {Object.entries(TRAMOS_VACACIONES).filter(([, t]) => t.tipo === grupo).map(([clave, t]) => {
+                    const on = (v.tramo || "1-3") === clave;
+                    return (
+                      <button key={clave} onClick={() => onTramo(mes, v.nombre, clave)} style={{ background: on ? "#0F766E" : "#fff", color: on ? "#fff" : "#475569", border: `1.5px solid ${on ? "#0F766E" : "#E2E8F0"}`, borderRadius: 7, padding: "4px 9px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                        {t.label}
+                      </button>
+                    );
+                  })}
+                </span>
+              ))}
             </div>
           ))}
           {seleccion.some((v) => LEVEL[v.nombre] === "R4") && (
             <div style={{ fontSize: 10.5, color: "#64748B", marginTop: 4 }}>
-              Los R4 marcados se toman el mes completo.
+              Los R4 marcados se toman el mes completo. Si es una semana de invierno, cambiale el tramo desde acá.
             </div>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// Solo aparece en diciembre. A fin de año se arma con dos equipos: unos
+// trabajan la semana de Navidad y quedan libres la de Año nuevo, y al revés.
+// Por ahora esto solo deja constancia de quién queda libre en cada una; todavía
+// no los saca de la grilla. Se termina de configurar en diciembre.
+function SemanasLibresPicker({ mes, datos, isAdmin, onToggle }) {
+  const [abierto, setAbierto] = useState(false);
+  const grupos = [
+    { clave: "navidad", label: "🎄 Semana de Navidad", color: "#B91C1C", bg: "#FEF2F2", bd: "#FECACA" },
+    { clave: "anioNuevo", label: "🎆 Semana de Año nuevo", color: "#7C3AED", bg: "#F5F3FF", bd: "#DDD6FE" },
+  ];
+  const hayAlgo = grupos.some((g) => (datos[g.clave] || []).length > 0);
+  if (!isAdmin && !hayAlgo) return null;
+
+  return (
+    <div style={{ marginTop: 6, paddingTop: 8, borderTop: "1px dashed #E2E8F0" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: hayAlgo || abierto ? 6 : 0 }}>
+        <div style={{ fontSize: 10.5, fontWeight: 800, color: "#7C3AED", letterSpacing: 0.3, textTransform: "uppercase" }}>🎄 Semanas libres de Navidad y Año nuevo</div>
+        {isAdmin && <button onClick={() => setAbierto((v) => !v)} style={{ background: "none", border: "none", color: "#7C3AED", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{abierto ? "Listo" : "✏️ Editar"}</button>}
+      </div>
+
+      {!abierto && !hayAlgo && isAdmin && (
+        <div style={{ fontSize: 11, color: "#64748B", fontStyle: "italic" }}>Sin definir todavía. Se termina de armar en diciembre.</div>
+      )}
+
+      {grupos.map((g) => {
+        const gente = datos[g.clave] || [];
+        if (!abierto && gente.length === 0) return null;
+        return (
+          <div key={g.clave} style={{ marginBottom: 6 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: g.color, marginBottom: 4 }}>{g.label} <span style={{ color: "#64748B", fontWeight: 500 }}>— quedan libres</span></div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {(abierto ? ALL : gente).map((n) => {
+                const on = gente.includes(n);
+                const c = COLOR[LEVEL[n]];
+                if (!abierto) {
+                  return (
+                    <span key={n} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 11 }}>
+                      {n}<span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+                    </span>
+                  );
+                }
+                return (
+                  <div key={n} onClick={() => onToggle(mes, g.clave, n)} style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 7, background: on ? g.color : "#F8FAFC", border: `1.5px solid ${on ? g.color : "#E2E8F0"}`, color: on ? "#fff" : "#475569", fontWeight: 600, fontSize: 11.5 }}>
+                    {on && "✓ "}{n}
+                    <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: on ? "rgba(255,255,255,.28)" : c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1811,7 +1899,7 @@ function PasesView({ isAdmin }) {
       )}
 
       {!data || !order.length ? (
-        <div style={{ textAlign: "center", padding: "50px 20px", color: "#94A3B8", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+        <div style={{ textAlign: "center", padding: "50px 20px", color: "#64748B", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
           Todavía no se sincronizó ningún pase.
           {isAdmin && <div style={{ fontSize: 11.5, marginTop: 8 }}>Tocá "Sincronizar" para traerlos de los documentos.</div>}
         </div>
@@ -1835,7 +1923,7 @@ function PasesView({ isAdmin }) {
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {patients.length === 0 ? (
-              <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>
+              <div style={{ textAlign: "center", padding: 30, color: "#64748B", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>
                 {q ? "Ningún paciente coincide con la búsqueda" : "Sin pacientes en esta unidad"}
               </div>
             ) : patients.map((p) => {
@@ -1859,14 +1947,14 @@ function PasesView({ isAdmin }) {
                       {p.mi && <div style={{ fontSize: 12, color: "#1D4ED8", fontWeight: 600, marginTop: 4, lineHeight: 1.35 }}>{p.mi}</div>}
                       {p.status && <div style={{ fontSize: 11.5, color: "#475569", marginTop: 5, lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: isOpen ? "unset" : 2, WebkitBoxOrient: "vertical", overflow: isOpen ? "visible" : "hidden" }}>{p.status}</div>}
                     </div>
-                    <div style={{ flexShrink: 0, color: "#CBD5E1", fontSize: 12, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }}>▼</div>
+                    <div style={{ flexShrink: 0, color: "#64748B", fontSize: 12, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }}>▼</div>
                   </div>
 
                   {isOpen && (
                     <div style={{ borderTop: "1px solid #F1F5F9", padding: "4px 13px 12px" }}>
                       {PASE_FIELDS.filter(([k]) => p.fields?.[k]).map(([k, label]) => (
                         <div key={k} style={{ marginTop: 10 }}>
-                          <div style={{ fontSize: 9.5, fontWeight: 800, color: "#94A3B8", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
+                          <div style={{ fontSize: 9.5, fontWeight: 800, color: "#64748B", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
                           <div style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{p.fields[k]}</div>
                         </div>
                       ))}
@@ -1923,14 +2011,14 @@ function ResumenIAPaciente({ p, state, onGenerar }) {
     <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E2E8F0" }} onClick={(e) => e.stopPropagation()}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
         <div style={{ fontSize: 10, fontWeight: 800, color: "#3730A3", letterSpacing: 0.4, textTransform: "uppercase" }}>🤖 Resumen clínico generado por IA</div>
-        <button onClick={onGenerar} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 10.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>↻ Regenerar</button>
+        <button onClick={onGenerar} style={{ background: "none", border: "none", color: "#64748B", fontSize: 10.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>↻ Regenerar</button>
       </div>
 
       {state.resumen && <div style={{ fontSize: 11.5, color: "#1E1B4B", lineHeight: 1.6, whiteSpace: "pre-wrap", marginBottom: 12 }}>{state.resumen}</div>}
 
       {state.perlas?.length > 0 && (
         <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 9.5, fontWeight: 800, color: "#94A3B8", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 5 }}>Perlas clínicas · MBE</div>
+          <div style={{ fontSize: 9.5, fontWeight: 800, color: "#64748B", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 5 }}>Perlas clínicas · MBE</div>
           <ol style={{ margin: 0, paddingLeft: 18 }}>
             {state.perlas.map((perla, i) => (
               <li key={i} style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.55, marginBottom: 6 }}>{perla}</li>
@@ -1941,7 +2029,7 @@ function ResumenIAPaciente({ p, state, onGenerar }) {
 
       {state.fuentes?.length > 0 && (
         <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 9.5, fontWeight: 800, color: "#94A3B8", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 5 }}>Fuentes citadas</div>
+          <div style={{ fontSize: 9.5, fontWeight: 800, color: "#64748B", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 5 }}>Fuentes citadas</div>
           {state.fuentes.map((f, i) => (
             <div key={i} style={{ fontSize: 10.5, color: "#64748B", lineHeight: 1.5, marginBottom: 2 }}>
               {f.referencia}{f.url ? <> — <a href={f.url} target="_blank" rel="noreferrer" style={{ color: "#4F46E5" }}>{f.url}</a></> : ""}
@@ -1950,7 +2038,7 @@ function ResumenIAPaciente({ p, state, onGenerar }) {
         </div>
       )}
 
-      <div style={{ fontSize: 10, color: "#94A3B8", fontStyle: "italic", lineHeight: 1.4 }}>
+      <div style={{ fontSize: 10, color: "#64748B", fontStyle: "italic", lineHeight: 1.4 }}>
         Generado por IA como apoyo — no reemplaza el juicio clínico. Verificá siempre las citas antes de usarlas.
       </div>
     </div>
@@ -2092,7 +2180,7 @@ function ChipaView({ isAdmin, user }) {
           </div>
         </div>
       ) : week.candidates.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "40px 20px", color: "#94A3B8", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "#64748B", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
           🥐 Todavía no se eligieron los candidatos de esta semana.
           {isAdmin && <div style={{ fontSize: 11.5, marginTop: 8 }}>Tocá "Elegir candidatos" para arrancar la votación.</div>}
         </div>
@@ -2118,7 +2206,7 @@ function ChipaView({ isAdmin, user }) {
         </button>
         {showHistory && history && (
           history.length === 0 ? (
-            <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px" }}>Sin semanas anteriores todavía.</div>
+            <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", padding: "4px 2px" }}>Sin semanas anteriores todavía.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {history.map((w) => <ChipaHistoryRow key={w.weekStart} week={w} />)}
@@ -2138,7 +2226,7 @@ function CandidateCard({ name, count, isWinner, disabled, onVote }) {
       <div style={{ fontWeight: 800, fontSize: 14, color: "#0F172A" }}>{name}</div>
       <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 5px", borderRadius: 3, background: c.solid, color: "#fff", letterSpacing: 0.2 }}>{LEVEL[name]}</span>
       <div style={{ marginTop: 8, fontSize: 20, fontWeight: 800, color: isWinner ? "#B45309" : "#334155" }}>{count}</div>
-      <div style={{ fontSize: 9.5, color: "#94A3B8", fontWeight: 600 }}>voto{count === 1 ? "" : "s"}</div>
+      <div style={{ fontSize: 9.5, color: "#64748B", fontWeight: 600 }}>voto{count === 1 ? "" : "s"}</div>
     </div>
   );
 }
@@ -2151,7 +2239,7 @@ function ChipaHistoryRow({ week }) {
   return (
     <div style={{ background: "#fff", borderRadius: 10, border: "1px solid #E2E8F0", padding: "9px 13px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
-        <div style={{ fontSize: 11, color: "#94A3B8", fontWeight: 600 }}>{dm(monday)} — {dm(shift(monday, 6))}</div>
+        <div style={{ fontSize: 11, color: "#64748B", fontWeight: 600 }}>{dm(monday)} — {dm(shift(monday, 6))}</div>
         <div style={{ fontSize: 12, fontWeight: 700, color: "#B45309" }}>
           {winners.length === 0 ? "Sin votos" : `🏆 ${winners.join(" y ")}`}
         </div>
@@ -2245,7 +2333,7 @@ function AcademicoView({ isAdmin }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {upcoming.length === 0 && !(editing && editing.mode === "new") ? (
-          <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>Sin actividades próximas{isAdmin ? " — tocá \"Agregar actividad\" para cargar la primera." : "."}</div>
+          <div style={{ textAlign: "center", padding: 30, color: "#64748B", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>Sin actividades próximas{isAdmin ? " — tocá \"Agregar actividad\" para cargar la primera." : "."}</div>
         ) : upcoming.map((a) => (
           editing && editing.mode === "edit" && editing.id === a.id
             ? <AcademicoEditForm key={a.id} editing={editing} setEditing={setEditing} onSave={saveActivity} onCancel={() => setEditing(null)} />
@@ -2285,7 +2373,7 @@ function AcademicoCard({ activity, isAdmin, onEdit, onRemove, dimmed }) {
         {activity.time && <div style={{ fontSize: 9.5, fontWeight: 700, marginTop: 3, opacity: 0.85 }}>{activity.time}</div>}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 10.5, color: "#94A3B8", fontWeight: 600, marginBottom: 2 }}>{dateLabel}</div>
+        <div style={{ fontSize: 10.5, color: "#64748B", fontWeight: 600, marginBottom: 2 }}>{dateLabel}</div>
         <div style={{ fontWeight: 700, fontSize: 13.5, color: dimmed ? "#64748B" : "#0F172A" }}>{activity.title || "(sin nombre)"}</div>
         {activity.docente && <div style={{ fontSize: 12, color: dimmed ? "#94A3B8" : "#1D4ED8", fontWeight: 600, marginTop: 2 }}>{activity.docente}</div>}
         {activity.notes && <div style={{ fontSize: 11.5, color: "#475569", marginTop: 4, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>{activity.notes}</div>}
@@ -2437,7 +2525,7 @@ function ArticuloSemanaView({ isAdmin }) {
       )}
 
       {!articulos || articulos.length === 0 ? (
-        <div style={{ textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>
+        <div style={{ textAlign: "center", padding: 30, color: "#64748B", fontSize: 12.5, background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0" }}>
           Todavía no se cargó ningún artículo{isAdmin ? " — tocá \"Subir PDF\" para generar el primero." : "."}
         </div>
       ) : (
@@ -2463,10 +2551,10 @@ function ArticuloCard({ articulo, isOpen, isLatest, isAdmin, onToggle, onDelete,
     <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(15,23,42,.04)", overflow: "hidden" }}>
       <div onClick={onToggle} style={{ cursor: "pointer", padding: "14px 18px", borderBottom: isOpen ? "1px solid #F1F5F9" : "none", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          <span className="no-print" style={{ display: "inline-block", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s", color: "#94A3B8", fontSize: 12 }}>▶</span>
+          <span className="no-print" style={{ display: "inline-block", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s", color: "#64748B", fontSize: 12 }}>▶</span>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 800, fontSize: 14.5, color: "#0F172A", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>📄 {articulo.filename || "Artículo"}</div>
-            <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 2 }}>{formatFechaHora(articulo.generatedAt)}{isLatest && <span style={{ marginLeft: 6, fontWeight: 700, color: "#16A34A" }}>· más reciente</span>}</div>
+            <div style={{ fontSize: 10.5, color: "#64748B", marginTop: 2 }}>{formatFechaHora(articulo.generatedAt)}{isLatest && <span style={{ marginLeft: 6, fontWeight: 700, color: "#16A34A" }}>· más reciente</span>}</div>
           </div>
         </div>
         <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
@@ -2480,7 +2568,7 @@ function ArticuloCard({ articulo, isOpen, isLatest, isAdmin, onToggle, onDelete,
           )}
           <div style={{ fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, background: "#EEF2FF", color: "#4338CA", border: "1px solid #C7D2FE" }}>🤖 Generado por IA</div>
           {isAdmin && (
-            <button onClick={(e) => { e.stopPropagation(); onDelete(); }} title="Eliminar artículo" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 14, fontFamily: "inherit", padding: "2px 2px" }}>🗑️</button>
+            <button onClick={(e) => { e.stopPropagation(); onDelete(); }} title="Eliminar artículo" style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 14, fontFamily: "inherit", padding: "2px 2px" }}>🗑️</button>
           )}
         </div>
       </div>
@@ -2741,7 +2829,7 @@ function RegistroView({ isAdmin, user }) {
         </div>
       </div>
 
-      {isAdmin && <div className="no-print" style={{ fontSize: 10, color: "#94A3B8", marginBottom: 4, paddingLeft: 2 }}>Arrastrá una sub-pestaña para reordenarlas</div>}
+      {isAdmin && <div className="no-print" style={{ fontSize: 10, color: "#64748B", marginBottom: 4, paddingLeft: 2 }}>Arrastrá una sub-pestaña para reordenarlas</div>}
       <div className="no-print" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
         {subOrder.map((key, i) => {
           const s = REGISTRO_SUB_META[key];
@@ -2835,17 +2923,17 @@ function EventosSection({ tipo, eventos, isAdmin, user }) {
       {isAdmin && (
         <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 12, marginBottom: 14, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
           <div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>RESIDENTE</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>RESIDENTE</div>
             <select value={residente} onChange={(e) => setResidente(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
               {ALL.map((n) => <option key={n} value={n}>{n} ({LEVEL[n]})</option>)}
             </select>
           </div>
           <div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>FECHA</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>FECHA</div>
             <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }} />
           </div>
           <div style={{ flex: 1, minWidth: 160 }}>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>NOTA (OPCIONAL)</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>NOTA (OPCIONAL)</div>
             <input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Detalle…" style={{ width: "100%", fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", boxSizing: "border-box" }} />
           </div>
           <button onClick={agregar} disabled={saving} style={{ background: meta.color, color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: saving ? 0.6 : 1 }}>
@@ -2861,7 +2949,7 @@ function EventosSection({ tipo, eventos, isAdmin, user }) {
       )}
 
       {lista.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "30px 20px", color: "#94A3B8", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+        <div style={{ textAlign: "center", padding: "30px 20px", color: "#64748B", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
           {meta.icon} Todavía no hay {meta.label.toLowerCase()} registradas.
         </div>
       ) : (
@@ -2878,7 +2966,7 @@ function EventosSection({ tipo, eventos, isAdmin, user }) {
                     <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
                   </span>
                 ) : (
-                  <button onClick={() => setConfirmId(e.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+                  <button onClick={() => setConfirmId(e.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
                 )
               )}
             </div>
@@ -2945,23 +3033,23 @@ function CoberturaSection({ cobertura, isAdmin, user }) {
       {isAdmin && (
         <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 12, marginBottom: 14, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
           <div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>RESIDENTE (R2/R3)</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>RESIDENTE (R2/R3)</div>
             <select value={residente} onChange={(e) => setResidente(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
               {COBERTURA_RESIDENTS.map((n) => <option key={n} value={n}>{n} ({LEVEL[n]})</option>)}
             </select>
           </div>
           <div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>FECHA</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>FECHA</div>
             <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }} />
           </div>
           <div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>MODALIDAD</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>MODALIDAD</div>
             <select value={modalidad} onChange={(e) => setModalidad(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
               {Object.entries(COBERTURA_TIPOS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
             </select>
           </div>
           <div style={{ flex: 1, minWidth: 140 }}>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>NOTA (OPCIONAL)</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>NOTA (OPCIONAL)</div>
             <input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Detalle…" style={{ width: "100%", fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", boxSizing: "border-box" }} />
           </div>
           <button onClick={agregar} disabled={saving} style={{ background: "#1D4ED8", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: saving ? 0.6 : 1 }}>
@@ -2977,7 +3065,7 @@ function CoberturaSection({ cobertura, isAdmin, user }) {
       )}
 
       {lista.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "30px 20px", color: "#94A3B8", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+        <div style={{ textAlign: "center", padding: "30px 20px", color: "#64748B", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
           🔁 Todavía no hay coberturas de sala registradas.
         </div>
       ) : (
@@ -3001,7 +3089,7 @@ function CoberturaSection({ cobertura, isAdmin, user }) {
                       <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
                     </span>
                   ) : (
-                    <button onClick={() => setConfirmId(e.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+                    <button onClick={() => setConfirmId(e.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
                   )
                 )}
               </div>
@@ -3094,23 +3182,23 @@ function ClasesSection({ clases, isAdmin, user }) {
       {isAdmin && (
         <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 12, marginBottom: 14, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
           <div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>RESIDENTE</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>RESIDENTE</div>
             <select value={residente} onChange={(e) => setResidente(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
               {ALL.map((n) => <option key={n} value={n}>{n} ({LEVEL[n]})</option>)}
             </select>
           </div>
           <div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>MÓDULO</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>MÓDULO</div>
             <select value={modulo} onChange={(e) => setModulo(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
               {MODULOS_CLASE.map((mo) => <option key={mo} value={mo}>{mo}</option>)}
             </select>
           </div>
           <div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>FECHA</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>FECHA</div>
             <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }} />
           </div>
           <div style={{ flex: 1, minWidth: 160 }}>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>TEMA (OPCIONAL)</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>TEMA (OPCIONAL)</div>
             <input value={tema} onChange={(e) => setTema(e.target.value)} placeholder="Título de la clase…" style={{ width: "100%", fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", boxSizing: "border-box" }} />
           </div>
           <button onClick={agregar} disabled={saving} style={{ background: "#7C2D12", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: saving ? 0.6 : 1 }}>
@@ -3126,7 +3214,7 @@ function ClasesSection({ clases, isAdmin, user }) {
       )}
 
       {lista.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "30px 20px", color: "#94A3B8", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+        <div style={{ textAlign: "center", padding: "30px 20px", color: "#64748B", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
           🎓 Todavía no hay clases ni presentaciones registradas.
         </div>
       ) : (
@@ -3144,7 +3232,7 @@ function ClasesSection({ clases, isAdmin, user }) {
                     <button onClick={() => setConfirmId(null)} style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
                   </span>
                 ) : (
-                  <button onClick={() => setConfirmId(c.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
+                  <button onClick={() => setConfirmId(c.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
                 )
               )}
             </div>
@@ -3171,7 +3259,7 @@ function MonthRow({ label, items, ESTADO_META, confirmId, setConfirmId, eliminar
             const em = ESTADO_META[p.estado] || ESTADO_META.pendiente;
             return (
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
-                <span style={{ color: "#94A3B8", minWidth: 34 }}>{fechaCorta(p.fecha)}</span>
+                <span style={{ color: "#64748B", minWidth: 34 }}>{fechaCorta(p.fecha)}</span>
                 <span style={{ color: p.nota ? "#475569" : "#CBD5E1", fontStyle: p.nota ? "normal" : "italic", flex: 1 }}>{p.nota || "sin región"}</span>
                 <span style={{ fontSize: 9.5, fontWeight: 700, color: em.color, background: em.bg, borderRadius: 999, padding: "1px 7px" }}>{em.label}</span>
                 {eliminar && (
@@ -3181,7 +3269,7 @@ function MonthRow({ label, items, ESTADO_META, confirmId, setConfirmId, eliminar
                       <button onClick={() => setConfirmId(null)} style={{ fontSize: 9.5, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 5, padding: "2px 7px", cursor: "pointer", fontFamily: "inherit" }}>×</button>
                     </span>
                   ) : (
-                    <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#CBD5E1", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}>🗑️</button>
+                    <button onClick={() => setConfirmId(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}>🗑️</button>
                   )
                 )}
               </div>
@@ -3199,9 +3287,9 @@ function TipoGroup({ tipo, items, ESTADO_META, confirmId, setConfirmId, eliminar
   return (
     <div style={{ borderBottom: lastGroup ? "none" : "1px solid #F1F5F9" }}>
       <button onClick={() => setOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "#F8FAFC", border: "none", cursor: "pointer", fontFamily: "inherit", padding: "7px 14px", textAlign: "left" }}>
-        <span style={{ display: "inline-block", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 9.5, color: "#94A3B8" }}>▶</span>
+        <span style={{ display: "inline-block", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 9.5, color: "#64748B" }}>▶</span>
         <span style={{ fontSize: 11.5, fontWeight: 700, color: "#0F766E", flex: 1 }}>{tipo}</span>
-        <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8" }}>({items.length})</span>
+        <span style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B" }}>({items.length})</span>
       </button>
       {open && meses.map((m, i) => (
         <MonthRow
@@ -3227,7 +3315,7 @@ function ResidentProcAccordion({ residente, procs, procList, ESTADO_META, confir
     <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden", marginBottom: 8 }}>
       <div style={{ display: "flex", alignItems: "center" }}>
         <button onClick={() => setOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: "10px 14px", textAlign: "left" }}>
-          <span style={{ display: "inline-block", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 11, color: "#94A3B8" }}>▶</span>
+          <span style={{ display: "inline-block", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 11, color: "#64748B" }}>▶</span>
           <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A", flex: 1 }}>{residente}</span>
           <span style={{ fontSize: 11, fontWeight: 800, color: procs.length > 0 ? "#0F766E" : "#CBD5E1", background: procs.length > 0 ? "#F0FDFA" : "#F8FAFC", borderRadius: 999, padding: "1px 9px", minWidth: 22, textAlign: "center" }}>{procs.length}</span>
         </button>
@@ -3240,7 +3328,7 @@ function ResidentProcAccordion({ residente, procs, procList, ESTADO_META, confir
       {open && (
         <div style={{ borderTop: "1px solid #F1F5F9" }}>
           {procs.length === 0 ? (
-            <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "10px 14px" }}>Sin procedimientos cargados.</div>
+            <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", padding: "10px 14px" }}>Sin procedimientos cargados.</div>
           ) : (
             grupos.map((g, gi) => (
               <TipoGroup
@@ -3355,17 +3443,17 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
           <div style={{ fontSize: 11.5, fontWeight: 700, color: "#0F766E", marginBottom: 8 }}>Cargar procedimiento propio ({misResidente})</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
             <div>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>PROCEDIMIENTO</div>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>PROCEDIMIENTO</div>
               <select value={tipo} onChange={(e) => setTipo(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", maxWidth: 240 }}>
                 {procList.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
             </div>
             <div>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>FECHA</div>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>FECHA</div>
               <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }} />
             </div>
             <div style={{ flex: 1, minWidth: 140 }}>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 3 }}>NOTA (OPCIONAL)</div>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>NOTA (OPCIONAL)</div>
               <input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Detalle…" style={{ width: "100%", fontSize: 12.5, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", boxSizing: "border-box" }} />
             </div>
             <button onClick={enviar} disabled={saving || !tipo} style={{ background: "#0F766E", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: saving ? 0.6 : 1 }}>
@@ -3392,7 +3480,7 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
             )}
           </div>
           {mios.length === 0 ? (
-            <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px" }}>Todavía no cargaste ninguno.</div>
+            <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", padding: "4px 2px" }}>Todavía no cargaste ninguno.</div>
           ) : (
             <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
               {misGrupos.map((g, gi) => (
@@ -3436,7 +3524,7 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
 
       <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 8, marginTop: 4 }}>Historial por residente</div>
       {residentesConDatos.length === 0 ? (
-        <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic", padding: "4px 2px", marginBottom: 18 }}>Todavía no hay procedimientos cargados.</div>
+        <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", padding: "4px 2px", marginBottom: 18 }}>Todavía no hay procedimientos cargados.</div>
       ) : (
         <div style={{ marginBottom: 18 }}>
           {residentesConDatos.map((n) => (
@@ -3465,7 +3553,7 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
                 {procList.map((p) => (
                   <div key={p} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 5px 4px 10px", borderRadius: 8, background: "#F1F5F9", fontSize: 11.5, color: "#334155", fontWeight: 600 }}>
                     {p}
-                    <button onClick={() => sacarDeLaLista(p)} style={{ background: "none", border: "none", color: "#94A3B8", cursor: "pointer", fontSize: 13, fontFamily: "inherit", lineHeight: 1 }}>×</button>
+                    <button onClick={() => sacarDeLaLista(p)} style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 13, fontFamily: "inherit", lineHeight: 1 }}>×</button>
                   </div>
                 ))}
               </div>
@@ -3692,7 +3780,7 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
                 ) : nota.trim() ? (
                   <div style={{ fontSize: 12.5, color: "#78350F", lineHeight: 1.5, marginTop: 4, whiteSpace: "pre-wrap" }}>{nota}</div>
                 ) : (
-                  <div style={{ fontSize: 11.5, color: "#CBD5E1", fontStyle: "italic", marginTop: 4 }}>Sin observaciones cargadas.</div>
+                  <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", marginTop: 4 }}>Sin observaciones cargadas.</div>
                 )}
               </div>
             )}
@@ -3732,7 +3820,7 @@ function DiaCard({ label, emoji, fecha, dia, onPick }) {
 
   if (!dia) {
     return (
-      <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 16, marginBottom: 12, textAlign: "center", color: "#94A3B8", fontSize: 12.5 }}>
+      <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 16, marginBottom: 12, textAlign: "center", color: "#64748B", fontSize: 12.5 }}>
         {emoji} {label} — todavía no hay calendario cargado para esta semana.
       </div>
     );
@@ -3743,7 +3831,7 @@ function DiaCard({ label, emoji, fecha, dia, onPick }) {
       <div style={{ padding: "11px 16px", background: "#F8FAFC", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <div style={{ fontSize: 13.5, fontWeight: 800, color: "#0F172A" }}>{emoji} {label}</div>
-          <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 1, textTransform: "capitalize" }}>{fechaLabel}</div>
+          <div style={{ fontSize: 10.5, color: "#64748B", marginTop: 1, textTransform: "capitalize" }}>{fechaLabel}</div>
         </div>
         {feriado
           ? <span style={{ fontSize: 9.5, fontWeight: 800, color: "#92400E", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 999, padding: "2px 9px" }}>🎌 FERIADO</span>
@@ -3754,7 +3842,7 @@ function DiaCard({ label, emoji, fecha, dia, onPick }) {
         <FilaDeGuardia lista={dia.deGuardia} onPick={onPick} />
 
         {sinCamas ? (
-          <div style={{ fontSize: 11.5, color: "#94A3B8", fontStyle: "italic" }}>UTI 1, UTI 2 y UTI 3 no aplican {feriado ? "los feriados" : "los fines de semana"} — cobertura por guardia y postguardia.</div>
+          <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic" }}>UTI 1, UTI 2 y UTI 3 no aplican {feriado ? "los feriados" : "los fines de semana"} — cobertura por guardia y postguardia.</div>
         ) : (
           SLOTS.filter((s) => s.key !== "postguardia").map((slot) => (
             <FilaResidentes key={slot.key} label={slot.label} color={slot.accent} nombres={dia[slot.key]} onPick={onPick} />
@@ -3809,7 +3897,7 @@ function FilaResidentes({ label, color, nombres, onPick }) {
           ))}
         </div>
       ) : (
-        <div style={{ fontSize: 11.5, color: "#CBD5E1", fontStyle: "italic" }}>Sin asignar.</div>
+        <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic" }}>Sin asignar.</div>
       )}
     </div>
   );
@@ -3861,7 +3949,7 @@ function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChang
         {isAdmin && editing ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
             <input value={draft} onChange={(e) => onDraftChange(e.target.value)} placeholder="Ej: 5491122334455 (con 549 adelante, sin espacios ni guiones)" style={{ ...INPUT, width: "100%", boxSizing: "border-box" }} />
-            {!esResidente && <div style={{ fontSize: 10.5, color: "#94A3B8", lineHeight: 1.4 }}>Este contacto no es ninguno de los 12 residentes, así que se guarda solo 15 días y después se borra solo, para no acumular números viejos.</div>}
+            {!esResidente && <div style={{ fontSize: 10.5, color: "#64748B", lineHeight: 1.4 }}>Este contacto no es ninguno de los 12 residentes, así que se guarda solo 15 días y después se borra solo, para no acumular números viejos.</div>}
             <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
               <button onClick={onSave} style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✓ Guardar</button>
               <button onClick={onCancelEdit} style={{ background: "#E2E8F0", color: "#64748B", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
@@ -3872,7 +3960,7 @@ function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChang
             {telefono ? (
               <div style={{ fontSize: 13, color: "#334155", fontWeight: 600 }}>📞 {telefono}</div>
             ) : (
-              <div style={{ fontSize: 12.5, color: "#94A3B8", fontStyle: "italic" }}>Todavía no hay un teléfono cargado para {persona.nombre}.</div>
+              <div style={{ fontSize: 12.5, color: "#64748B", fontStyle: "italic" }}>Todavía no hay un teléfono cargado para {persona.nombre}.</div>
             )}
           </div>
         )}
@@ -3886,7 +3974,7 @@ function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChang
           {isAdmin && !editing && (
             <button onClick={onEdit} style={{ background: "#F1F5F9", color: "#475569", border: "1px solid #E2E8F0", borderRadius: 12, padding: "11px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>✏️ {telefono ? "Editar teléfono" : "Agregar teléfono"}</button>
           )}
-          <button onClick={onClose} style={{ background: "none", color: "#94A3B8", border: "none", padding: "8px 16px", fontWeight: 600, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>Cerrar</button>
+          <button onClick={onClose} style={{ background: "none", color: "#64748B", border: "none", padding: "8px 16px", fontWeight: 600, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>Cerrar</button>
         </div>
       </div>
     </div>
@@ -3907,7 +3995,7 @@ const TOPE_DIA_LIBRE = { Lunes: 1, Miércoles: 2, Viernes: 2 };
 // afuera los que están fuera del país o de vacaciones.
 function motivoNoPuedeGuardia(name, date, rotPorAnio) {
   const vac = vacacionesEseDia(name, date, rotPorAnio);
-  if (vac) return `${name} está de vacaciones (${vac.label.toLowerCase()})`;
+  if (vac) return `${name} está ${textoTramo(vac)}`;
   const rotAnio = rotPorAnio[date.getFullYear()];
   if (!rotAnio) return null;
   const mes = rotAnio.months[date.getMonth()];
@@ -4029,13 +4117,13 @@ function PanelAlertas({ duras, suaves }) {
   return (
     <div className="no-print" style={{ marginBottom: 10 }}>
       <button onClick={() => setAbierto((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 12px", borderRadius: 10, background: duras.length ? "#FEF2F2" : "#FFFBEB", border: `1px solid ${duras.length ? "#FECACA" : "#FDE68A"}`, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
-        <span style={{ display: "inline-block", transform: abierto ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 10, color: "#94A3B8" }}>▶</span>
+        <span style={{ display: "inline-block", transform: abierto ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 10, color: "#64748B" }}>▶</span>
         <span style={{ fontSize: 11.5, fontWeight: 700, color: duras.length ? "#991B1B" : "#92400E", flex: 1 }}>
           {duras.length > 0 && `${duras.length} ${duras.length === 1 ? "regla incumplida" : "reglas incumplidas"}`}
           {duras.length > 0 && suaves.length > 0 && " · "}
           {suaves.length > 0 && `${suaves.length} ${suaves.length === 1 ? "sugerencia" : "sugerencias"}`}
         </span>
-        <span style={{ fontSize: 10, color: "#94A3B8" }}>{abierto ? "ocultar" : "ver detalle"}</span>
+        <span style={{ fontSize: 10, color: "#64748B" }}>{abierto ? "ocultar" : "ver detalle"}</span>
       </button>
 
       {abierto && (
@@ -4047,7 +4135,7 @@ function PanelAlertas({ duras, suaves }) {
                 <div style={{ fontSize: 9.5, fontWeight: 800, color, background: bg, padding: "5px 12px", letterSpacing: 0.3, textTransform: "uppercase" }}>{titulo}</div>
                 {lista.map((a, i) => (
                   <div key={i} style={{ display: "flex", gap: 8, padding: "6px 12px", borderTop: i === 0 ? "none" : "1px solid #F8FAFC", fontSize: 11.5 }}>
-                    <span style={{ color: "#94A3B8", minWidth: 92, fontWeight: 600 }}>{a.dia}</span>
+                    <span style={{ color: "#64748B", minWidth: 92, fontWeight: 600 }}>{a.dia}</span>
                     <span style={{ color: "#334155", flex: 1 }}>{a.texto}</span>
                   </div>
                 ))}
@@ -4129,7 +4217,7 @@ function EquiposMes({ monday, isAdmin }) {
         <span style={{ fontSize: 11, fontWeight: 700, color: "#475569", whiteSpace: "nowrap" }}>👥 Equipos por UTI · {etiquetaMes(clave)}</span>
 
         {conGente.length === 0 ? (
-          <span style={{ fontSize: 10.5, color: "#CBD5E1", fontStyle: "italic" }}>Sin equipos armados este mes.</span>
+          <span style={{ fontSize: 10.5, color: "#64748B", fontStyle: "italic" }}>Sin equipos armados este mes.</span>
         ) : (
           conGente.map((s) => (
             <span key={s.key} style={{ display: "inline-flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
@@ -4170,7 +4258,7 @@ function EquiposEditor({ clave, equipos, onToggle, onClose }) {
       <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "18px 20px 20px", width: "100%", maxWidth: 520, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 12px 40px rgba(15,23,42,.28)", fontFamily: "'Inter', system-ui, sans-serif" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
           <div style={{ fontWeight: 800, fontSize: 15.5, color: "#0F172A" }}>👥 Equipos por UTI</div>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 18, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>×</button>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#64748B", fontSize: 18, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 }}>×</button>
         </div>
         <div style={{ fontSize: 11.5, color: "#64748B", marginBottom: 14, lineHeight: 1.5 }}>
           {etiquetaMes(clave)} · hasta {EQUIPO_MAX} por sala. Cada residente va en una sola UTI: si lo ponés en otra, sale de la anterior.
@@ -4294,7 +4382,7 @@ const Corner = () => (<div style={{ background: "#F8FAFC", borderBottom: "2px so
 
 const DayHead = ({ name, date, isToday, isWeekend, feriado }) => (<div style={{ padding: "9px 4px", textAlign: "center", background: feriado ? "#FEF3C7" : isToday ? "#EFF6FF" : isWeekend ? "#F1F5F9" : "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "1px solid #F1F5F9" }}><div style={{ fontWeight: 700, fontSize: 12.5, color: feriado ? "#92400E" : isToday ? "#1D4ED8" : isWeekend ? "#94A3B8" : "#0F172A" }}>{name}</div><div style={{ fontSize: 10.5, color: feriado ? "#B45309" : isToday ? "#3B82F6" : "#94A3B8", fontWeight: isToday ? 700 : 500 }}>{dm(date)}</div>{feriado && <div style={{ fontSize: 8, fontWeight: 800, color: "#92400E", background: "#FDE68A", borderRadius: 999, padding: "1px 6px", marginTop: 2, display: "inline-block", letterSpacing: 0.3 }}>🎌 FERIADO</div>}</div>);
 
-const RowLabel = ({ label, color, sub, className }) => (<div className={className} style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end", textAlign: "right", padding: "8px 10px", background: "#F8FAFC", borderRight: "2px solid #E2E8F0", borderBottom: "2px solid #D1D5DB", borderTop: "2px solid #D1D5DB" }}><div style={{ fontWeight: 700, fontSize: 11, color, letterSpacing: 0.1 }}>{label}</div>{sub && <div style={{ fontSize: 8.5, color: "#94A3B8", marginTop: 1 }}>{sub}</div>}</div>);
+const RowLabel = ({ label, color, sub, className }) => (<div className={className} style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end", textAlign: "right", padding: "8px 10px", background: "#F8FAFC", borderRight: "2px solid #E2E8F0", borderBottom: "2px solid #D1D5DB", borderTop: "2px solid #D1D5DB" }}><div style={{ fontWeight: 700, fontSize: 11, color, letterSpacing: 0.1 }}>{label}</div>{sub && <div style={{ fontSize: 8.5, color: "#64748B", marginTop: 1 }}>{sub}</div>}</div>);
 
 const Cell = ({ children, onClick, tint, ring, pad = 4, lastCol, lastRow, className }) => (<div className={className} onClick={onClick} style={{ padding: pad, minHeight: 46, display: "flex", flexDirection: "column", gap: 3, background: tint, borderRight: lastCol ? "none" : "1px solid #F1F5F9", borderBottom: lastRow ? "none" : "1px solid #F1F5F9", boxShadow: ring ? `inset 0 0 0 1.5px ${ring}66` : "none", cursor: ring ? "pointer" : "default", transition: "background .12s, box-shadow .12s" }}>{children}</div>);
 
@@ -4317,7 +4405,7 @@ const OutChip = ({ name, onPick, selected }) => (<div onClick={onPick} style={{ 
 // Rotaciones o del día libre, así que se corrige allá. El candado y el tooltip
 // explican por qué está ahí.
 const AutoOutChip = ({ name, motivo }) => (
-  <div title={motivo} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 7px", borderRadius: 6, background: "#F8FAFC", border: "1.5px dashed #CBD5E1", color: "#94A3B8", fontSize: 10.5, fontWeight: 600, cursor: "help", userSelect: "none" }}>
+  <div title={motivo} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 7px", borderRadius: 6, background: "#F8FAFC", border: "1.5px dashed #CBD5E1", color: "#64748B", fontSize: 10.5, fontWeight: 600, cursor: "help", userSelect: "none" }}>
     <span style={{ fontSize: 9 }}>🔒</span>
     <span style={{ flex: 1 }}>{name}</span>
     <span style={{ fontSize: 7.5, fontWeight: 800, background: "#CBD5E1", color: "#fff", padding: "1px 3px", borderRadius: 2.5 }}>{LEVEL[name]}</span>
@@ -4325,8 +4413,8 @@ const AutoOutChip = ({ name, motivo }) => (
 );
 
 const GhostHint = ({ color, name }) => (<div style={{ fontSize: 10, color, opacity: 0.75, fontStyle: "italic", textAlign: "center", padding: "1px 0" }}>+ {name}</div>);
-const Dash = () => (<div style={{ color: "#CBD5E1", fontSize: 11, textAlign: "center", padding: "10px 0" }}>—</div>);
-const Skeleton = () => (<div style={{ height: 460, borderRadius: 14, background: "linear-gradient(90deg,#F1F5F9 25%,#E2E8F0 50%,#F1F5F9 75%)", backgroundSize: "200% 100%", animation: "sk 1.2s infinite", display: "flex", alignItems: "center", justifyContent: "center", color: "#94A3B8", fontSize: 13 }}>Cargando…<style>{`@keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}`}</style></div>);
+const Dash = () => (<div style={{ color: "#64748B", fontSize: 11, textAlign: "center", padding: "10px 0" }}>—</div>);
+const Skeleton = () => (<div style={{ height: 460, borderRadius: 14, background: "linear-gradient(90deg,#F1F5F9 25%,#E2E8F0 50%,#F1F5F9 75%)", backgroundSize: "200% 100%", animation: "sk 1.2s infinite", display: "flex", alignItems: "center", justifyContent: "center", color: "#64748B", fontSize: 13 }}>Cargando…<style>{`@keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}`}</style></div>);
 
 const Legend = () => (<div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 14, flexWrap: "wrap" }}>
   {Object.entries(COLOR).map(([lv, c]) => (<div key={lv} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#64748B", fontWeight: 500 }}><span style={{ width: 11, height: 11, borderRadius: 3.5, background: c.bg, border: `1.5px solid ${c.bd}` }} />{lv === "JR" ? "👑 Jefe de residentes" : lv}</div>))}
