@@ -42,6 +42,15 @@ const RESIDENTS = {
 
 const ALL = [...RESIDENTS.R2, ...RESIDENTS.R3, ...RESIDENTS.R4];
 
+// El jefe de residentes no es un residente más: no hace procedimientos, no
+// vota la Chipa, no da clases del programa ni tiene cupo de guardias. Pero sí
+// puede cubrir una sala cuando falta un superior o un inferior, así que existe
+// como ficha propia en el calendario y nada más. Por eso ALL (los 12) y
+// ASIGNABLES (los 12 + el jefe) son listas distintas: todo lo que es "carrera
+// de residencia" usa ALL; solo la grilla usa ASIGNABLES.
+const JEFE = "Gonzalo";
+const ASIGNABLES = [...ALL, JEFE];
+
 // Mapeo residente → email de Google. Se usa para identificar qué cuenta logueada
 // corresponde a qué residente (ej. Procedimientos, donde cada uno carga lo suyo).
 const RESIDENT_EMAIL = {
@@ -137,11 +146,15 @@ const REGISTRO_SUB_META = {
   clases: { label: "Cantidad de clases/presentaciones", icon: "🎓", color: "#7C2D12", bg: "#FFF7ED", bd: "#FED7AA" },
 };
 
-const LEVEL = Object.fromEntries(
-  Object.entries(RESIDENTS).flatMap(([lv, names]) => names.map((n) => [n, lv]))
-);
+const LEVEL = {
+  ...Object.fromEntries(Object.entries(RESIDENTS).flatMap(([lv, names]) => names.map((n) => [n, lv]))),
+  [JEFE]: "JR",
+};
 
 const COLOR = {
+  // Dorado para el jefe: bien lejos del azul/verde/naranja de los tres niveles,
+  // para que se distinga de un vistazo que esa cobertura es una excepción.
+  JR: { bg: "#FEF3C7", bd: "#FCD34D", tx: "#78350F", solid: "#D97706" },
   R2: { bg: "#DBEAFE", bd: "#93C5FD", tx: "#1E3A8A", solid: "#3B82F6" },
   R3: { bg: "#D1FAE5", bd: "#6EE7B7", tx: "#065F46", solid: "#10B981" },
   R4: { bg: "#FFEDD5", bd: "#FDBA74", tx: "#9A3412", solid: "#F97316" },
@@ -253,7 +266,7 @@ const esResidente = (n) => !!LEVEL[n];
 function resolverResidente(raw) {
   const bajo = String(raw || "").trim().toLowerCase();
   if (!bajo) return null;
-  return ALL.find((n) => n.toLowerCase() === bajo || nombrePublico(n).toLowerCase() === bajo) || null;
+  return ASIGNABLES.find((n) => n.toLowerCase() === bajo || nombrePublico(n).toLowerCase() === bajo) || null;
 }
 
 // Guarda siempre el nombre corto cuando se trata de un residente. Es clave
@@ -290,7 +303,9 @@ function normalizeRot(raw) {
   for (let i = 0; i < 12; i++) {
     const m = raw.months[i];
     if (m) {
-      year.months[i].assignments = Array.isArray(m.assignments) ? m.assignments : [];
+      year.months[i].assignments = Array.isArray(m.assignments)
+        ? m.assignments.map((a) => ({ resident: a.resident, place: a.place, exterior: a.exterior === true }))
+        : [];
       year.months[i].notes = typeof m.notes === "string" ? m.notes : "";
       year.months[i].vacaciones = Array.isArray(m.vacaciones) ? m.vacaciones.filter((n) => LEVEL[n]) : [];
     }
@@ -775,6 +790,7 @@ function SchedulerView({ isAdmin }) {
   const [feriadosOpen, setFeriadosOpen] = useState(false);
   const [rotPorAnio, setRotPorAnio] = useState({});
   const [aplicandoMes, setAplicandoMes] = useState(false);
+  const [equiposDoc, setEquiposDoc] = useState({});
 
   const docId = `week-${isoDate(monday)}`;
   const pending = useRef(null);
@@ -812,6 +828,11 @@ function SchedulerView({ isAdmin }) {
     );
     return () => unsubs.forEach((u) => u());
   }, [clavesAnios]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "scheduler", "equipos"), (snap) => setEquiposDoc(snap.exists() ? snap.data() : {}), () => {});
+    return unsub;
+  }, []);
 
   // Recordatorios se nutre en modo lectura del Calendario académico: la fuente
   // de verdad es esa pestaña, acá solo se refleja si hay clase ese día.
@@ -856,7 +877,7 @@ function SchedulerView({ isAdmin }) {
   const pool = useCallback((di) => {
     const d = week.days[di];
     const used = new Set([...SLOT_KEYS.flatMap((k) => d[k]), ...d.unavailable]);
-    return ALL.filter((n) => !used.has(n) && !motivoDe(n, di));
+    return ASIGNABLES.filter((n) => !used.has(n) && !motivoDe(n, di));
   }, [week, motivoDe]);
 
   // Los que quedan fuera automáticamente ese día, para mostrarlos en la fila de
@@ -864,7 +885,7 @@ function SchedulerView({ isAdmin }) {
   const autoNoDisponibles = useCallback((di) => {
     const d = week.days[di];
     const yaPuestos = new Set([...SLOT_KEYS.flatMap((k) => d[k]), ...d.unavailable]);
-    return ALL.filter((n) => !yaPuestos.has(n)).map((n) => ({ name: n, motivo: motivoDe(n, di) })).filter((x) => x.motivo);
+    return ASIGNABLES.filter((n) => !yaPuestos.has(n)).map((n) => ({ name: n, motivo: motivoDe(n, di) })).filter((x) => x.motivo);
   }, [week, motivoDe]);
 
   const pick = (name, from) => {
@@ -1057,6 +1078,11 @@ function SchedulerView({ isAdmin }) {
   };
 
   const dates = useMemo(() => DAYS.map((_, i) => shift(monday, i)), [monday]);
+
+  const alertas = useMemo(
+    () => analizarSemana(week, monday, rotPorAnio, equiposDoc[mesDeLaSemana(monday)] || null),
+    [week, monday, rotPorAnio, equiposDoc]
+  );
   const today = new Date();
   const active = sel != null;
 
@@ -1072,6 +1098,7 @@ function SchedulerView({ isAdmin }) {
 
       {loading ? <Skeleton /> : (
         <div ref={printRef}>
+          {isAdmin && <PanelAlertas duras={alertas.duras} suaves={alertas.suaves} />}
           <EquiposMes monday={monday} isAdmin={isAdmin} />
           <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} onAplicarAlMes={aplicarDiasLibresAlMes} aplicando={aplicandoMes} />
           <div style={{ overflowX: "auto", paddingBottom: 4 }}>
@@ -1272,6 +1299,7 @@ const ChipGuardia = ({ name }) => {
   const c = esResidente(name) ? COLOR[LEVEL[name]] : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#94A3B8" };
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2.5px 6px", borderRadius: 6, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 600, fontSize: 10.5, lineHeight: 1.25 }}>
+      {LEVEL[name] === "JR" && "👑"}
       {name}
       <span style={{ fontSize: 7, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: c.solid, color: "#fff" }}>{esResidente(name) ? LEVEL[name] : "—"}</span>
     </span>
@@ -1310,7 +1338,7 @@ function GuardiaEditor({ fecha, dia, valor, onChange, onClose }) {
 
         <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", marginBottom: 6, letterSpacing: 0.3 }}>RESIDENTES</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-          {ALL.map((n) => {
+          {ASIGNABLES.map((n) => {
             const on = seleccion.includes(n);
             const c = COLOR[LEVEL[n]];
             return (
@@ -1384,13 +1412,14 @@ function RotacionesView({ isAdmin }) {
     }, 400);
   }, [docId, isAdmin]);
 
-  const addAssignment = (mi) => { if (!isAdmin) return; setEditing({ month: mi, mode: "new", resident: "", place: "" }); };
+  const addAssignment = (mi) => { if (!isAdmin) return; setEditing({ month: mi, mode: "new", resident: "", place: "", exterior: false }); };
 
-  const saveAssignment = (mi, resident, place, idx) => {
+  const saveAssignment = (mi, resident, place, idx, exterior) => {
     if (!resident.trim() || !place.trim()) return;
     const next = clone(data);
-    if (idx !== undefined && idx !== null) { next.months[mi].assignments[idx] = { resident: resident.trim(), place: place.trim() }; }
-    else { next.months[mi].assignments.push({ resident: resident.trim(), place: place.trim() }); }
+    const registro = { resident: resident.trim(), place: place.trim(), exterior: !!exterior };
+    if (idx !== undefined && idx !== null) { next.months[mi].assignments[idx] = registro; }
+    else { next.months[mi].assignments.push(registro); }
     save(next); setEditing(null);
   };
 
@@ -1462,14 +1491,15 @@ function RotacionesView({ isAdmin }) {
                         const c = lv ? COLOR[lv] : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#64748B" };
                         const isEditingThis = editing && editing.month === mi && editing.idx === idx;
                         if (isEditingThis) {
-                          return <EditForm key={idx} resident={editing.resident} place={editing.place} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place, idx)} onCancel={() => setEditing(null)} />;
+                          return <EditForm key={idx} resident={editing.resident} place={editing.place} exterior={editing.exterior} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onExteriorChange={(v) => setEditing({ ...editing, exterior: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place, idx, editing.exterior)} onCancel={() => setEditing(null)} />;
                         }
                         return (
                           <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 8, background: c.bg, border: `1.5px solid ${c.bd}`, fontSize: 12 }}>
                             <span style={{ fontWeight: 700, color: c.tx }}>{a.resident}</span>
                             <span style={{ color: "#64748B", fontWeight: 500 }}>({a.place})</span>
+                            {a.exterior && <span title="Fuera del país — no hace guardias" style={{ fontSize: 10 }}>✈️</span>}
                             {lv && <span style={{ fontSize: 8, fontWeight: 800, background: c.solid, color: "#fff", padding: "1px 4px", borderRadius: 3 }}>{lv}</span>}
-                            {isAdmin && <span onClick={() => setEditing({ month: mi, idx, resident: a.resident, place: a.place })} style={{ cursor: "pointer", fontSize: 11, opacity: 0.4 }} title="Editar">✏️</span>}
+                            {isAdmin && <span onClick={() => setEditing({ month: mi, idx, resident: a.resident, place: a.place, exterior: !!a.exterior })} style={{ cursor: "pointer", fontSize: 11, opacity: 0.4 }} title="Editar">✏️</span>}
                             {isAdmin && <span onClick={() => removeAssignment(mi, idx)} style={{ cursor: "pointer", fontSize: 11, opacity: 0.4 }} title="Eliminar">✕</span>}
                           </div>
                         );
@@ -1477,7 +1507,7 @@ function RotacionesView({ isAdmin }) {
                     </div>
                   )}
                   {editing && editing.month === mi && editing.mode === "new" && (
-                    <EditForm resident={editing.resident} place={editing.place} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place)} onCancel={() => setEditing(null)} />
+                    <EditForm resident={editing.resident} place={editing.place} exterior={editing.exterior} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onExteriorChange={(v) => setEditing({ ...editing, exterior: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place, undefined, editing.exterior)} onCancel={() => setEditing(null)} />
                   )}
                   <VacacionesPicker mes={mi} seleccion={month.vacaciones || []} isAdmin={isAdmin} onToggle={toggleVacaciones} />
                   <textarea value={month.notes} onChange={(e) => editNotes(mi, e.target.value)} placeholder="Detalle de vacaciones (ej: 3 primeras semanas)…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 32, marginTop: 4, fontSize: 11, fontStyle: month.notes ? "normal" : "italic", color: month.notes ? "#92400E" : "#94A3B8", background: month.notes ? "#FFFBEB" : "#FAFAFA", borderColor: month.notes ? "#FDE68A" : "#E2E8F0", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
@@ -1539,13 +1569,20 @@ function VacacionesPicker({ mes, seleccion, isAdmin, onToggle }) {
   );
 }
 
-const EditForm = ({ resident, place, onResChange, onPlaceChange, onSave, onCancel }) => (
-  <div style={{ display: "flex", gap: 4, alignItems: "center", padding: "4px 0" }}>
+// El tilde "fuera del país" no es cosmético: es lo que distingue a alguien que
+// rota en Colombia o Europa —y por lo tanto no puede hacer guardias acá— de
+// alguien que rota en Fernandez o el Italiano, que sigue haciéndolas.
+const EditForm = ({ resident, place, exterior, onResChange, onPlaceChange, onExteriorChange, onSave, onCancel }) => (
+  <div style={{ display: "flex", gap: 4, alignItems: "center", padding: "4px 0", flexWrap: "wrap" }}>
     <select value={resident} onChange={(e) => onResChange(e.target.value)} style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", background: "#fff", color: "#0F172A" }}>
       <option value="">Residente…</option>
       {ALL.map((n) => <option key={n} value={n}>{n} ({LEVEL[n]})</option>)}
     </select>
     <input value={place} onChange={(e) => onPlaceChange(e.target.value)} placeholder="Lugar (ej: Fernandez, Ecocardio)" onKeyDown={(e) => e.key === "Enter" && onSave()} style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", flex: 1, minWidth: 140, color: "#0F172A" }} />
+    <label title="Si rota fuera del país no hace guardias en el Británico" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: exterior ? "#B45309" : "#64748B", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+      <input type="checkbox" checked={!!exterior} onChange={(e) => onExteriorChange(e.target.checked)} style={{ cursor: "pointer" }} />
+      ✈️ fuera del país
+    </label>
     <button onClick={onSave} style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✓</button>
     <button onClick={onCancel} style={{ background: "#E2E8F0", color: "#64748B", border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✕</button>
   </div>
@@ -3690,6 +3727,7 @@ function ChipPersona({ persona, onPick }) {
   const c = esResidente ? (COLOR[LEVEL[persona.key]] || COLOR.R2) : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#94A3B8" };
   return (
     <button onClick={() => onPick(persona)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>
+      {esResidente && LEVEL[persona.key] === "JR" && "👑"}
       {persona.nombre}
       <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: c.solid, color: "#fff" }}>{esResidente ? LEVEL[persona.key] : "—"}</span>
     </button>
@@ -3753,6 +3791,171 @@ function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChang
           <button onClick={onClose} style={{ background: "none", color: "#94A3B8", border: "none", padding: "8px 16px", fontWeight: 600, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>Cerrar</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ══════════════════ ALERTAS DE LA SEMANA ══════════════════ */
+
+// Un "superior" es quien puede quedar a cargo de una sala o una guardia.
+const esSuperior = (n) => LEVEL[n] === "R3" || LEVEL[n] === "R4" || LEVEL[n] === "JR";
+
+// Topes de día libre de los R4, por día de la semana.
+const TOPE_DIA_LIBRE = { Lunes: 1, Miércoles: 2, Viernes: 2 };
+
+// Por qué alguien no puede estar de guardia. Ojo con la diferencia respecto de
+// la sala: rotar en Fernandez o en otro servicio de CABA NO saca a nadie de las
+// guardias (las siguen haciendo en el Británico, aunque menos). Solo quedan
+// afuera los que están fuera del país o de vacaciones.
+function motivoNoPuedeGuardia(name, date, rotAnio) {
+  if (!rotAnio) return null;
+  const mes = rotAnio.months[date.getMonth()];
+  if (!mes) return null;
+  if ((mes.vacaciones || []).includes(name)) return `${name} está de vacaciones`;
+  const rot = (mes.assignments || []).find((a) => a.resident === name);
+  if (rot && rot.exterior) return `${name} está rotando fuera del país (${rot.place})`;
+  return null;
+}
+
+// Revisa la semana contra las reglas de la residencia y devuelve dos listas:
+// las que no se pueden romper nunca (duras) y las que son "lo ideal pero a
+// veces la realidad manda" (suaves). Es solo informativo: nunca impide guardar.
+function analizarSemana(week, monday, rotPorAnio, equiposMes) {
+  const duras = [];
+  const suaves = [];
+  const agregar = (lista, di, texto) => lista.push({ dia: `${DAYS[di]} ${dm(shift(monday, di))}`, texto });
+
+  // Día libre de los R4: solo lunes, miércoles o viernes, con tope por día.
+  const porDia = {};
+  RESIDENTS.R4.forEach((n) => {
+    const d = week.diasLibresR4[n];
+    if (!d) return;
+    (porDia[d] = porDia[d] || []).push(n);
+  });
+  Object.entries(porDia).forEach(([dia, gente]) => {
+    const tope = TOPE_DIA_LIBRE[dia];
+    if (tope === undefined) {
+      duras.push({ dia, texto: `Día libre en ${dia.toLowerCase()} (${gente.join(", ")}) — solo se puede lunes, miércoles o viernes` });
+    } else if (gente.length > tope) {
+      duras.push({ dia, texto: `${gente.length} R4 con día libre el ${dia.toLowerCase()} (${gente.join(", ")}) — el tope es ${tope}` });
+    }
+  });
+
+  for (let di = 0; di < DAYS.length; di++) {
+    const d = week.days[di];
+    const fecha = shift(monday, di);
+    const rotAnio = rotPorAnio[fecha.getFullYear()];
+    const finde = isWeekendIdx(di);
+    const feriado = d.feriado;
+    const sinCamas = finde || feriado;
+
+    // ── Salas (solo días hábiles que no sean feriado) ──
+    if (!sinCamas) {
+      SLOTS.filter((sl) => sl.key !== "postguardia").forEach((sl) => {
+        const gente = d[sl.key] || [];
+        if (gente.length < 2) {
+          agregar(duras, di, `${sl.label} con ${gente.length === 0 ? "nadie" : "1 residente"} — el mínimo son 2`);
+        } else if (!gente.some(esSuperior)) {
+          agregar(duras, di, `${sl.label} sin ningún R3 ni R4 (${gente.join(", ")})`);
+        }
+        if (sl.key === "uti1" && gente.length === 2) {
+          agregar(suaves, di, `UTI 1 con 2 residentes — lo ideal son 3`);
+        }
+        if (gente.includes(JEFE)) {
+          agregar(suaves, di, `${JEFE} está cubriendo ${sl.label} — debería ser excepcional`);
+        }
+        // El equipo del mes: se busca que cada uno vea la misma sala todo el mes.
+        (equiposMes ? gente : []).forEach((n) => {
+          const suSala = Object.keys(equiposMes).find((k) => (equiposMes[k] || []).includes(n));
+          if (suSala && suSala !== sl.key) {
+            const nombreSala = (SLOTS.find((x) => x.key === suSala) || {}).label || suSala;
+            agregar(suaves, di, `${n} está en ${sl.label} pero su equipo del mes es ${nombreSala}`);
+          }
+        });
+      });
+
+      // Postguardia: lo ideal es que se quede un R4, no un R2 ni un R3.
+      (d.postguardia || []).filter((n) => LEVEL[n] === "R2" || LEVEL[n] === "R3").forEach((n) => {
+        agregar(suaves, di, `${n} (${LEVEL[n]}) se queda postguardia — lo ideal es que sea un R4`);
+      });
+    }
+
+    // ── Guardia ──
+    const guardia = (d.deGuardia || []);
+    const residentesGuardia = guardia.filter((n) => LEVEL[n]);
+    if (guardia.length === 0) {
+      agregar(duras, di, "Sin nadie de guardia");
+    } else {
+      if (guardia.length !== 2) {
+        agregar(duras, di, `${guardia.length} personas de guardia (${guardia.join(", ")}) — tienen que ser 2`);
+      }
+      if (residentesGuardia.length > 0 && !residentesGuardia.some(esSuperior)) {
+        agregar(duras, di, `Guardia sin ningún R3 ni R4 (${guardia.join(", ")})`);
+      }
+      if (finde) {
+        const niveles = residentesGuardia.map((n) => LEVEL[n]).sort();
+        const esR3R2 = niveles.length === 2 && niveles.includes("R3") && niveles.includes("R2");
+        if (!esR3R2) {
+          agregar(duras, di, `Guardia de fin de semana (${guardia.join(", ")}) — tiene que ser un R3 y un R2`);
+        }
+      }
+      if ((finde || feriado) && residentesGuardia.some((n) => LEVEL[n] === "R4")) {
+        const r4 = residentesGuardia.filter((n) => LEVEL[n] === "R4");
+        agregar(duras, di, `${r4.join(", ")} (R4) de guardia en ${feriado ? "un feriado" : "fin de semana"} — los R4 no hacen`);
+      }
+      residentesGuardia.forEach((n) => {
+        const m = motivoNoPuedeGuardia(n, fecha, rotAnio);
+        if (m) agregar(duras, di, `${m} y está puesto de guardia`);
+      });
+    }
+  }
+
+  return { duras, suaves };
+}
+
+// Panel compacto: una barra que dice cuántas alertas hay y se despliega. Si
+// está todo bien, una línea verde discreta. Nunca bloquea nada.
+function PanelAlertas({ duras, suaves }) {
+  const [abierto, setAbierto] = useState(false);
+  const total = duras.length + suaves.length;
+
+  if (total === 0) {
+    return (
+      <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", marginBottom: 10, borderRadius: 10, background: "#F0FDF4", border: "1px solid #BBF7D0", fontSize: 11, color: "#15803D", fontWeight: 600 }}>
+        ✓ La semana cumple todas las reglas
+      </div>
+    );
+  }
+
+  return (
+    <div className="no-print" style={{ marginBottom: 10 }}>
+      <button onClick={() => setAbierto((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 12px", borderRadius: 10, background: duras.length ? "#FEF2F2" : "#FFFBEB", border: `1px solid ${duras.length ? "#FECACA" : "#FDE68A"}`, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+        <span style={{ display: "inline-block", transform: abierto ? "rotate(90deg)" : "none", transition: "transform .15s", fontSize: 10, color: "#94A3B8" }}>▶</span>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: duras.length ? "#991B1B" : "#92400E", flex: 1 }}>
+          {duras.length > 0 && `${duras.length} ${duras.length === 1 ? "regla incumplida" : "reglas incumplidas"}`}
+          {duras.length > 0 && suaves.length > 0 && " · "}
+          {suaves.length > 0 && `${suaves.length} ${suaves.length === 1 ? "sugerencia" : "sugerencias"}`}
+        </span>
+        <span style={{ fontSize: 10, color: "#94A3B8" }}>{abierto ? "ocultar" : "ver detalle"}</span>
+      </button>
+
+      {abierto && (
+        <div style={{ marginTop: 6, background: "#fff", borderRadius: 10, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+          {[["No se puede romper", duras, "#DC2626", "#FEF2F2"], ["Lo ideal sería", suaves, "#B45309", "#FFFBEB"]]
+            .filter(([, lista]) => lista.length > 0)
+            .map(([titulo, lista, color, bg]) => (
+              <div key={titulo}>
+                <div style={{ fontSize: 9.5, fontWeight: 800, color, background: bg, padding: "5px 12px", letterSpacing: 0.3, textTransform: "uppercase" }}>{titulo}</div>
+                {lista.map((a, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, padding: "6px 12px", borderTop: i === 0 ? "none" : "1px solid #F8FAFC", fontSize: 11.5 }}>
+                    <span style={{ color: "#94A3B8", minWidth: 92, fontWeight: 600 }}>{a.dia}</span>
+                    <span style={{ color: "#334155", flex: 1 }}>{a.texto}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -4000,6 +4203,7 @@ function Chip({ name, selected, onPick, onRemove, alerta }) {
   const lv = LEVEL[name]; const c = COLOR[lv];
   return (<div onClick={onPick} title={alerta || undefined} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3.5px 6px 3.5px 8px", borderRadius: 7, background: selected ? c.solid : c.bg, border: alerta && !selected ? "1.5px solid #F59E0B" : `1.5px solid ${selected ? c.solid : c.bd}`, color: selected ? "#fff" : c.tx, fontWeight: 600, fontSize: 11.5, cursor: "pointer", userSelect: "none", boxShadow: selected ? `0 0 0 3px ${c.solid}33` : alerta ? "0 0 0 2px #FDE68A" : "none", transition: "all .12s" }}>
     {alerta && <span title={alerta} style={{ fontSize: 10, lineHeight: 1, cursor: "help" }}>⚠️</span>}
+    {lv === "JR" && <span style={{ fontSize: 10, lineHeight: 1 }}>👑</span>}
     <span style={{ flex: 1, lineHeight: 1.3 }}>{name}</span>
     <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 3.5px", borderRadius: 3, background: selected ? "rgba(255,255,255,.28)" : c.solid, color: "#fff", letterSpacing: 0.2 }}>{lv}</span>
     {onRemove && <span onClick={onRemove} title="Quitar" style={{ fontSize: 11, lineHeight: 1, opacity: 0.45, cursor: "pointer", padding: "0 1px" }}>×</span>}
@@ -4025,7 +4229,7 @@ const Dash = () => (<div style={{ color: "#CBD5E1", fontSize: 11, textAlign: "ce
 const Skeleton = () => (<div style={{ height: 460, borderRadius: 14, background: "linear-gradient(90deg,#F1F5F9 25%,#E2E8F0 50%,#F1F5F9 75%)", backgroundSize: "200% 100%", animation: "sk 1.2s infinite", display: "flex", alignItems: "center", justifyContent: "center", color: "#94A3B8", fontSize: 13 }}>Cargando…<style>{`@keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}`}</style></div>);
 
 const Legend = () => (<div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 14, flexWrap: "wrap" }}>
-  {Object.entries(COLOR).map(([lv, c]) => (<div key={lv} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#64748B", fontWeight: 500 }}><span style={{ width: 11, height: 11, borderRadius: 3.5, background: c.bg, border: `1.5px solid ${c.bd}` }} />{lv}</div>))}
+  {Object.entries(COLOR).map(([lv, c]) => (<div key={lv} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#64748B", fontWeight: 500 }}><span style={{ width: 11, height: 11, borderRadius: 3.5, background: c.bg, border: `1.5px solid ${c.bd}` }} />{lv === "JR" ? "👑 Jefe de residentes" : lv}</div>))}
   <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#64748B", fontWeight: 500 }}><span style={{ width: 11, height: 11, borderRadius: 3.5, background: "#E9D5FF", border: "1.5px solid #D8B4FE" }} />Postguardia</div>
 </div>);
 
