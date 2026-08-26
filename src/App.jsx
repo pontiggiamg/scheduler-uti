@@ -10,7 +10,7 @@ const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 // Pestañas de nivel superior de la app. El orden por defecto se usa si todavía
 // no hay nada guardado en Firestore (scheduler/ui-config); el admin puede
 // reordenarlas arrastrando y ese orden se guarda ahí, compartido para todos.
-const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy", "accesos", "impresiones", "guardias"];
+const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy", "accesos", "impresiones"];
 // La pestaña se llamaba "borradores" y pasó a llamarse "impresiones": lo que
 // sale de ahí es definitivo salvo que se lo marque expresamente como borrador.
 // El orden de pestañas guardado en Firestore puede tener todavía el nombre
@@ -28,7 +28,6 @@ const TAB_META = {
   hoy: { icon: "📱", label: "¿Quién está hoy?" },
   accesos: { icon: "🔐", label: "Accesos", soloAdmin: true },
   impresiones: { icon: "🖨️", label: "Impresiones" },
-  guardias: { icon: "🌙", label: "Guardias" },
 };
 
 // Ruta pública sin login para compartir a otros servicios del hospital: entra
@@ -144,11 +143,12 @@ const MODULOS_CLASE = ["Fisiología", "Shock", "Respiratorio", "Medio Interno", 
 // nada guardado; el admin puede arrastrarlas para reordenarlas y ese orden
 // se guarda compartido para todos (mismo doc que el orden de las pestañas
 // principales, campo distinto).
-const DEFAULT_REGISTRO_SUB_ORDER = ["tarde", "falta", "guardia", "procedimientos", "cobertura", "clases"];
+const DEFAULT_REGISTRO_SUB_ORDER = ["tarde", "falta", "guardia", "guardias_mes", "procedimientos", "cobertura", "clases"];
 const REGISTRO_SUB_META = {
   tarde: { ...EVENTO_TIPOS.tarde },
   falta: { ...EVENTO_TIPOS.falta },
   guardia: { ...EVENTO_TIPOS.guardia },
+  guardias_mes: { label: "Guardias por residente", icon: "🌙", color: "#9F1239", bg: "#FFF1F2", bd: "#FECDD3" },
   procedimientos: { label: "Procedimientos", icon: "🩺", color: "#0F766E", bg: "#F0FDFA", bd: "#99F6E4" },
   cobertura: { label: "R2 y R3 que cubrieron sala post guardia o en rotación", icon: "🔁", color: "#1D4ED8", bg: "#EFF6FF", bd: "#BFDBFE" },
   clases: { label: "Cantidad de clases/presentaciones", icon: "🎓", color: "#7C2D12", bg: "#FFF7ED", bd: "#FED7AA" },
@@ -738,7 +738,6 @@ function AuthenticatedApp() {
       {tab === "hoy" && <QuienEstaHoyView isAdmin={isAdmin} embedded />}
       {tab === "accesos" && isAdmin && <AccesosView user={user} />}
       {tab === "impresiones" && <ImpresionesView user={user} isAdmin={isAdmin} />}
-      {tab === "guardias" && <GuardiasView />}
     </div>
   );
 }
@@ -2935,7 +2934,9 @@ function RegistroView({ isAdmin, user }) {
         })}
       </div>
 
-      {sub === "procedimientos" ? (
+      {sub === "guardias_mes" ? (
+        <GuardiasSection cobertura={cobertura} isAdmin={isAdmin} />
+      ) : sub === "procedimientos" ? (
         <ProcedimientosSection procedimientos={procedimientos} procList={procList} isAdmin={isAdmin} user={user} misResidente={misResidente} />
       ) : sub === "cobertura" ? (
         <CoberturaSection cobertura={cobertura} isAdmin={isAdmin} user={user} />
@@ -4562,66 +4563,66 @@ ${soloGuardias
 }
 
 
-/* ══════════════════ REGISTRO DE GUARDIAS ══════════════════ */
+/* ══════════════════ GUARDIAS POR RESIDENTE ══════════════════ */
 
-// Cupo de guardias por nivel y por mes. Cada noche lleva dos residentes, así
-// que el total del mes son días × 2. R4 y R3 tienen cupo fijo y los R2 se
-// llevan el resto: por eso en un mes de 30 días los R2 hacen 26 y no 28.
+// Cupo de guardias por nivel y por mes. Cada noche lleva dos residentes, asi
+// que el total del mes son dias x 2. R4 y R3 tienen cupo fijo y los R2 se
+// llevan el resto: por eso en un mes de 30 dias los R2 hacen 26 y no 28.
 const CUPO_MES = { R4: 14, R3: 20 };
 const cupoR2 = (anio, mes) => new Date(anio, mes + 1, 0).getDate() * 2 - CUPO_MES.R4 - CUPO_MES.R3;
 
-// Lee las semanas del mes y cuenta las guardias de cada uno, separando día de
-// semana, fin de semana y feriado. Es el registro que hasta ahora había que
-// contar a mano sobre el papel.
-function GuardiasView() {
+// Cuenta las guardias que ya estan cargadas en el scheduler y las separa entre
+// las que ya pasaron y las que quedan por hacer. De paso detecta las coberturas
+// de sala de R2/R3 que hay que registrar (ver detectarCoberturas) y las
+// sincroniza sola con la sub-pestaña de cobertura.
+function GuardiasSection({ cobertura, isAdmin }) {
   const [mesSel, setMesSel] = useState(() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, "0")}`; });
   const [datos, setDatos] = useState(null);
   const [cargando, setCargando] = useState(true);
+  const [abierto, setAbierto] = useState(null);
+  const [sync, setSync] = useState(null);
   const [y, m] = mesSel.split("-").map(Number);
   const anio = y, mes = m - 1;
+  const hoyIso = isoDate(new Date());
 
   useEffect(() => {
     let vivo = true;
-    setCargando(true);
+    setCargando(true); setAbierto(null); setSync(null);
     (async () => {
-      const semanas = lunesQueTocanElMes(anio, mes);
       const dias = [];
-      for (const l of semanas) {
+      for (const l of lunesQueTocanElMes(anio, mes)) {
         const snap = await getDoc(doc(db, "scheduler", `week-${isoDate(l)}`));
         const w = snap.exists() ? normalize(snap.data()) : emptyWeek();
         DAYS.forEach((_, i) => {
           const f = shift(l, i);
           if (f.getMonth() !== mes || f.getFullYear() !== anio) return;
-          dias.push({ fecha: f, di: i, guardia: w.days[i].deGuardia || [], feriado: w.days[i].feriado });
+          dias.push({ fecha: f, iso: isoDate(f), di: i, d: w.days[i] });
         });
       }
       dias.sort((a, b) => a.fecha - b.fecha);
       const rotSnap = await getDoc(doc(db, "scheduler", `rotaciones-${anio}`));
       const rot = rotSnap.exists() ? normalizeRot(rotSnap.data()) : emptyRotYear();
-      if (!vivo) return;
-      setDatos({ dias, rot });
-      setCargando(false);
+      if (vivo) { setDatos({ dias, rot }); setCargando(false); }
     })().catch(() => { if (vivo) { setDatos(null); setCargando(false); } });
     return () => { vivo = false; };
   }, [anio, mes]);
 
   const resumen = useMemo(() => {
     if (!datos) return null;
-    const base = () => ({ total: 0, semana: 0, finde: 0, feriado: 0, fechas: [] });
-    const conteo = {}; const externos = {};
-    let huecos = [], sobrantes = [];
-    datos.dias.forEach((d) => {
-      const g = d.guardia;
-      if (g.length < 2) huecos.push({ ...d, faltan: 2 - g.length });
-      if (g.length > 2) sobrantes.push({ ...d, sobran: g.length - 2 });
+    const base = () => ({ total: 0, hechas: 0, pendientes: 0, semana: 0, finde: 0, feriado: 0, fechas: [] });
+    const conteo = {}, externos = {};
+    const huecos = [], sobrantes = [];
+    datos.dias.forEach((x) => {
+      const g = x.d.deGuardia || [];
+      if (g.length < 2) huecos.push(x);
+      if (g.length > 2) sobrantes.push(x);
       g.forEach((n) => {
         if (!LEVEL[n]) { externos[n] = (externos[n] || 0) + 1; return; }
         const c = (conteo[n] = conteo[n] || base());
         c.total++;
-        if (d.feriado) c.feriado++;
-        else if (isWeekendIdx(d.di)) c.finde++;
-        else c.semana++;
-        c.fechas.push(d.fecha.getDate());
+        if (x.iso < hoyIso) c.hechas++; else c.pendientes++;
+        if (x.d.feriado) c.feriado++; else if (isWeekendIdx(x.di)) c.finde++; else c.semana++;
+        c.fechas.push({ dia: x.fecha.getDate(), di: x.di, feriado: x.d.feriado, pasada: x.iso < hoyIso });
       });
     });
     const porNivel = { R4: 0, R3: 0, R2: 0, JR: 0 };
@@ -4630,8 +4631,53 @@ function GuardiasView() {
     const fuera = {};
     (mesRot.assignments || []).forEach((a) => { fuera[a.resident] = a.exterior ? `fuera del país (${a.place})` : `rota en ${a.place}`; });
     (mesRot.vacaciones || []).forEach((v) => { fuera[v.nombre] = `de vacaciones (${(TRAMOS_VACACIONES[v.tramo] || TRAMOS_VACACIONES.mes).corto})`; });
-    return { conteo, externos, porNivel, huecos, sobrantes, fuera, totalDias: datos.dias.length };
-  }, [datos, mes]);
+    return { conteo, externos, porNivel, huecos, sobrantes, fuera, dias: datos.dias.length, rotantes: (mesRot.assignments || []).map((a) => a.resident) };
+  }, [datos, mes, hoyIso]);
+
+  // ── Sincronización automática con "R2 y R3 que cubrieron sala" ──────────
+  // Dos situaciones obligan a registrar una cobertura: un R2 o R3 que aparece
+  // en una sala el mismo día que está de postguardia, y uno que aparece en una
+  // sala estando de rotación ese mes. Se detectan solas y se escriben con un id
+  // fijo (auto-nombre-fecha) para que volver a entrar no duplique nada.
+  const detectadas = useMemo(() => {
+    if (!datos || !resumen) return [];
+    const out = [];
+    datos.dias.forEach((x) => {
+      if (isWeekendIdx(x.di) || x.d.feriado) return;
+      const enSala = [...(x.d.uti1 || []), ...(x.d.uti2 || []), ...(x.d.uti3 || [])];
+      enSala.forEach((n) => {
+        if (LEVEL[n] !== "R2" && LEVEL[n] !== "R3") return;
+        const pg = (x.d.postguardia || []).includes(n);
+        const rota = resumen.rotantes.includes(n);
+        if (!pg && !rota) return;
+        out.push({ id: `auto-${n}-${x.iso}`, residente: n, fecha: x.iso, modalidad: pg ? "post_guardia" : "rotacion" });
+      });
+    });
+    return out;
+  }, [datos, resumen]);
+
+  useEffect(() => {
+    if (!isAdmin || cargando || !datos) return;
+    const yaEstan = new Set((cobertura || []).map((c) => c.id));
+    const desdeIso = isoDate(new Date(anio, mes, 1));
+    const hastaIso = isoDate(new Date(anio, mes + 1, 0));
+    const faltan = detectadas.filter((x) => !yaEstan.has(x.id));
+    // las automáticas de este mes que ya no corresponden se borran
+    const sobran = (cobertura || []).filter((c) => String(c.id || "").startsWith("auto-") && c.fecha >= desdeIso && c.fecha <= hastaIso && !detectadas.some((d) => d.id === c.id));
+    // Si no hay nada que hacer se sale sin tocar el aviso: si acabamos de
+    // escribir, el snapshot vuelve a disparar este efecto y borrarlo haría
+    // parpadear el mensaje.
+    if (!faltan.length && !sobran.length) return;
+    let cancelado = false;
+    (async () => {
+      for (const x of faltan) {
+        await setDoc(doc(db, "cobertura_sala", x.id), { ...x, nota: "Detectada automáticamente desde el scheduler", creadoPor: "automático", creadoEn: new Date().toISOString() });
+      }
+      for (const c of sobran) await deleteDoc(doc(db, "cobertura_sala", c.id));
+      if (!cancelado) setSync({ agregadas: faltan.length, borradas: sobran.length });
+    })().catch(() => {});
+    return () => { cancelado = true; };
+  }, [detectadas, cobertura, isAdmin, cargando, datos, anio, mes]);
 
   const opciones = useMemo(() => {
     const hoy = new Date();
@@ -4642,125 +4688,122 @@ function GuardiasView() {
   }, []);
 
   const cupos = { R4: CUPO_MES.R4, R3: CUPO_MES.R3, R2: cupoR2(anio, mes) };
-  const caja = { background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 16, marginBottom: 12 };
+  const caja = { background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16, marginBottom: 12 };
+  const gente = ASIGNABLES.filter((n) => LEVEL[n] !== "JR");
+
+  // Un grafico de barras. campo dice que columna se dibuja.
+  const grafico = (titulo, subtitulo, campo, tinte) => {
+    const max = Math.max(1, ...gente.map((n) => (resumen.conteo[n] || {})[campo] || 0));
+    const suma = gente.reduce((a, n) => a + ((resumen.conteo[n] || {})[campo] || 0), 0);
+    return (
+      <div style={caja}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 2 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 800, color: "#0F172A" }}>{titulo}</div>
+          <div style={{ fontSize: 12, color: "#64748B", fontVariantNumeric: "tabular-nums" }}>{suma} en total</div>
+        </div>
+        <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.5, marginBottom: 11 }}>{subtitulo}</div>
+        {["R4", "R3", "R2"].map((lv) => {
+          const del = gente.filter((n) => LEVEL[n] === lv);
+          return (
+            <div key={lv} style={{ marginBottom: 9 }}>
+              <div style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: 0.4, color: COLOR[lv].tx, marginBottom: 3 }}>{lv}</div>
+              {del.map((n) => {
+                const c = resumen.conteo[n];
+                const v = (c || {})[campo] || 0;
+                const abierta = abierto === n;
+                return (
+                  <div key={n}>
+                    <div
+                      onClick={() => setAbierto(abierta ? null : n)}
+                      title="Tocá para ver los días"
+                      style={{ display: "grid", gridTemplateColumns: "76px 1fr 28px", alignItems: "center", gap: 9, padding: "3px 0", cursor: "pointer" }}
+                    >
+                      <span style={{ fontSize: 12, fontWeight: 700, color: v ? "#334155" : "#94A3B8" }}>{n}</span>
+                      <span style={{ height: 15, background: "#F1F5F9", borderRadius: 4, overflow: "hidden" }}>
+                        <span style={{ display: "block", height: "100%", width: `${(v / max) * 100}%`, background: v ? tinte : "transparent", borderRadius: 4, transition: "width .2s" }} />
+                      </span>
+                      <span style={{ fontSize: 12.5, fontWeight: 800, textAlign: "right", color: v ? "#0F172A" : "#CBD5E1", fontVariantNumeric: "tabular-nums" }}>{v}</span>
+                    </div>
+                    {abierta && (
+                      <div style={{ margin: "2px 0 8px 85px", padding: "8px 11px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8 }}>
+                        {c ? (
+                          <>
+                            <div style={{ fontSize: 11, color: "#64748B", marginBottom: 5 }}>
+                              {c.total} en el mes · {c.hechas} ya {c.hechas === 1 ? "hecha" : "hechas"} · {c.pendientes} por hacer · {c.semana} de semana, {c.finde} de fin de semana{c.feriado ? `, ${c.feriado} en feriado` : ""}
+                            </div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                              {c.fechas.map((f) => (
+                                <span key={f.dia} style={{ fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 6, fontVariantNumeric: "tabular-nums", background: f.feriado ? "#FEE2E2" : isWeekendIdx(f.di) ? "#FEF3C7" : "#E2E8F0", color: f.feriado ? "#991B1B" : isWeekendIdx(f.di) ? "#92400E" : "#334155", opacity: f.pasada ? 0.5 : 1 }}>
+                                  {DAYS[f.di].slice(0, 3)} {f.dia}
+                                </span>
+                              ))}
+                            </div>
+                          </>
+                        ) : (
+                          <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic" }}>{resumen.fuera[n] || "sin guardias este mes"}</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
 
   return (
     <div>
-      <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#4C0519,#9F1239 60%,#BE185D)", color: "#fff" }}>
-        <span style={{ fontSize: 22 }}>🌙</span>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Guardias del mes</div>
-          <div style={{ fontSize: 10.5, opacity: 0.75 }}>Cuántas hizo cada uno, cuándo, y si el mes cierra</div>
-        </div>
-        <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={{ fontSize: 13, padding: "7px 10px", borderRadius: 8, border: "none", fontFamily: "inherit", color: "#0F172A", fontWeight: 700 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", fontWeight: 700 }}>
           {opciones.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
         </select>
+        {!cargando && resumen && ["R4", "R3", "R2"].map((lv) => {
+          const dif = resumen.porNivel[lv] - cupos[lv];
+          return (
+            <span key={lv} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, padding: "5px 10px", borderRadius: 8, background: dif === 0 ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${dif === 0 ? "#BBF7D0" : "#FECACA"}` }}>
+              <b style={{ fontSize: 9.5, color: "#fff", background: COLOR[lv].solid, padding: "1px 5px", borderRadius: 3 }}>{lv}</b>
+              <span style={{ fontWeight: 700, color: "#0F172A", fontVariantNumeric: "tabular-nums" }}>{resumen.porNivel[lv]}/{cupos[lv]}</span>
+              <span style={{ color: dif === 0 ? "#15803D" : "#B91C1C", fontWeight: 600 }}>{dif === 0 ? "exacto" : dif > 0 ? `+${dif}` : dif}</span>
+            </span>
+          );
+        })}
       </div>
 
-      {cargando && <div style={caja}><div style={{ fontSize: 12.5, color: "#64748B" }}>Leyendo las semanas del mes…</div></div>}
+      {cargando && <div style={caja}><span style={{ fontSize: 12.5, color: "#64748B" }}>Leyendo las semanas del mes…</span></div>}
 
       {!cargando && resumen && (
         <>
-          {/* Estado del mes: lo primero que hay que ver es si cierra o no. */}
-          <div style={{ ...caja, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {["R4", "R3", "R2"].map((lv) => {
-              const hecho = resumen.porNivel[lv], cupo = cupos[lv], dif = hecho - cupo;
-              const c = COLOR[lv];
-              return (
-                <div key={lv} style={{ flex: "1 1 150px", border: `1.5px solid ${dif === 0 ? "#BBF7D0" : "#FECACA"}`, background: dif === 0 ? "#F0FDF4" : "#FEF2F2", borderRadius: 10, padding: "9px 12px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontSize: 10, fontWeight: 800, color: "#fff", background: c.solid, padding: "2px 6px", borderRadius: 4 }}>{lv}</span>
-                    <span style={{ fontSize: 19, fontWeight: 800, color: "#0F172A", fontVariantNumeric: "tabular-nums" }}>{hecho}</span>
-                    <span style={{ fontSize: 12, color: "#64748B" }}>/ {cupo}</span>
-                  </div>
-                  <div style={{ fontSize: 11, marginTop: 3, fontWeight: 600, color: dif === 0 ? "#15803D" : "#B91C1C" }}>
-                    {dif === 0 ? "cupo exacto" : dif > 0 ? `${dif} de más` : `faltan ${-dif}`}
-                  </div>
-                </div>
-              );
-            })}
-            <div style={{ flex: "1 1 150px", border: "1.5px solid #E2E8F0", background: "#F8FAFC", borderRadius: 10, padding: "9px 12px" }}>
-              <div style={{ fontSize: 19, fontWeight: 800, color: "#0F172A", fontVariantNumeric: "tabular-nums" }}>{resumen.totalDias * 2}</div>
-              <div style={{ fontSize: 11, color: "#64748B", marginTop: 3 }}>lugares en el mes ({resumen.totalDias} días × 2)</div>
-            </div>
-          </div>
-
           {(resumen.huecos.length > 0 || resumen.sobrantes.length > 0) && (
             <div style={{ ...caja, background: "#FEF2F2", borderColor: "#FECACA" }}>
-              <div style={{ fontSize: 12.5, fontWeight: 800, color: "#B91C1C", marginBottom: 6 }}>Días que no cierran en dos</div>
-              {resumen.sobrantes.map((d) => (
-                <div key={"s" + d.fecha.getDate()} style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 2 }}>
-                  <b>{DAYS[d.di]} {d.fecha.getDate()}</b> — {d.guardia.length} personas: {d.guardia.join(", ")}
-                </div>
-              ))}
-              {resumen.huecos.map((d) => (
-                <div key={"h" + d.fecha.getDate()} style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 2 }}>
-                  <b>{DAYS[d.di]} {d.fecha.getDate()}</b> — {d.guardia.length === 0 ? "sin nadie" : `solo ${d.guardia.join(", ")}`}, {d.faltan === 1 ? "falta 1" : `faltan ${d.faltan}`}
+              <div style={{ fontSize: 12.5, fontWeight: 800, color: "#B91C1C", marginBottom: 5 }}>Días que no cierran en dos</div>
+              {[...resumen.sobrantes, ...resumen.huecos].map((x) => (
+                <div key={x.iso} style={{ fontSize: 12, color: "#7F1D1D" }}>
+                  <b>{DAYS[x.di]} {x.fecha.getDate()}</b> — {(x.d.deGuardia || []).length} {((x.d.deGuardia || []).length === 1 ? "persona" : "personas")}{(x.d.deGuardia || []).length ? `: ${(x.d.deGuardia || []).join(", ")}` : ""}
                 </div>
               ))}
             </div>
           )}
 
-          {/* El detalle por persona, agrupado por nivel. */}
-          {["JR", "R4", "R3", "R2"].map((lv) => {
-            const gente = ASIGNABLES.filter((n) => LEVEL[n] === lv);
-            if (!gente.length) return null;
-            const hayAlguno = gente.some((n) => resumen.conteo[n] || resumen.fuera[n]);
-            if (!hayAlguno) return null;
-            const cupo = cupos[lv];
-            const cuantos = gente.filter((n) => resumen.conteo[n]).length;
-            const ideal = cupo && cuantos ? Math.round((cupo / cuantos) * 10) / 10 : null;
-            return (
-              <div key={lv} style={caja}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 9 }}>
-                  <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: COLOR[lv].solid, padding: "3px 8px", borderRadius: 5 }}>{lv}</span>
-                  {ideal !== null && <span style={{ fontSize: 11.5, color: "#64748B" }}>parejo serían {ideal} por cabeza</span>}
-                </div>
-                {gente.map((n) => {
-                  const c = resumen.conteo[n];
-                  const motivo = resumen.fuera[n];
-                  const maxTot = Math.max(...ASIGNABLES.map((x) => (resumen.conteo[x] || { total: 0 }).total), 1);
-                  return (
-                    <div key={n} style={{ display: "grid", gridTemplateColumns: "104px 34px 1fr 150px", alignItems: "center", gap: 10, padding: "5px 0", borderTop: "1px solid #F1F5F9" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                        <Chip name={n} />
-                      </div>
-                      <div style={{ fontSize: 15, fontWeight: 800, textAlign: "right", color: c ? "#0F172A" : "#CBD5E1", fontVariantNumeric: "tabular-nums" }}>{c ? c.total : 0}</div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 2, height: 15 }}>
-                        {c ? (
-                          <>
-                            {c.semana > 0 && <div title={`${c.semana} de semana`} style={{ width: `${(c.semana / maxTot) * 100}%`, height: 13, background: "#334155", borderRadius: "3px 0 0 3px" }} />}
-                            {c.finde > 0 && <div title={`${c.finde} de fin de semana`} style={{ width: `${(c.finde / maxTot) * 100}%`, height: 13, background: "#F59E0B" }} />}
-                            {c.feriado > 0 && <div title={`${c.feriado} en feriado`} style={{ width: `${(c.feriado / maxTot) * 100}%`, height: 13, background: "#DC2626" }} />}
-                          </>
-                        ) : (
-                          <span style={{ fontSize: 11, color: "#94A3B8", fontStyle: "italic" }}>{motivo || "sin guardias este mes"}</span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 10.5, color: "#64748B", fontVariantNumeric: "tabular-nums" }}>
-                        {c ? `${c.semana} sem · ${c.finde} finde${c.feriado ? ` · ${c.feriado} fer` : ""}  ·  ${c.fechas.join(" ")}` : ""}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
+          {grafico("Guardias asignadas", "Todo lo que está cargado en el scheduler para este mes. Tocá una barra para ver los días.", "total", "#9F1239")}
+          {grafico("Guardias por realizar", `Las que quedan de hoy en adelante, al ${new Date().getDate()} de ${MONTHS[new Date().getMonth()].toLowerCase()}. Las que ya pasaron no cuentan.`, "pendientes", "#0E7490")}
 
           {Object.keys(resumen.externos).length > 0 && (
             <div style={caja}>
-              <div style={{ fontSize: 12.5, fontWeight: 800, color: "#0F172A", marginBottom: 6 }}>De fuera del plantel</div>
+              <div style={{ fontSize: 12.5, fontWeight: 800, color: "#0F172A", marginBottom: 5 }}>De fuera del plantel</div>
               {Object.entries(resumen.externos).map(([n, c]) => (
                 <div key={n} style={{ fontSize: 12, color: "#475569" }}>{n} — {c} {c === 1 ? "guardia" : "guardias"}</div>
               ))}
             </div>
           )}
 
-          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11, color: "#64748B", padding: "2px 4px" }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><i style={{ width: 11, height: 11, background: "#334155", borderRadius: 2, display: "inline-block" }} />día de semana</span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><i style={{ width: 11, height: 11, background: "#F59E0B", borderRadius: 2, display: "inline-block" }} />fin de semana</span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><i style={{ width: 11, height: 11, background: "#DC2626", borderRadius: 2, display: "inline-block" }} />feriado</span>
-            <span>Los números de la derecha son los días del mes en que le tocó.</span>
+          <div style={{ fontSize: 11, color: "#64748B", lineHeight: 1.55, padding: "0 2px" }}>
+            {detectadas.length === 0
+              ? "No hay ningún R2 ni R3 cubriendo sala en postguardia o en rotación este mes, así que no hay nada que registrar."
+              : `Se detectaron ${detectadas.length} coberturas de sala de R2 o R3 (postguardia o rotación) y quedaron registradas solas en la sub-pestaña de cobertura.`}
+            {sync && (sync.agregadas || sync.borradas) ? ` Recién se ${sync.agregadas ? `agregaron ${sync.agregadas}` : ""}${sync.agregadas && sync.borradas ? " y se " : ""}${sync.borradas ? `borraron ${sync.borradas} que ya no correspondían` : ""}.` : ""}
           </div>
         </>
       )}
