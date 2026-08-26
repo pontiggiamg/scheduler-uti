@@ -182,6 +182,19 @@ const SLOTS = [
 
 const SLOT_KEYS = SLOTS.map((s) => s.key);
 
+// "Skin" del jefe de residentes: degradado dorado con brillo diagonal, para
+// que su ficha se distinga al instante de las de los tres niveles. Se aplica
+// encima del estilo normal del chip, así el resto del layout no cambia.
+const SKIN_JR = {
+  background: "linear-gradient(115deg,#7C2D12 0%,#B45309 28%,#FDE68A 47%,#FFFBEB 52%,#FDE68A 57%,#B45309 78%,#7C2D12 100%)",
+  borderColor: "#FCD34D",
+  color: "#FFFBEB",
+  textShadow: "0 1px 2px rgba(69,26,3,.75)",
+  boxShadow: "0 0 0 1px rgba(252,211,77,.5), 0 2px 7px rgba(120,53,15,.45)",
+};
+
+
+
 /* ══════════════════ FECHAS ══════════════════ */
 
 function mondayOf(date) {
@@ -307,10 +320,70 @@ function normalizeRot(raw) {
         ? m.assignments.map((a) => ({ resident: a.resident, place: a.place, exterior: a.exterior === true }))
         : [];
       year.months[i].notes = typeof m.notes === "string" ? m.notes : "";
-      year.months[i].vacaciones = Array.isArray(m.vacaciones) ? m.vacaciones.filter((n) => LEVEL[n]) : [];
+      // Migración: antes era un array de nombres sueltos. Un nombre suelto
+      // pasa a ser "todo el mes", que es lo que significaba entonces.
+      year.months[i].vacaciones = Array.isArray(m.vacaciones)
+        ? m.vacaciones
+            .map((v) => (typeof v === "string" ? { nombre: v, tramo: "mes" } : { nombre: v.nombre, tramo: v.tramo || "mes" }))
+            .filter((v) => LEVEL[v.nombre])
+        : [];
     }
   }
   return year;
+}
+
+// Las semanas del mes, por criterio de mayoría: una semana "es" de este mes si
+// al menos 4 de sus 7 días caen en él. Hace falta porque las semanas cruzan
+// meses — septiembre 2026 arranca un martes, así que mirar solo el lunes
+// dejaría afuera la primera semana entera.
+function lunesDelMes(anio, mes) {
+  const diasDelMes = (l) => {
+    let n = 0;
+    for (let i = 0; i < DAYS.length; i++) { const d = shift(l, i); if (d.getMonth() === mes && d.getFullYear() === anio) n++; }
+    return n;
+  };
+  const out = [];
+  let cur = mondayOf(new Date(anio, mes, 1));
+  const fin = new Date(anio, mes + 1, 0);
+  while (cur <= fin) { if (diasDelMes(cur) >= 4) out.push(new Date(cur)); cur = shift(cur, 7); }
+  return out;
+}
+
+// Los R4 se toman el mes entero; los R2 y R3, tres semanas seguidas que pueden
+// arrancar la primera o la segunda semana del mes.
+const TRAMOS_VACACIONES = {
+  mes: { label: "Todo el mes", corto: "mes", semanas: null },
+  "1-3": { label: "1ª a 3ª semana", corto: "1ª-3ª", semanas: [0, 1, 2] },
+  "2-4": { label: "2ª a 4ª semana", corto: "2ª-4ª", semanas: [1, 2, 3] },
+};
+const tramoPorDefecto = (nombre) => (LEVEL[nombre] === "R4" ? "mes" : "1-3");
+
+// ¿Está esta persona de vacaciones ese día? Hay que mirar dos meses: el del
+// propio día y el de la semana a la que pertenece, porque no siempre coinciden
+// (el 31 de agosto cae en una semana que es de septiembre).
+function vacacionesEseDia(name, fecha, rotPorAnio) {
+  const candidatos = new Map();
+  candidatos.set(`${fecha.getFullYear()}-${fecha.getMonth()}`, [fecha.getFullYear(), fecha.getMonth()]);
+  const [ys, ms] = mesDeLaSemana(mondayOf(fecha)).split("-").map(Number);
+  candidatos.set(`${ys}-${ms - 1}`, [ys, ms - 1]);
+
+  for (const [anio, mes] of candidatos.values()) {
+    const rotAnio = rotPorAnio[anio];
+    if (!rotAnio) continue;
+    const datosMes = rotAnio.months[mes];
+    if (!datosMes) continue;
+    const v = (datosMes.vacaciones || []).find((x) => x.nombre === name);
+    if (!v) continue;
+    const tramo = TRAMOS_VACACIONES[v.tramo] || TRAMOS_VACACIONES.mes;
+    if (!tramo.semanas) {
+      if (fecha.getMonth() === mes && fecha.getFullYear() === anio) return tramo;
+      continue;
+    }
+    const lista = lunesDelMes(anio, mes);
+    const idx = lista.findIndex((l) => isoDate(l) === isoDate(mondayOf(fecha)));
+    if (idx >= 0 && tramo.semanas.includes(idx)) return tramo;
+  }
+  return null;
 }
 
 // ── No disponibilidad automática para sala ────────────────────────────────
@@ -321,14 +394,16 @@ function normalizeRot(raw) {
 // duplicado: así, si se corrige una rotación, todas las semanas se actualizan
 // solas y nunca queda un dato viejo contradiciendo al nuevo.
 // Devuelve el motivo (texto listo para mostrar) o null si está disponible.
-function motivoNoDisponible(name, date, rotAnio, diaLibre) {
+function motivoNoDisponible(name, date, rotPorAnio, diaLibre) {
   if (diaLibre) return `${name} tiene su día libre los ${diaLibre.toLowerCase()}`;
+  const vac = vacacionesEseDia(name, date, rotPorAnio);
+  if (vac) return `${name} está de vacaciones (${vac.label.toLowerCase()})`;
+  const rotAnio = rotPorAnio[date.getFullYear()];
   if (!rotAnio) return null;
   const mes = rotAnio.months[date.getMonth()];
   if (!mes) return null;
   const rot = (mes.assignments || []).find((a) => a.resident === name);
   if (rot) return `${name} está rotando en ${rot.place} este mes`;
-  if ((mes.vacaciones || []).includes(name)) return `${name} está de vacaciones este mes`;
   return null;
 }
 
@@ -871,7 +946,7 @@ function SchedulerView({ isAdmin }) {
   const motivoDe = useCallback((name, di) => {
     const fecha = shift(monday, di);
     const diaLibre = RESIDENTS.R4.includes(name) && week.diasLibresR4[name] === DAYS[di] ? week.diasLibresR4[name] : null;
-    return motivoNoDisponible(name, fecha, rotPorAnio[fecha.getFullYear()], diaLibre);
+    return motivoNoDisponible(name, fecha, rotPorAnio, diaLibre);
   }, [monday, week, rotPorAnio]);
 
   const pool = useCallback((di) => {
@@ -953,19 +1028,7 @@ function SchedulerView({ isAdmin }) {
     if (!isAdmin || aplicandoMes) return;
     const mes = monday.getMonth();
     const anio = monday.getFullYear();
-    // Semanas del mes por criterio de mayoría: una semana "es" de este mes si
-    // al menos 4 de sus 7 días caen en él. Hace falta porque las semanas cruzan
-    // meses — septiembre 2026 arranca un martes, así que si solo mirara el
-    // lunes se saltearía la primera semana entera.
-    const diasDelMes = (l) => {
-      let n = 0;
-      for (let i = 0; i < DAYS.length; i++) { const d = shift(l, i); if (d.getMonth() === mes && d.getFullYear() === anio) n++; }
-      return n;
-    };
-    const lunes = [];
-    let cur = mondayOf(new Date(anio, mes, 1));
-    const fin = new Date(anio, mes + 1, 0);
-    while (cur <= fin) { if (diasDelMes(cur) >= 4) lunes.push(new Date(cur)); cur = shift(cur, 7); }
+    const lunes = lunesDelMes(anio, mes);
     if (!confirm(`Se van a copiar los días libres de esta semana a las ${lunes.length} semanas de ${MONTHS[mes].toLowerCase()}. ¿Continuar?`)) return;
     setAplicandoMes(true);
     try {
@@ -1297,11 +1360,12 @@ function FeriadosEditor({ dates, week, onToggle, onClose }) {
 // si es residente, gris si es alguien de afuera (planta, otro servicio).
 const ChipGuardia = ({ name }) => {
   const c = esResidente(name) ? COLOR[LEVEL[name]] : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#94A3B8" };
+  const esJefe = LEVEL[name] === "JR";
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2.5px 6px", borderRadius: 6, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 600, fontSize: 10.5, lineHeight: 1.25 }}>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2.5px 6px", borderRadius: 6, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 600, fontSize: 10.5, lineHeight: 1.25, ...(esJefe ? SKIN_JR : {}) }}>
       {LEVEL[name] === "JR" && "👑"}
       {name}
-      <span style={{ fontSize: 7, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: c.solid, color: "#fff" }}>{esResidente(name) ? LEVEL[name] : "—"}</span>
+      <span style={{ fontSize: 7, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: esJefe ? "rgba(69,26,3,.55)" : c.solid, color: "#fff", textShadow: "none" }}>{esResidente(name) ? LEVEL[name] : "—"}</span>
     </span>
   );
 };
@@ -1434,7 +1498,16 @@ function RotacionesView({ isAdmin }) {
     if (!isAdmin) return;
     const next = clone(data);
     const cur = next.months[mi].vacaciones || [];
-    next.months[mi].vacaciones = cur.includes(nombre) ? cur.filter((n) => n !== nombre) : [...cur, nombre];
+    next.months[mi].vacaciones = cur.some((v) => v.nombre === nombre)
+      ? cur.filter((v) => v.nombre !== nombre)
+      : [...cur, { nombre, tramo: tramoPorDefecto(nombre) }];
+    save(next);
+  };
+
+  const setTramoVacaciones = (mi, nombre, tramo) => {
+    if (!isAdmin) return;
+    const next = clone(data);
+    next.months[mi].vacaciones = (next.months[mi].vacaciones || []).map((v) => (v.nombre === nombre ? { ...v, tramo } : v));
     save(next);
   };
 
@@ -1509,7 +1582,7 @@ function RotacionesView({ isAdmin }) {
                   {editing && editing.month === mi && editing.mode === "new" && (
                     <EditForm resident={editing.resident} place={editing.place} exterior={editing.exterior} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onExteriorChange={(v) => setEditing({ ...editing, exterior: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place, undefined, editing.exterior)} onCancel={() => setEditing(null)} />
                   )}
-                  <VacacionesPicker mes={mi} seleccion={month.vacaciones || []} isAdmin={isAdmin} onToggle={toggleVacaciones} />
+                  <VacacionesPicker mes={mi} seleccion={month.vacaciones || []} isAdmin={isAdmin} onToggle={toggleVacaciones} onTramo={setTramoVacaciones} />
                   <textarea value={month.notes} onChange={(e) => editNotes(mi, e.target.value)} placeholder="Detalle de vacaciones (ej: 3 primeras semanas)…" readOnly={!isAdmin} style={{ ...TEXTAREA, minHeight: 32, marginTop: 4, fontSize: 11, fontStyle: month.notes ? "normal" : "italic", color: month.notes ? "#92400E" : "#94A3B8", background: month.notes ? "#FFFBEB" : "#FAFAFA", borderColor: month.notes ? "#FDE68A" : "#E2E8F0", opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
                 </div>
               )}
@@ -1524,54 +1597,79 @@ function RotacionesView({ isAdmin }) {
 // Selector de quién está de vacaciones ese mes. Separado del texto libre de
 // notas: las notas son para el detalle humano ("3 primeras semanas"), esto es
 // el dato que la app usa para dejarlos fuera de sala automáticamente.
-function VacacionesPicker({ mes, seleccion, isAdmin, onToggle }) {
+function VacacionesPicker({ mes, seleccion, isAdmin, onToggle, onTramo }) {
   const [abierto, setAbierto] = useState(false);
   if (!isAdmin && seleccion.length === 0) return null;
+  const estaMarcado = (n) => seleccion.some((v) => v.nombre === n);
+
   return (
     <div style={{ marginTop: 6, paddingTop: 8, borderTop: "1px dashed #E2E8F0" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: seleccion.length || abierto ? 6 : 0 }}>
-        <div style={{ fontSize: 10, fontWeight: 800, color: "#94A3B8", letterSpacing: 0.3, textTransform: "uppercase" }}>🏖️ De vacaciones este mes</div>
-        {isAdmin && <button onClick={() => setAbierto((v) => !v)} style={{ background: "none", border: "none", color: "#64748B", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{abierto ? "Listo" : "✏️ Editar"}</button>}
+        <div style={{ fontSize: 10.5, fontWeight: 800, color: "#0F766E", letterSpacing: 0.3, textTransform: "uppercase" }}>🏖️ De vacaciones este mes</div>
+        {isAdmin && <button onClick={() => setAbierto((v) => !v)} style={{ background: "none", border: "none", color: "#0F766E", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{abierto ? "Listo" : "✏️ Editar"}</button>}
       </div>
 
       {!abierto && seleccion.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-          {seleccion.map((n) => {
-            const c = COLOR[LEVEL[n]] || COLOR.R2;
+          {seleccion.map((v) => {
+            const c = COLOR[LEVEL[v.nombre]] || COLOR.R2;
+            const t = TRAMOS_VACACIONES[v.tramo] || TRAMOS_VACACIONES.mes;
             return (
-              <span key={n} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 11 }}>
-                {n}
-                <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+              <span key={v.nombre} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 11 }}>
+                {v.nombre}
+                <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: c.solid, color: "#fff" }}>{LEVEL[v.nombre]}</span>
+                <span style={{ fontSize: 9.5, fontWeight: 700, color: "#0F766E", background: "#F0FDFA", border: "1px solid #99F6E4", borderRadius: 999, padding: "0 5px" }}>{t.corto}</span>
               </span>
             );
           })}
         </div>
       )}
       {!abierto && seleccion.length === 0 && isAdmin && (
-        <div style={{ fontSize: 10.5, color: "#CBD5E1", fontStyle: "italic" }}>Nadie marcado. Los que marques quedan fuera de sala todo el mes.</div>
+        <div style={{ fontSize: 11, color: "#64748B", fontStyle: "italic" }}>Nadie marcado. Los que marques quedan fuera de sala durante su tramo.</div>
       )}
 
       {abierto && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-          {ALL.map((n) => {
-            const on = seleccion.includes(n);
-            const c = COLOR[LEVEL[n]];
-            return (
-              <div key={n} onClick={() => onToggle(mes, n)} style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 7, background: on ? c.solid : "#F8FAFC", border: `1.5px solid ${on ? c.solid : "#E2E8F0"}`, color: on ? "#fff" : "#64748B", fontWeight: 600, fontSize: 11.5 }}>
-                {on && "✓ "}{n}
-                <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: on ? "rgba(255,255,255,.28)" : c.solid, color: "#fff" }}>{LEVEL[n]}</span>
-              </div>
-            );
-          })}
+        <div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: seleccion.length ? 10 : 0 }}>
+            {ALL.map((n) => {
+              const on = estaMarcado(n);
+              const c = COLOR[LEVEL[n]];
+              return (
+                <div key={n} onClick={() => onToggle(mes, n)} style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 7, background: on ? c.solid : "#F8FAFC", border: `1.5px solid ${on ? c.solid : "#E2E8F0"}`, color: on ? "#fff" : "#475569", fontWeight: 600, fontSize: 11.5 }}>
+                  {on && "✓ "}{n}
+                  <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 3px", borderRadius: 2.5, background: on ? "rgba(255,255,255,.28)" : c.solid, color: "#fff" }}>{LEVEL[n]}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Los R4 se toman el mes entero, así que no hace falta preguntarles
+              el tramo; a los R2 y R3 sí, porque son tres semanas seguidas que
+              pueden arrancar la primera o la segunda semana. */}
+          {seleccion.filter((v) => LEVEL[v.nombre] !== "R4").map((v) => (
+            <div key={v.nombre} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 5 }}>
+              <span style={{ fontSize: 11.5, fontWeight: 700, color: "#334155", minWidth: 62 }}>{v.nombre}</span>
+              {Object.entries(TRAMOS_VACACIONES).map(([clave, t]) => {
+                const on = (v.tramo || "1-3") === clave;
+                return (
+                  <button key={clave} onClick={() => onTramo(mes, v.nombre, clave)} style={{ background: on ? "#0F766E" : "#fff", color: on ? "#fff" : "#475569", border: `1.5px solid ${on ? "#0F766E" : "#E2E8F0"}`, borderRadius: 7, padding: "4px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+          {seleccion.some((v) => LEVEL[v.nombre] === "R4") && (
+            <div style={{ fontSize: 10.5, color: "#64748B", marginTop: 4 }}>
+              Los R4 marcados se toman el mes completo.
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-// El tilde "fuera del país" no es cosmético: es lo que distingue a alguien que
-// rota en Colombia o Europa —y por lo tanto no puede hacer guardias acá— de
-// alguien que rota en Fernandez o el Italiano, que sigue haciéndolas.
 const EditForm = ({ resident, place, exterior, onResChange, onPlaceChange, onExteriorChange, onSave, onCancel }) => (
   <div style={{ display: "flex", gap: 4, alignItems: "center", padding: "4px 0", flexWrap: "wrap" }}>
     <select value={resident} onChange={(e) => onResChange(e.target.value)} style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", background: "#fff", color: "#0F172A" }}>
@@ -3726,10 +3824,10 @@ function ChipPersona({ persona, onPick }) {
   const esResidente = persona.tipo === "residente";
   const c = esResidente ? (COLOR[LEVEL[persona.key]] || COLOR.R2) : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#94A3B8" };
   return (
-    <button onClick={() => onPick(persona)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>
+    <button onClick={() => onPick(persona)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 999, background: c.bg, border: `1.5px solid ${c.bd}`, color: c.tx, fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", ...(esResidente && LEVEL[persona.key] === "JR" ? SKIN_JR : {}) }}>
       {esResidente && LEVEL[persona.key] === "JR" && "👑"}
       {persona.nombre}
-      <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: c.solid, color: "#fff" }}>{esResidente ? LEVEL[persona.key] : "—"}</span>
+      <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: esResidente && LEVEL[persona.key] === "JR" ? "rgba(69,26,3,.55)" : c.solid, color: "#fff", textShadow: "none" }}>{esResidente ? LEVEL[persona.key] : "—"}</span>
     </button>
   );
 }
@@ -3807,11 +3905,13 @@ const TOPE_DIA_LIBRE = { Lunes: 1, Miércoles: 2, Viernes: 2 };
 // la sala: rotar en Fernandez o en otro servicio de CABA NO saca a nadie de las
 // guardias (las siguen haciendo en el Británico, aunque menos). Solo quedan
 // afuera los que están fuera del país o de vacaciones.
-function motivoNoPuedeGuardia(name, date, rotAnio) {
+function motivoNoPuedeGuardia(name, date, rotPorAnio) {
+  const vac = vacacionesEseDia(name, date, rotPorAnio);
+  if (vac) return `${name} está de vacaciones (${vac.label.toLowerCase()})`;
+  const rotAnio = rotPorAnio[date.getFullYear()];
   if (!rotAnio) return null;
   const mes = rotAnio.months[date.getMonth()];
   if (!mes) return null;
-  if ((mes.vacaciones || []).includes(name)) return `${name} está de vacaciones`;
   const rot = (mes.assignments || []).find((a) => a.resident === name);
   if (rot && rot.exterior) return `${name} está rotando fuera del país (${rot.place})`;
   return null;
@@ -3844,7 +3944,6 @@ function analizarSemana(week, monday, rotPorAnio, equiposMes) {
   for (let di = 0; di < DAYS.length; di++) {
     const d = week.days[di];
     const fecha = shift(monday, di);
-    const rotAnio = rotPorAnio[fecha.getFullYear()];
     const finde = isWeekendIdx(di);
     const feriado = d.feriado;
     const sinCamas = finde || feriado;
@@ -3904,7 +4003,7 @@ function analizarSemana(week, monday, rotPorAnio, equiposMes) {
         agregar(duras, di, `${r4.join(", ")} (R4) de guardia en ${feriado ? "un feriado" : "fin de semana"} — los R4 no hacen`);
       }
       residentesGuardia.forEach((n) => {
-        const m = motivoNoPuedeGuardia(n, fecha, rotAnio);
+        const m = motivoNoPuedeGuardia(n, fecha, rotPorAnio);
         if (m) agregar(duras, di, `${m} y está puesto de guardia`);
       });
     }
@@ -4201,11 +4300,12 @@ const Cell = ({ children, onClick, tint, ring, pad = 4, lastCol, lastRow, classN
 
 function Chip({ name, selected, onPick, onRemove, alerta }) {
   const lv = LEVEL[name]; const c = COLOR[lv];
-  return (<div onClick={onPick} title={alerta || undefined} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3.5px 6px 3.5px 8px", borderRadius: 7, background: selected ? c.solid : c.bg, border: alerta && !selected ? "1.5px solid #F59E0B" : `1.5px solid ${selected ? c.solid : c.bd}`, color: selected ? "#fff" : c.tx, fontWeight: 600, fontSize: 11.5, cursor: "pointer", userSelect: "none", boxShadow: selected ? `0 0 0 3px ${c.solid}33` : alerta ? "0 0 0 2px #FDE68A" : "none", transition: "all .12s" }}>
+  const esJefe = lv === "JR";
+  return (<div onClick={onPick} title={alerta || undefined} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3.5px 6px 3.5px 8px", borderRadius: 7, background: selected ? c.solid : c.bg, border: alerta && !selected ? "1.5px solid #F59E0B" : `1.5px solid ${selected ? c.solid : c.bd}`, color: selected ? "#fff" : c.tx, fontWeight: 600, fontSize: 11.5, cursor: "pointer", userSelect: "none", boxShadow: selected ? `0 0 0 3px ${c.solid}33` : alerta ? "0 0 0 2px #FDE68A" : "none", transition: "all .12s", ...(esJefe && !selected ? SKIN_JR : {}) }}>
     {alerta && <span title={alerta} style={{ fontSize: 10, lineHeight: 1, cursor: "help" }}>⚠️</span>}
     {lv === "JR" && <span style={{ fontSize: 10, lineHeight: 1 }}>👑</span>}
     <span style={{ flex: 1, lineHeight: 1.3 }}>{name}</span>
-    <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 3.5px", borderRadius: 3, background: selected ? "rgba(255,255,255,.28)" : c.solid, color: "#fff", letterSpacing: 0.2 }}>{lv}</span>
+    <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 3.5px", borderRadius: 3, background: esJefe && !selected ? "rgba(69,26,3,.55)" : selected ? "rgba(255,255,255,.28)" : c.solid, color: "#fff", letterSpacing: 0.2, textShadow: "none" }}>{lv}</span>
     {onRemove && <span onClick={onRemove} title="Quitar" style={{ fontSize: 11, lineHeight: 1, opacity: 0.45, cursor: "pointer", padding: "0 1px" }}>×</span>}
   </div>);
 }
