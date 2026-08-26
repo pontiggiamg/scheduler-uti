@@ -27,7 +27,7 @@ const TAB_META = {
   registro: { icon: "📋", label: "Registro" },
   hoy: { icon: "📱", label: "¿Quién está hoy?" },
   accesos: { icon: "🔐", label: "Accesos", soloAdmin: true },
-  impresiones: { icon: "🖨️", label: "Impresiones" },
+  impresiones: { icon: "🖨️", label: "Ver cronogramas, guardias e Imprimir" },
 };
 
 // Ruta pública sin login para compartir a otros servicios del hospital: entra
@@ -143,11 +143,18 @@ const MODULOS_CLASE = ["Fisiología", "Shock", "Respiratorio", "Medio Interno", 
 // nada guardado; el admin puede arrastrarlas para reordenarlas y ese orden
 // se guarda compartido para todos (mismo doc que el orden de las pestañas
 // principales, campo distinto).
-const DEFAULT_REGISTRO_SUB_ORDER = ["tarde", "falta", "guardia", "guardias_mes", "procedimientos", "cobertura", "clases"];
+// Las estadísticas del servicio (guardias hechas y cobertura de sala) arrancan
+// en septiembre de 2026. Lo anterior existió mientras se armaba la app y no
+// representa cómo funciona el servicio, así que no se cuenta ni se muestra.
+// El artículo de la semana, los procedimientos y el calendario académico NO se
+// cortan: ahí el historial completo sí sirve.
+const INICIO_ESTADISTICAS = "2026-09-01";
+const MES_INICIO_ESTADISTICAS = { anio: 2026, mes: 8 };
+
+const DEFAULT_REGISTRO_SUB_ORDER = ["tarde", "falta", "guardias_mes", "procedimientos", "cobertura", "clases"];
 const REGISTRO_SUB_META = {
   tarde: { ...EVENTO_TIPOS.tarde },
   falta: { ...EVENTO_TIPOS.falta },
-  guardia: { ...EVENTO_TIPOS.guardia },
   guardias_mes: { label: "Guardias por residente", icon: "🌙", color: "#9F1239", bg: "#FFF1F2", bd: "#FECDD3" },
   procedimientos: { label: "Procedimientos", icon: "🩺", color: "#0F766E", bg: "#F0FDFA", bd: "#99F6E4" },
   cobertura: { label: "R2 y R3 que cubrieron sala post guardia o en rotación", icon: "🔁", color: "#1D4ED8", bg: "#EFF6FF", bd: "#BFDBFE" },
@@ -3072,7 +3079,9 @@ function CoberturaSection({ cobertura, isAdmin, user }) {
   const [saving, setSaving] = useState(false);
   const [confirmId, setConfirmId] = useState(null);
 
-  const lista = useMemo(() => [...cobertura].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")), [cobertura]);
+  // Igual que las guardias: no se muestra ni se cuenta nada anterior a
+  // septiembre de 2026.
+  const lista = useMemo(() => cobertura.filter((e) => (e.fecha || "") >= INICIO_ESTADISTICAS).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")), [cobertura]);
   const totales = useMemo(() => {
     const t = {};
     lista.forEach((e) => { t[e.residente] = (t[e.residente] || 0) + 1; });
@@ -4080,11 +4089,48 @@ function hoyTexto() {
   return `${h.getDate()} de ${MONTHS[h.getMonth()].toLowerCase()} de ${h.getFullYear()}`;
 }
 
+// Vista previa de una hoja. Es el mismo HTML que sale por la impresora, metido
+// en un iframe y escalado para que entre en el ancho que haya. Se usa un
+// iframe y no un div para que el CSS de la hoja no se mezcle con el de la app.
+function HojaPreview({ html, alto = 730 }) {
+  const cont = useRef(null);
+  const [k, setK] = useState(1);
+  const ANCHO = 1040;
+  useEffect(() => {
+    const medir = () => {
+      const w = cont.current ? cont.current.clientWidth : ANCHO;
+      setK(Math.min(1, w / ANCHO));
+    };
+    medir();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(medir) : null;
+    if (ro && cont.current) ro.observe(cont.current);
+    window.addEventListener("resize", medir);
+    return () => { if (ro) ro.disconnect(); window.removeEventListener("resize", medir); };
+  }, []);
+  return (
+    <div ref={cont} style={{ width: "100%", height: alto * k, overflow: "hidden", borderRadius: 10, border: "1px solid #E2E8F0", background: "#fff" }}>
+      {html
+        ? <iframe title="vista previa" srcDoc={html} sandbox="allow-same-origin"
+            style={{ width: ANCHO, height: alto, border: "none", transform: `scale(${k})`, transformOrigin: "top left", display: "block" }} />
+        : <div style={{ padding: 26, fontSize: 12.5, color: "#64748B" }}>Cargando el cronograma…</div>}
+    </div>
+  );
+}
+
 function ImpresionesView({ user, isAdmin }) {
-  const [mesSel, setMesSel] = useState(() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, "0")}`; });
+  const mesDeHoy = () => {
+    const h = new Date();
+    const a = Math.max(0, (h.getFullYear() - MES_INICIO_ESTADISTICAS.anio) * 12 + h.getMonth() - MES_INICIO_ESTADISTICAS.mes);
+    const d = new Date(MES_INICIO_ESTADISTICAS.anio, MES_INICIO_ESTADISTICAS.mes + a, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  };
+  const [mesSel, setMesSel] = useState(mesDeHoy);
+  const [mesOtro, setMesOtro] = useState(mesDeHoy);
   const [semanaSel, setSemanaSel] = useState(() => isoDate(mondayOf(new Date())));
+  const [queOtro, setQueOtro] = useState("salas");
+  const [bnOtro, setBnOtro] = useState(true);
   const [borradorPedido, setBorradorPedido] = useState(false);
-  const [bn, setBn] = useState(true);
+  const [vista, setVista] = useState(false); // false = color en pantalla
   // Solo la jefatura puede emitir una hoja con sello DEFINITIVO. Para todos los
   // demás la hoja sale marcada como borrador, con marca de agua y con su mail
   // impreso al pie, así una copia que circule siempre se puede rastrear.
@@ -4092,109 +4138,157 @@ function ImpresionesView({ user, isAdmin }) {
   const emisor = user ? [user.displayName, user.email].filter(Boolean).join(" · ") : "";
   const [generando, setGenerando] = useState(false);
   const [aviso, setAviso] = useState(null);
+  const [datosMes, setDatosMes] = useState(null);
 
   const [y, m] = mesSel.split("-").map(Number);
   const anio = y, mes = m - 1;
 
-  const leerRot = async (anios) => {
-    const out = {};
-    for (const a of anios) {
-      const snap = await getDoc(doc(db, "scheduler", `rotaciones-${a}`));
-      out[a] = snap.exists() ? normalizeRot(snap.data()) : emptyRotYear();
+  // Trae todo lo que necesita una hoja del mes: las semanas que lo tocan, las
+  // rotaciones del año y los equipos por UTI.
+  const cargarMes = async (a, ms) => {
+    const lunes = lunesQueTocanElMes(a, ms);
+    const semanas = {};
+    for (const l of lunes) {
+      const snap = await getDoc(doc(db, "scheduler", `week-${isoDate(l)}`));
+      semanas[isoDate(l)] = snap.exists() ? normalize(snap.data()) : emptyWeek();
     }
-    return out;
+    const rotSnap = await getDoc(doc(db, "scheduler", `rotaciones-${a}`));
+    const rot = rotSnap.exists() ? normalizeRot(rotSnap.data()) : emptyRotYear();
+    const eqSnap = await getDoc(doc(db, "scheduler", "equipos"));
+    const clave = `${a}-${String(ms + 1).padStart(2, "0")}`;
+    const equipos = (eqSnap.exists() ? eqSnap.data() : {})[clave] || {};
+    return { anio: a, mes: ms, lunes, semanas, rot, equipos };
   };
 
-  const generarMes = async (tipo) => {
+  // Los dos cronogramas de arriba se muestran solos al entrar y se rearman
+  // cada vez que se cambia el mes.
+  useEffect(() => {
+    let vivo = true;
+    setDatosMes(null); setAviso(null);
+    cargarMes(anio, mes)
+      .then((d) => { if (vivo) setDatosMes(d); })
+      .catch((e) => { console.error(e); if (vivo) setAviso("No se pudieron leer los cronogramas de este mes."); });
+    return () => { vivo = false; };
+  }, [anio, mes]);
+
+  const htmlSalas = useMemo(() => datosMes && htmlMes({ ...datosMes, tipo: "salas", borrador, emisor, bn: vista }), [datosMes, borrador, emisor, vista]);
+  const htmlGuardias = useMemo(() => datosMes && htmlMes({ ...datosMes, tipo: "guardias", borrador, emisor, bn: vista }), [datosMes, borrador, emisor, vista]);
+
+  // Imprimir lo que se está viendo: se rearma la hoja con el color pedido y se
+  // abre en una pestaña nueva con el diálogo de impresión.
+  const imprimirEsto = (tipo, bn) => {
+    if (!datosMes) return;
+    abrirBorrador({ ...datosMes, tipo, borrador, emisor, bn });
+  };
+
+  const generarOtro = async () => {
     setGenerando(true); setAviso(null);
     try {
-      const lunes = lunesQueTocanElMes(anio, mes);
-      const semanas = {};
-      for (const l of lunes) {
-        const snap = await getDoc(doc(db, "scheduler", `week-${isoDate(l)}`));
-        semanas[isoDate(l)] = snap.exists() ? normalize(snap.data()) : emptyWeek();
+      if (queOtro === "semana") {
+        const lunes = new Date(`${semanaSel}T00:00:00`);
+        const snap = await getDoc(doc(db, "scheduler", `week-${isoDate(lunes)}`));
+        const week = snap.exists() ? normalize(snap.data()) : emptyWeek();
+        const eqSnap = await getDoc(doc(db, "scheduler", "equipos"));
+        const equipos = (eqSnap.exists() ? eqSnap.data() : {})[mesDeLaSemana(lunes)] || {};
+        abrirSemana({ lunes, week, equipos, borrador, emisor, bn: bnOtro });
+      } else {
+        const [a, ms] = mesOtro.split("-").map(Number);
+        const d = await cargarMes(a, ms - 1);
+        abrirBorrador({ ...d, tipo: queOtro, borrador, emisor, bn: bnOtro });
       }
-      const rot = (await leerRot([anio]))[anio];
-      const eqSnap = await getDoc(doc(db, "scheduler", "equipos"));
-      const equipos = (eqSnap.exists() ? eqSnap.data() : {})[mesSel] || {};
-      abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador, emisor, bn });
     } catch (e) {
-      console.error(e); setAviso("No se pudo generar la hoja del mes.");
+      console.error(e); setAviso("No se pudo generar la hoja.");
     }
     setGenerando(false);
   };
 
-  const generarSemana = async () => {
-    setGenerando(true); setAviso(null);
-    try {
-      const lunes = new Date(`${semanaSel}T00:00:00`);
-      const snap = await getDoc(doc(db, "scheduler", `week-${isoDate(lunes)}`));
-      const week = snap.exists() ? normalize(snap.data()) : emptyWeek();
-      const eqSnap = await getDoc(doc(db, "scheduler", "equipos"));
-      const equipos = (eqSnap.exists() ? eqSnap.data() : {})[mesDeLaSemana(lunes)] || {};
-      abrirSemana({ lunes, week, equipos, borrador, emisor, bn });
-    } catch (e) {
-      console.error(e); setAviso("No se pudo generar la hoja de la semana.");
-    }
-    setGenerando(false);
-  };
-
+  // Nada anterior a septiembre de 2026: antes de eso el scheduler no estaba
+  // cargado y una hoja de esos meses saldría vacía.
   const opcionesMes = useMemo(() => {
     const hoy = new Date();
-    return Array.from({ length: 8 }, (_, i) => {
-      const d = new Date(hoy.getFullYear(), hoy.getMonth() - 2 + i, 1);
-      return { clave: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: `${MONTHS[d.getMonth()]} ${d.getFullYear()}` };
-    });
+    const desde = new Date(MES_INICIO_ESTADISTICAS.anio, MES_INICIO_ESTADISTICAS.mes, 1);
+    const hasta = new Date(hoy.getFullYear(), hoy.getMonth() + 5, 1);
+    const out = [];
+    for (const d = new Date(desde); d <= hasta; d.setMonth(d.getMonth() + 1)) {
+      out.push({ clave: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: `${MONTHS[d.getMonth()]} ${d.getFullYear()}` });
+    }
+    return out;
   }, []);
 
-  // Doce semanas alrededor de hoy: cuatro atrás y ocho adelante.
+  // Las semanas de la lista arrancan también en septiembre de 2026.
   const opcionesSemana = useMemo(() => {
     const base = mondayOf(new Date());
-    return Array.from({ length: 13 }, (_, i) => {
-      const l = shift(base, (i - 4) * 7);
+    const piso = mondayOf(new Date(MES_INICIO_ESTADISTICAS.anio, MES_INICIO_ESTADISTICAS.mes, 1));
+    const estaSemana = isoDate(base);
+    const out = [];
+    for (let i = -12; i <= 20; i++) {
+      const l = shift(base, i * 7);
+      if (isoDate(l) < isoDate(piso)) continue;
       const f = shift(l, 6);
       const mismo = l.getMonth() === f.getMonth();
       const label = mismo
-        ? `${l.getDate()} al ${f.getDate()} de ${MONTHS[l.getMonth()].toLowerCase()}`
-        : `${l.getDate()} de ${MONTHS[l.getMonth()].toLowerCase()} al ${f.getDate()} de ${MONTHS[f.getMonth()].toLowerCase()}`;
-      return { clave: isoDate(l), label: label + (i === 4 ? "  ·  esta semana" : "") };
-    });
+        ? `${l.getDate()} al ${f.getDate()} de ${MONTHS[l.getMonth()].toLowerCase()} ${f.getFullYear()}`
+        : `${l.getDate()} de ${MONTHS[l.getMonth()].toLowerCase()} al ${f.getDate()} de ${MONTHS[f.getMonth()].toLowerCase()} ${f.getFullYear()}`;
+      out.push({ clave: isoDate(l), label: label + (isoDate(l) === estaSemana ? "  ·  esta semana" : "") });
+    }
+    return out;
   }, []);
 
-  const btn = (bg) => ({ background: bg, color: "#fff", border: "none", borderRadius: 9, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: generando ? "default" : "pointer", fontFamily: "inherit", opacity: generando ? 0.6 : 1 });
+  const btn = (bg) => ({ background: bg, color: "#fff", border: "none", borderRadius: 9, padding: "9px 16px", fontSize: 12.5, fontWeight: 700, cursor: generando ? "default" : "pointer", fontFamily: "inherit", opacity: generando ? 0.6 : 1 });
   const caja = { background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 16, marginBottom: 12 };
   const sel = { fontSize: 13, padding: "8px 10px", borderRadius: 8, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" };
   const rotulo = { fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 };
+
+  const bloquePrevia = (titulo, bajada, color, tipo, html, alto) => (
+    <div style={caja}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 11 }}>
+        <div style={{ flex: "1 1 300px" }}>
+          <div style={{ fontSize: 13.5, fontWeight: 800, color, marginBottom: 2 }}>{titulo}</div>
+          <div style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.5 }}>{bajada}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={() => imprimirEsto(tipo, true)} disabled={!datosMes} style={{ ...btn("#0F172A"), opacity: datosMes ? 1 : 0.5 }}>◻︎ Imprimir en blanco y negro</button>
+          <button onClick={() => imprimirEsto(tipo, false)} disabled={!datosMes} style={{ ...btn(color), opacity: datosMes ? 1 : 0.5 }}>🎨 Imprimir en color</button>
+        </div>
+      </div>
+      <HojaPreview html={html} alto={alto} />
+    </div>
+  );
 
   return (
     <div>
       <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
         <span style={{ fontSize: 22 }}>🖨️</span>
         <div>
-          <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Impresiones</div>
-          <div style={{ fontSize: 10.5, opacity: 0.7 }}>Hojas listas para imprimir y repartir</div>
+          <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Ver cronogramas, guardias e imprimir</div>
+          <div style={{ fontSize: 10.5, opacity: 0.7 }}>El mes en pantalla, tal cual sale por la impresora</div>
         </div>
       </div>
 
-      {/* Estas dos opciones valen para las tres hojas de abajo. */}
+      {/* Mes que se está mirando, sello y color de la pantalla. */}
       <div style={{ ...caja, background: borrador ? "#FEF2F2" : "#fff", borderColor: borrador ? "#FECACA" : "#E2E8F0" }}>
-        <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
 
-          <div style={{ flex: "1 1 260px" }}>
-            <div style={{ ...rotulo, marginBottom: 6 }}>CÓMO SE VE</div>
+          <div style={{ flex: "0 0 auto" }}>
+            <div style={rotulo}>MES QUE SE VE</div>
+            <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={{ ...sel, fontWeight: 700 }}>
+              {opcionesMes.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
+            </select>
+          </div>
+
+          <div style={{ flex: "0 0 auto" }}>
+            <div style={rotulo}>CÓMO SE VE EN PANTALLA</div>
             <div style={{ display: "inline-flex", borderRadius: 9, border: "1px solid #E2E8F0", overflow: "hidden" }}>
-              {[{ v: true, t: "◻︎ Blanco y negro" }, { v: false, t: "🎨 Color" }].map((o) => (
-                <button key={String(o.v)} onClick={() => setBn(o.v)} style={{ border: "none", padding: "8px 14px", fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", background: bn === o.v ? "#0F172A" : "#fff", color: bn === o.v ? "#fff" : "#475569" }}>{o.t}</button>
+              {[{ v: false, t: "🎨 Color" }, { v: true, t: "◻︎ Blanco y negro" }].map((o) => (
+                <button key={String(o.v)} onClick={() => setVista(o.v)} style={{ border: "none", padding: "8px 13px", fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", background: vista === o.v ? "#0F172A" : "#fff", color: vista === o.v ? "#fff" : "#475569" }}>{o.t}</button>
               ))}
             </div>
-            <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.5, marginTop: 7 }}>
-              {bn
-                ? "Para la impresora del servicio. El nivel se distingue por el borde del chip —R4 grueso, R3 fino, R2 punteado— así que no hace falta color para leerlo."
-                : "Para mandar por WhatsApp o mirar en el celular. Cada nivel con su color, como en la app."}
+            <div style={{ fontSize: 10.5, color: "#64748B", marginTop: 5, maxWidth: 250, lineHeight: 1.45 }}>
+              Es solo para mirar. Al imprimir elegís el color en cada cronograma.
             </div>
           </div>
 
-          <div style={{ flex: "1 1 300px", borderLeft: "1px solid #E2E8F0", paddingLeft: 20 }}>
+          <div style={{ flex: "1 1 280px", borderLeft: "1px solid #E2E8F0", paddingLeft: 18 }}>
             <div style={{ ...rotulo, marginBottom: 6 }}>SELLO</div>
             {isAdmin ? (
               <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
@@ -4219,61 +4313,67 @@ function ImpresionesView({ user, isAdmin }) {
         </div>
       </div>
 
-      {/* ── Semana suelta ── */}
-      <div style={caja}>
-        <div style={{ fontSize: 13.5, fontWeight: 800, color: "#0F172A", marginBottom: 3 }}>📅 Descargar semana específica</div>
-        <div style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.55, marginBottom: 13 }}>
-          La misma grilla de la pestaña Semana, con las tres salas, postguardia, de guardia, quién está afuera, los días libres de los R4 y las observaciones. Una hoja A4 horizontal.
-        </div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
-          <div>
-            <div style={rotulo}>SEMANA</div>
-            <select value={semanaSel} onChange={(e) => setSemanaSel(e.target.value)} style={sel}>
-              {opcionesSemana.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
-            </select>
-          </div>
-          <button onClick={generarSemana} disabled={generando} style={btn("#0E7490")}>
-            {generando ? "Armando…" : "📅 Imprimir la semana"}
-          </button>
-        </div>
-      </div>
-
-      {/* ── Mes completo ── */}
-      <div style={caja}>
-        <div style={{ fontSize: 13.5, fontWeight: 800, color: "#0F172A", marginBottom: 3 }}>🗓️ El mes completo</div>
-        <div style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.55, marginBottom: 13 }}>
-          Dos formatos, los dos en una hoja A4 horizontal. Se abre el diálogo de impresión — elegí "Guardar como PDF" si querés el archivo.
-        </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-          <div style={{ flex: "1 1 240px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 13px" }}>
-            <div style={{ fontSize: 12, fontWeight: 800, color: "#0F172A", marginBottom: 3 }}>🏥 Cobertura de Salas del Mes</div>
-            <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.5 }}>Todo: las tres salas día por día, postguardia, guardia, equipos por UTI, días libres de los R4 y quién está afuera por rotación o vacaciones. Es el cronograma completo de trabajo.</div>
-          </div>
-          <div style={{ flex: "1 1 240px", background: "#FFF1F2", border: "1px solid #FECDD3", borderRadius: 10, padding: "10px 13px" }}>
-            <div style={{ fontSize: 12, fontWeight: 800, color: "#9F1239", marginBottom: 3 }}>🌙 Guardias del Mes</div>
-            <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.5 }}>Solo quién está de guardia cada día, en grande. Suma el conteo por persona y por nivel. Es el que conviene pegar en la pared.</div>
-          </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
-          <div>
-            <div style={rotulo}>MES</div>
-            <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={sel}>
-              {opcionesMes.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
-            </select>
-          </div>
-          <button onClick={() => generarMes("salas")} disabled={generando} style={btn("#0F172A")}>
-            {generando ? "Armando…" : "🏥 Cobertura de Salas del Mes"}
-          </button>
-          <button onClick={() => generarMes("guardias")} disabled={generando} style={btn("#9F1239")}>
-            {generando ? "Armando…" : "🌙 Guardias del Mes"}
-          </button>
-        </div>
-      </div>
-
       {aviso && <Banner tone="warn">{aviso}</Banner>}
 
+      {/* ── Los dos cronogramas del mes, a la vista ── */}
+      {bloquePrevia(
+        `🏥 Cobertura de salas · ${MONTHS[mes]} ${anio}`,
+        "Las tres salas día por día, postguardia, guardia, equipos por UTI, días libres de los R4 y quién está afuera por rotación o vacaciones.",
+        "#0F172A", "salas", htmlSalas, 760)}
+
+      {bloquePrevia(
+        `🌙 Guardias · ${MONTHS[mes]} ${anio}`,
+        "Solo quién está de guardia cada día, en grande, con el conteo por persona y por nivel. Es el que conviene pegar en la pared.",
+        "#9F1239", "guardias", htmlGuardias, 760)}
+
+      {/* ── Cualquier otro cronograma ── */}
+      <div style={caja}>
+        <div style={{ fontSize: 13.5, fontWeight: 800, color: "#0F172A", marginBottom: 3 }}>⬇️ Descargar otro cronograma</div>
+        <div style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.55, marginBottom: 13 }}>
+          Cualquier mes desde septiembre de 2026, o una semana suelta con la misma grilla de la pestaña Semana. Se abre el diálogo de impresión: elegí "Guardar como PDF" en Destino si querés el archivo.
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <div style={rotulo}>QUÉ</div>
+            <select value={queOtro} onChange={(e) => setQueOtro(e.target.value)} style={sel}>
+              <option value="salas">🏥 Cobertura de salas del mes</option>
+              <option value="guardias">🌙 Guardias del mes</option>
+              <option value="semana">📅 Una semana</option>
+            </select>
+          </div>
+          {queOtro === "semana" ? (
+            <div>
+              <div style={rotulo}>SEMANA</div>
+              <select value={semanaSel} onChange={(e) => setSemanaSel(e.target.value)} style={sel}>
+                {opcionesSemana.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
+              </select>
+            </div>
+          ) : (
+            <div>
+              <div style={rotulo}>MES</div>
+              <select value={mesOtro} onChange={(e) => setMesOtro(e.target.value)} style={sel}>
+                {opcionesMes.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
+              </select>
+            </div>
+          )}
+          <div>
+            <div style={rotulo}>COLOR</div>
+            <select value={bnOtro ? "bn" : "color"} onChange={(e) => setBnOtro(e.target.value === "bn")} style={sel}>
+              <option value="bn">◻︎ Blanco y negro</option>
+              <option value="color">🎨 Color</option>
+            </select>
+          </div>
+          <button onClick={generarOtro} disabled={generando} style={btn("#0E7490")}>
+            {generando ? "Armando…" : "⬇️ Generar"}
+          </button>
+        </div>
+        <div style={{ fontSize: 11, color: "#64748B", lineHeight: 1.5, marginTop: 11 }}>
+          En blanco y negro el nivel se distingue por el borde del chip —R4 grueso, R3 fino, R2 punteado—, así que no hace falta color para leerlo.
+        </div>
+      </div>
+
       <div style={{ fontSize: 11, color: "#64748B", lineHeight: 1.55, padding: "4px 2px" }}>
-        Las hojas se abren en una pestaña nueva y se dispara el diálogo de impresión. Para guardar el PDF, elegí "Guardar como PDF" en Destino. Todo lo que se emita queda firmado con {emisor ? <b>{emisor}</b> : "la cuenta con la que entraste"}.
+        Todo lo que se emita queda firmado con {emisor ? <b>{emisor}</b> : "la cuenta con la que entraste"}.
       </div>
     </div>
   );
@@ -4401,9 +4501,19 @@ function ajustarYImprimir(win, maxZoom) {
   else setTimeout(hacerlo, 400);
 }
 
-function abrirSemana({ lunes, week, equipos, borrador, emisor, bn }) {
+// Las hojas se arman como un documento HTML completo y recién después se
+// deciden a dónde va: a una ventana nueva para imprimir, o a un iframe para
+// verlo en pantalla dentro de la app. Así lo que se ve es exactamente lo que
+// sale por la impresora, sin dos maquetados que se puedan desincronizar.
+function abrirHoja(html, maxZoom) {
   const win = window.open("", "_blank");
   if (!win) return;
+  win.document.write(html);
+  win.document.close();
+  ajustarYImprimir(win, maxZoom);
+}
+
+function htmlSemana({ lunes, week, equipos, borrador, emisor, bn }) {
   const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const P = paletaImpresion(bn);
   const chip = (n) => chipImpreso(n, P, esc);
@@ -4440,7 +4550,7 @@ function abrirSemana({ lunes, week, equipos, borrador, emisor, bn }) {
   const eqHtml = EQUIPO_SLOTS.filter((sl) => (equipos[sl.key] || []).length).map((sl) =>
     `<span class="par"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : sl.tint};color:${P.bn ? "#111827" : sl.accent}">${sl.label}</span>${[...(equipos[sl.key] || [])].sort(porJerarquia).map(chip).join("")}</span>`).join("") || '<span class="nota">sin equipos armados</span>';
 
-  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${borrador ? "Borrador — " : ""}Scheduler UTI — Semana del ${rango}</title><style>
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${borrador ? "Borrador — " : ""}Scheduler UTI — Semana del ${rango}</title><style>
 ${CSS_IMPRESION}
 .tag.borrador{background:${P.tagBorrador}}
 col.lblcol{width:86px}
@@ -4471,15 +4581,13 @@ ${filaTexto("Observaciones", "observaciones", "obs")}
 ${filaTexto("Recordatorios", "recordatorios", "rec")}
 </tbody></table>
 <div class="pie">${pie}<br><b>Referencias:</b> la guardia empieza a las 16 h. Sábados, domingos y feriados no llevan grilla de salas.${P.leyenda}</div>
-</body></html>`);
-  win.document.close();
-  ajustarYImprimir(win, 1);
+</body></html>`;
 }
 
-function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador, emisor, bn }) {
+function abrirSemana(opts) { abrirHoja(htmlSemana(opts), 1); }
+
+function htmlMes({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador, emisor, bn }) {
   const soloGuardias = tipo === "guardias";
-  const win = window.open("", "_blank");
-  if (!win) return;
   const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const P = paletaImpresion(bn);
   const chip = (n) => chipImpreso(n, P, esc);
@@ -4532,7 +4640,7 @@ function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador
   const exterior = (datosMes.assignments || []).filter((x) => x.exterior).map((x) => `${x.resident} (${x.place})`).join(" · ") || "nadie";
   const vac = (datosMes.vacaciones || []).map((v) => `${v.nombre} (${(TRAMOS_VACACIONES[v.tramo] || TRAMOS_VACACIONES.mes).corto})`).join(" · ") || "nadie";
 
-  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${borrador ? "Borrador — " : ""}${soloGuardias ? "Guardias" : "Cobertura de salas"} — ${MONTHS[mes]} ${anio}</title><style>
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${borrador ? "Borrador — " : ""}${soloGuardias ? "Guardias" : "Cobertura de salas"} — ${MONTHS[mes]} ${anio}</title><style>
 ${CSS_IMPRESION}
 .tag.borrador{background:${P.tagBorrador}}
 thead th{font-size:10px;background:#0F172A;color:#fff;padding:4px;border:1px solid #0F172A}
@@ -4562,10 +4670,10 @@ ${soloGuardias
 </div>
 <table><thead><tr>${DAYS.map((d) => `<th>${d}</th>`).join("")}</tr></thead><tbody>${filas}</tbody></table>
 <div class="pie">${pie}<br>${soloGuardias ? "<b>La guardia empieza a las 16 h.</b> Siempre dos residentes, uno de ellos R3 o R4. Los fines de semana, un R3 con un R2." : "<b>Referencias:</b> U1/U2/U3 = sala · PG = postguardia · G = de guardia (desde las 16 h)."}${P.leyenda}</div>
-</body></html>`);
-  win.document.close();
-  ajustarYImprimir(win, soloGuardias ? 1 : 0.95);
+</body></html>`;
 }
+
+function abrirBorrador(opts) { abrirHoja(htmlMes(opts), opts.tipo === "guardias" ? 1 : 0.95); }
 
 
 /* ══════════════════ GUARDIAS POR RESIDENTE ══════════════════ */
@@ -4581,7 +4689,12 @@ const cupoR2 = (anio, mes) => new Date(anio, mes + 1, 0).getDate() * 2 - CUPO_ME
 // de sala de R2/R3 que hay que registrar (ver detectarCoberturas) y las
 // sincroniza sola con la sub-pestaña de cobertura.
 function GuardiasSection({ cobertura, isAdmin }) {
-  const [mesSel, setMesSel] = useState(() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, "0")}`; });
+  const [mesSel, setMesSel] = useState(() => {
+    const h = new Date();
+    const a = Math.max(0, (h.getFullYear() - MES_INICIO_ESTADISTICAS.anio) * 12 + h.getMonth() - MES_INICIO_ESTADISTICAS.mes);
+    const d = new Date(MES_INICIO_ESTADISTICAS.anio, MES_INICIO_ESTADISTICAS.mes + a, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
   const [datos, setDatos] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [abierto, setAbierto] = useState(null);
@@ -4684,12 +4797,17 @@ function GuardiasSection({ cobertura, isAdmin }) {
     return () => { cancelado = true; };
   }, [detectadas, cobertura, isAdmin, cargando, datos, anio, mes]);
 
+  // Nunca antes de septiembre de 2026: de ahí para atrás no hay estadística
+  // que valga la pena mirar.
   const opciones = useMemo(() => {
     const hoy = new Date();
-    return Array.from({ length: 14 }, (_, i) => {
-      const d = new Date(hoy.getFullYear(), hoy.getMonth() - 6 + i, 1);
-      return { clave: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: `${MONTHS[d.getMonth()]} ${d.getFullYear()}` };
-    });
+    const desde = new Date(MES_INICIO_ESTADISTICAS.anio, MES_INICIO_ESTADISTICAS.mes, 1);
+    const hasta = new Date(hoy.getFullYear(), hoy.getMonth() + 7, 1);
+    const out = [];
+    for (let d = new Date(desde); d < hasta; d.setMonth(d.getMonth() + 1)) {
+      out.push({ clave: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: `${MONTHS[d.getMonth()]} ${d.getFullYear()}` });
+    }
+    return out;
   }, []);
 
   const cupos = { R4: CUPO_MES.R4, R3: CUPO_MES.R3, R2: cupoR2(anio, mes) };
@@ -4912,6 +5030,27 @@ function analizarSemana(week, monday, rotPorAnio, equiposMes) {
           agregar(suaves, di, `${n} es R4 y no está rotando — su postguardia la trabaja en sala, no debería figurar acá`);
         }
       });
+
+      // Un R4 que no rota no queda postguardia: al día siguiente de su guardia
+      // trabaja igual en sala. Pero viene de la noche, así que la regla es que
+      // no quede solo con un R2: tiene que haber otro superior con él. Si no lo
+      // hay, lo que se prefiere es mover gente de sala, no sacarle la guardia.
+      // El lunes no se chequea porque la guardia del domingo nunca es de un R4.
+      if (di >= 1) {
+        const anoche = (week.days[di - 1] || {}).deGuardia || [];
+        anoche.filter((n) => LEVEL[n] === "R4").forEach((n) => {
+          const rotAnio = rotPorAnio[fecha.getFullYear()];
+          const mesRot = rotAnio && rotAnio.months[fecha.getMonth()];
+          const rota = mesRot && (mesRot.assignments || []).some((a) => a.resident === n);
+          if (rota) return;
+          const sl = SLOTS.filter((x) => x.key !== "postguardia").find((x) => (d[x.key] || []).includes(n));
+          if (!sl) return;
+          const conEl = (d[sl.key] || []).filter((x) => x !== n);
+          if (!conEl.some(esSuperior)) {
+            agregar(duras, di, `${n} (R4) está postguardia en ${sl.label} sin otro superior (${conEl.join(", ") || "solo"}) — movés a un R4 o R3 a esa sala`);
+          }
+        });
+      }
     }
 
     // ── Guardia ──
