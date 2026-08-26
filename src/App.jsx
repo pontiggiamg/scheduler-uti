@@ -10,7 +10,13 @@ const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 // Pestañas de nivel superior de la app. El orden por defecto se usa si todavía
 // no hay nada guardado en Firestore (scheduler/ui-config); el admin puede
 // reordenarlas arrastrando y ese orden se guarda ahí, compartido para todos.
-const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy", "accesos", "borradores"];
+const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy", "accesos", "impresiones"];
+// La pestaña se llamaba "borradores" y pasó a llamarse "impresiones": lo que
+// sale de ahí es definitivo salvo que se lo marque expresamente como borrador.
+// El orden de pestañas guardado en Firestore puede tener todavía el nombre
+// viejo, así que se traduce al leerlo en vez de pedirle a nadie que lo
+// reordene de nuevo.
+const TAB_RENOMBRADAS = { borradores: "impresiones" };
 const TAB_META = {
   scheduler: { icon: "📅", label: "Semana" },
   rotaciones: { icon: "🔄", label: "Rotaciones y Vacaciones" },
@@ -21,7 +27,7 @@ const TAB_META = {
   registro: { icon: "📋", label: "Registro" },
   hoy: { icon: "📱", label: "¿Quién está hoy?" },
   accesos: { icon: "🔐", label: "Accesos", soloAdmin: true },
-  borradores: { icon: "🖨️", label: "Borradores", soloAdmin: true },
+  impresiones: { icon: "🖨️", label: "Impresiones", soloAdmin: true },
 };
 
 // Ruta pública sin login para compartir a otros servicios del hospital: entra
@@ -534,9 +540,10 @@ function AuthenticatedApp() {
   useEffect(() => {
     const ref = doc(db, "scheduler", "ui-config");
     const unsub = onSnapshot(ref, (snap) => {
-      const stored = snap.exists() ? snap.data().tabOrder : null;
+      const guardado = snap.exists() ? snap.data().tabOrder : null;
+      const stored = Array.isArray(guardado) ? guardado.map((k) => TAB_RENOMBRADAS[k] || k) : null;
       if (Array.isArray(stored) && stored.length) {
-        const known = stored.filter((k) => DEFAULT_TAB_ORDER.includes(k));
+        const known = stored.filter((k, i) => DEFAULT_TAB_ORDER.includes(k) && stored.indexOf(k) === i);
         const missing = DEFAULT_TAB_ORDER.filter((k) => !known.includes(k));
         setTabOrder([...known, ...missing]);
       } else {
@@ -729,7 +736,7 @@ function AuthenticatedApp() {
       {tab === "registro" && <RegistroView isAdmin={isAdmin} user={user} />}
       {tab === "hoy" && <QuienEstaHoyView isAdmin={isAdmin} embedded />}
       {tab === "accesos" && isAdmin && <AccesosView user={user} />}
-      {tab === "borradores" && isAdmin && <BorradoresView />}
+      {tab === "impresiones" && isAdmin && <ImpresionesView />}
     </div>
   );
 }
@@ -4053,21 +4060,38 @@ function PersonaModal({ persona, telefono, isAdmin, editing, draft, onDraftChang
   );
 }
 
-/* ══════════════════ BORRADORES (mes completo para imprimir) ══════════════════ */
+/* ══════════════════ IMPRESIONES ══════════════════ */
 
 // Arma el mes entero en una sola hoja A4 horizontal, listo para imprimir o
 // guardar como PDF y repartir en papel. Lee las semanas reales de Firestore,
 // así que siempre refleja lo que está cargado hoy. Se abre en una ventana
 // nueva con su propio CSS de impresión, igual que el PDF de procedimientos.
-function BorradoresView() {
+// Fecha de emisión, para el sello de las hojas definitivas.
+function hoyTexto() {
+  const h = new Date();
+  return `${h.getDate()} de ${MONTHS[h.getMonth()].toLowerCase()} de ${h.getFullYear()}`;
+}
+
+function ImpresionesView() {
   const [mesSel, setMesSel] = useState(() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, "0")}`; });
+  const [semanaSel, setSemanaSel] = useState(() => isoDate(mondayOf(new Date())));
+  const [borrador, setBorrador] = useState(false);
   const [generando, setGenerando] = useState(false);
   const [aviso, setAviso] = useState(null);
 
   const [y, m] = mesSel.split("-").map(Number);
   const anio = y, mes = m - 1;
 
-  const generar = async (tipo) => {
+  const leerRot = async (anios) => {
+    const out = {};
+    for (const a of anios) {
+      const snap = await getDoc(doc(db, "scheduler", `rotaciones-${a}`));
+      out[a] = snap.exists() ? normalizeRot(snap.data()) : emptyRotYear();
+    }
+    return out;
+  };
+
+  const generarMes = async (tipo) => {
     setGenerando(true); setAviso(null);
     try {
       const lunes = lunesQueTocanElMes(anio, mes);
@@ -4076,18 +4100,32 @@ function BorradoresView() {
         const snap = await getDoc(doc(db, "scheduler", `week-${isoDate(l)}`));
         semanas[isoDate(l)] = snap.exists() ? normalize(snap.data()) : emptyWeek();
       }
-      const rotSnap = await getDoc(doc(db, "scheduler", `rotaciones-${anio}`));
-      const rot = rotSnap.exists() ? normalizeRot(rotSnap.data()) : emptyRotYear();
+      const rot = (await leerRot([anio]))[anio];
       const eqSnap = await getDoc(doc(db, "scheduler", "equipos"));
       const equipos = (eqSnap.exists() ? eqSnap.data() : {})[mesSel] || {};
-      abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo });
+      abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador });
     } catch (e) {
-      console.error(e); setAviso("No se pudo generar el borrador.");
+      console.error(e); setAviso("No se pudo generar la hoja del mes.");
     }
     setGenerando(false);
   };
 
-  const opciones = useMemo(() => {
+  const generarSemana = async () => {
+    setGenerando(true); setAviso(null);
+    try {
+      const lunes = new Date(`${semanaSel}T00:00:00`);
+      const snap = await getDoc(doc(db, "scheduler", `week-${isoDate(lunes)}`));
+      const week = snap.exists() ? normalize(snap.data()) : emptyWeek();
+      const eqSnap = await getDoc(doc(db, "scheduler", "equipos"));
+      const equipos = (eqSnap.exists() ? eqSnap.data() : {})[mesDeLaSemana(lunes)] || {};
+      abrirSemana({ lunes, week, equipos, borrador });
+    } catch (e) {
+      console.error(e); setAviso("No se pudo generar la hoja de la semana.");
+    }
+    setGenerando(false);
+  };
+
+  const opcionesMes = useMemo(() => {
     const hoy = new Date();
     return Array.from({ length: 8 }, (_, i) => {
       const d = new Date(hoy.getFullYear(), hoy.getMonth() - 2 + i, 1);
@@ -4095,21 +4133,76 @@ function BorradoresView() {
     });
   }, []);
 
+  // Doce semanas alrededor de hoy: cuatro atrás y ocho adelante.
+  const opcionesSemana = useMemo(() => {
+    const base = mondayOf(new Date());
+    return Array.from({ length: 13 }, (_, i) => {
+      const l = shift(base, (i - 4) * 7);
+      const f = shift(l, 6);
+      const mismo = l.getMonth() === f.getMonth();
+      const label = mismo
+        ? `${l.getDate()} al ${f.getDate()} de ${MONTHS[l.getMonth()].toLowerCase()}`
+        : `${l.getDate()} de ${MONTHS[l.getMonth()].toLowerCase()} al ${f.getDate()} de ${MONTHS[f.getMonth()].toLowerCase()}`;
+      return { clave: isoDate(l), label: label + (i === 4 ? "  ·  esta semana" : "") };
+    });
+  }, []);
+
+  const btn = (bg) => ({ background: bg, color: "#fff", border: "none", borderRadius: 9, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: generando ? "default" : "pointer", fontFamily: "inherit", opacity: generando ? 0.6 : 1 });
+  const caja = { background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 16, marginBottom: 12 };
+  const sel = { fontSize: 13, padding: "8px 10px", borderRadius: 8, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" };
+  const rotulo = { fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 };
+
   return (
     <div>
       <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
         <span style={{ fontSize: 22 }}>🖨️</span>
         <div>
-          <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Borradores</div>
-          <div style={{ fontSize: 10.5, opacity: 0.7 }}>El mes completo en una hoja, para imprimir y repartir</div>
+          <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Impresiones</div>
+          <div style={{ fontSize: 10.5, opacity: 0.7 }}>Hojas listas para imprimir y repartir</div>
         </div>
       </div>
 
-      <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 16 }}>
-        <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.6, marginBottom: 14 }}>
+      {/* El interruptor de borrador vale para todas las hojas de abajo. */}
+      <div style={{ ...caja, background: borrador ? "#FEF2F2" : "#fff", borderColor: borrador ? "#FECACA" : "#E2E8F0" }}>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
+          <input type="checkbox" checked={borrador} onChange={(e) => setBorrador(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, accentColor: "#B91C1C", cursor: "pointer" }} />
+          <span>
+            <span style={{ fontSize: 13, fontWeight: 800, color: borrador ? "#B91C1C" : "#0F172A" }}>Marcar como borrador</span>
+            <span style={{ display: "block", fontSize: 11.5, color: "#475569", lineHeight: 1.5, marginTop: 2 }}>
+              {borrador
+                ? "Las hojas salen con el sello rojo BORRADOR y una marca de agua, para que nadie las tome como firmes."
+                : "Las hojas salen como DEFINITIVO, con la fecha de emisión. Tildá esto solo si todavía puede cambiar algo."}
+            </span>
+          </span>
+        </label>
+      </div>
+
+      {/* ── Semana suelta ── */}
+      <div style={caja}>
+        <div style={{ fontSize: 13.5, fontWeight: 800, color: "#0F172A", marginBottom: 3 }}>📅 Descargar semana específica</div>
+        <div style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.55, marginBottom: 13 }}>
+          La misma grilla de la pestaña Semana, con las tres salas, postguardia, de guardia, quién está afuera, los días libres de los R4 y las observaciones. Una hoja A4 horizontal.
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <div style={rotulo}>SEMANA</div>
+            <select value={semanaSel} onChange={(e) => setSemanaSel(e.target.value)} style={sel}>
+              {opcionesSemana.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
+            </select>
+          </div>
+          <button onClick={generarSemana} disabled={generando} style={btn("#0E7490")}>
+            {generando ? "Armando…" : "📅 Imprimir la semana"}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Mes completo ── */}
+      <div style={caja}>
+        <div style={{ fontSize: 13.5, fontWeight: 800, color: "#0F172A", marginBottom: 3 }}>🗓️ El mes completo</div>
+        <div style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.55, marginBottom: 13 }}>
           Dos formatos, los dos en una hoja A4 horizontal. Se abre el diálogo de impresión — elegí "Guardar como PDF" si querés el archivo.
         </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
           <div style={{ flex: "1 1 240px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 13px" }}>
             <div style={{ fontSize: 12, fontWeight: 800, color: "#0F172A", marginBottom: 3 }}>🏥 Cobertura de Salas del Mes</div>
             <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.5 }}>Todo: las tres salas día por día, postguardia, guardia, equipos por UTI, días libres de los R4 y quién está afuera por rotación o vacaciones. Es el cronograma completo de trabajo.</div>
@@ -4119,29 +4212,137 @@ function BorradoresView() {
             <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.5 }}>Solo quién está de guardia cada día, en grande. Suma el conteo por persona y por nivel. Es el que conviene pegar en la pared.</div>
           </div>
         </div>
-
         <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 }}>MES</div>
-            <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" }}>
-              {opciones.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
+            <div style={rotulo}>MES</div>
+            <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={sel}>
+              {opcionesMes.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
             </select>
           </div>
-          <button onClick={() => generar("salas")} disabled={generando} style={{ background: "#0F172A", color: "#fff", border: "none", borderRadius: 9, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: generando ? "default" : "pointer", fontFamily: "inherit", opacity: generando ? 0.6 : 1 }}>
+          <button onClick={() => generarMes("salas")} disabled={generando} style={btn("#0F172A")}>
             {generando ? "Armando…" : "🏥 Cobertura de Salas del Mes"}
           </button>
-          <button onClick={() => generar("guardias")} disabled={generando} style={{ background: "#9F1239", color: "#fff", border: "none", borderRadius: 9, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: generando ? "default" : "pointer", fontFamily: "inherit", opacity: generando ? 0.6 : 1 }}>
+          <button onClick={() => generarMes("guardias")} disabled={generando} style={btn("#9F1239")}>
             {generando ? "Armando…" : "🌙 Guardias del Mes"}
           </button>
         </div>
-
-        {aviso && <div style={{ marginTop: 12 }}><Banner tone="warn">{aviso}</Banner></div>}
       </div>
+
+      {aviso && <Banner tone="warn">{aviso}</Banner>}
     </div>
   );
 }
 
-function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo }) {
+// Hoja de una semana suelta: es la grilla de la pestaña Semana pasada a una
+// tabla propia, en vez de imprimir el DOM de la app. Se genera igual que las
+// hojas del mes (ventana nueva con su CSS), así se puede imprimir cualquier
+// semana sin tener que navegar hasta ella primero.
+function abrirSemana({ lunes, week, equipos, borrador }) {
+  const win = window.open("", "_blank");
+  if (!win) return;
+  const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const COL = { R2: ["#DBEAFE", "#93C5FD", "#1E3A8A", "#3B82F6"], R3: ["#D1FAE5", "#6EE7B7", "#065F46", "#10B981"], R4: ["#FFEDD5", "#FDBA74", "#9A3412", "#F97316"], JR: ["#FEF3C7", "#FCD34D", "#78350F", "#D97706"] };
+  const chip = (n) => {
+    const c = COL[LEVEL[n]] || ["#F1F5F9", "#CBD5E1", "#475569", "#94A3B8"];
+    return `<span class="chip" style="background:${c[0]};border-color:${c[1]};color:${c[2]}">${esc(n)}<b style="background:${c[3]}">${LEVEL[n] || "—"}</b></span>`;
+  };
+  const fechas = DAYS.map((_, i) => shift(lunes, i));
+  const fin = fechas[6];
+  const rango = lunes.getMonth() === fin.getMonth()
+    ? `${lunes.getDate()} al ${fin.getDate()} de ${MONTHS[lunes.getMonth()].toLowerCase()} de ${fin.getFullYear()}`
+    : `${lunes.getDate()} de ${MONTHS[lunes.getMonth()].toLowerCase()} al ${fin.getDate()} de ${MONTHS[fin.getMonth()].toLowerCase()} de ${fin.getFullYear()}`;
+
+  const celdaSlot = (key, di) => {
+    const d = week.days[di];
+    const bloqueada = (isWeekendIdx(di) || d.feriado) && key !== "postguardia";
+    if (bloqueada) return '<td class="finde"><span class="nota">sin sala</span></td>';
+    const gente = [...(d[key] || [])].sort(porJerarquia);
+    return `<td class="${isWeekendIdx(di) || d.feriado ? "finde" : ""}">${gente.length ? gente.map(chip).join("") : '<span class="nota">—</span>'}</td>`;
+  };
+  const filaSlot = (sl) => `<tr><th class="lbl" style="background:${sl.accent}">${sl.label}</th>${DAYS.map((_, di) => celdaSlot(sl.key, di)).join("")}</tr>`;
+
+  const filaGuardia = `<tr><th class="lbl" style="background:#9F1239">De guardia<span>desde las 16 h</span></th>${DAYS.map((_, di) => {
+    const g = [...(week.days[di].deGuardia || [])].sort(porJerarquia);
+    return `<td class="g">${g.length ? g.map((n) => LEVEL[n] ? chip(n) : `<span class="chip" style="background:#F1F5F9;border-color:#CBD5E1;color:#475569">${esc(n)}</span>`).join("") : '<span class="nota">sin cargar</span>'}</td>`;
+  }).join("")}</tr>`;
+
+  const filaTexto = (label, campo, clase) => {
+    const hay = DAYS.some((_, di) => (week.days[di][campo] || "").trim());
+    if (!hay) return "";
+    return `<tr><th class="lbl" style="background:#94A3B8">${label}</th>${DAYS.map((_, di) =>
+      `<td class="${clase}">${esc((week.days[di][campo] || "").trim()) || ""}</td>`).join("")}</tr>`;
+  };
+
+  const libresHtml = RESIDENTS.R4.filter((n) => week.diasLibresR4[n]).map((n) =>
+    `<span class="par">${chip(n)}<span class="txt">${week.diasLibresR4[n]}</span></span>`).join("") || '<span class="nota">sin cargar</span>';
+  const eqHtml = EQUIPO_SLOTS.filter((sl) => (equipos[sl.key] || []).length).map((sl) =>
+    `<span class="par"><span class="eqn" style="background:${sl.tint};color:${sl.accent}">${sl.label}</span>${[...(equipos[sl.key] || [])].sort(porJerarquia).map(chip).join("")}</span>`).join("") || '<span class="nota">sin equipos armados</span>';
+
+  const sello = borrador
+    ? '<div class="tag borrador">BORRADOR — SUJETO A CAMBIOS</div>'
+    : `<div class="tag firme">DEFINITIVO<span>emitido el ${hoyTexto()}</span></div>`;
+  const agua = borrador ? '<div class="agua">BORRADOR</div>' : "";
+
+  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${borrador ? "Borrador — " : ""}Scheduler UTI — Semana del ${rango}</title><style>
+@page{size:A4 landscape;margin:8mm}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;color:#0F172A;font-size:10px}
+h1{font-size:18px;letter-spacing:-.3px}
+.sub{font-size:11px;color:#475569}
+.head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #0F172A;padding-bottom:5px;margin-bottom:7px}
+.tag{font-size:9.5px;font-weight:800;color:#fff;padding:3px 9px;border-radius:5px;white-space:nowrap}
+.tag.firme{background:#0F172A}
+.tag.firme span{display:block;font-size:7.5px;font-weight:600;opacity:.75;letter-spacing:.2px}
+.tag.borrador{background:#B91C1C}
+.agua{position:fixed;top:30%;left:0;right:0;text-align:center;font-size:130px;font-weight:800;color:rgba(185,28,28,.07);letter-spacing:16px;transform:rotate(-18deg);pointer-events:none;z-index:0}
+.head,.bloques,table,.pie{position:relative;z-index:1}
+.bloques{display:flex;gap:8px;margin-bottom:7px}
+.bloque{flex:1;border:1.5px solid #CBD5E1;border-radius:7px;padding:5px 8px}
+.bloque h3{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin-bottom:4px}
+.par{display:inline-flex;align-items:center;gap:4px;margin:0 9px 2px 0}
+.eqn{font-size:9px;font-weight:800;padding:2px 6px;border-radius:4px}
+.txt{font-size:9.5px;color:#475569}
+.chip{display:inline-flex;align-items:center;gap:2px;border:1.2px solid;border-radius:9px;padding:1px 5px;font-size:10px;font-weight:700;margin:1px}
+.chip b{font-size:6.5px;color:#fff;padding:0 2.5px;border-radius:2px;font-weight:800}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+col.lblcol{width:86px}
+thead th{font-size:10.5px;background:#0F172A;color:#fff;padding:4px 3px;border:1px solid #0F172A}
+thead th small{display:block;font-size:8.5px;font-weight:600;opacity:.75}
+thead th.fs{background:#334155}
+th.lbl{font-size:8.5px;font-weight:800;color:#fff;border:1px solid #CBD5E1;padding:3px;vertical-align:middle;line-height:1.2}
+th.lbl span{display:block;font-size:6.5px;font-weight:600;opacity:.85}
+td{border:1px solid #CBD5E1;vertical-align:top;padding:3px;height:52px}
+td.finde{background:#F8FAFC}
+td.g{background:#FFF1F2;height:44px}
+td.obs{background:#FEF9C3;color:#713F12;font-size:8.5px;line-height:1.3;height:auto;padding:4px}
+td.rec{background:#EFF6FF;color:#1E3A8A;font-size:8.5px;line-height:1.3;height:auto;padding:4px}
+.nota{font-size:8.5px;color:#94A3B8;font-style:italic}
+.fer{font-size:7px;background:#FDE68A;color:#92400E;padding:1px 4px;border-radius:6px}
+.pie{margin-top:6px;font-size:8.5px;color:#475569;line-height:1.45;border-top:1px solid #CBD5E1;padding-top:6px}
+</style></head><body>
+${agua}
+<div class="head"><div><h1>Semana del ${rango}</h1><div class="sub">Residencia de Terapia Intensiva — Hospital Británico</div></div>${sello}</div>
+<div class="bloques">
+  <div class="bloque"><h3>Equipos por UTI del mes</h3>${eqHtml}</div>
+  <div class="bloque" style="flex:0 0 300px"><h3>Días libres de los R4</h3>${libresHtml}</div>
+</div>
+<table>
+<colgroup><col class="lblcol">${DAYS.map(() => "<col>").join("")}</colgroup>
+<thead><tr><th></th>${DAYS.map((d, i) => `<th class="${isWeekendIdx(i) ? "fs" : ""}">${d}<small>${fechas[i].getDate()}/${fechas[i].getMonth() + 1}${week.days[i].feriado ? " · FERIADO" : ""}</small></th>`).join("")}</tr></thead>
+<tbody>
+${SLOTS.map(filaSlot).join("")}
+${filaGuardia}
+${filaTexto("Observaciones", "observaciones", "obs")}
+${filaTexto("Recordatorios", "recordatorios", "rec")}
+</tbody></table>
+<div class="pie"><b>Referencias:</b> la guardia empieza a las 16 h. Sábados, domingos y feriados no llevan grilla de salas.</div>
+</body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 400);
+}
+
+function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador }) {
   const soloGuardias = tipo === "guardias";
   const win = window.open("", "_blank");
   if (!win) return;
@@ -4199,14 +4400,26 @@ function abrirBorrador({ anio, mes, lunes, semanas, rot, equipos, tipo }) {
   const exterior = (datosMes.assignments || []).filter((a) => a.exterior).map((a) => `${a.resident} (${a.place})`).join(" · ") || "nadie";
   const vac = (datosMes.vacaciones || []).map((v) => `${v.nombre} (${(TRAMOS_VACACIONES[v.tramo] || TRAMOS_VACACIONES.mes).corto})`).join(" · ") || "nadie";
 
-  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${soloGuardias ? "Guardias" : "Cobertura de salas"} — ${MONTHS[mes]} ${anio}</title><style>
+  // Lo que sale de acá es definitivo salvo que se pida lo contrario. El sello
+  // y la marca de agua son la única diferencia: el contenido es el mismo.
+  const sello = borrador
+    ? '<div class="tag borrador">BORRADOR — SUJETO A CAMBIOS</div>'
+    : `<div class="tag firme">DEFINITIVO<span>emitido el ${hoyTexto()}</span></div>`;
+  const agua = borrador ? '<div class="agua">BORRADOR</div>' : "";
+
+  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${(borrador ? "Borrador — " : "")}${soloGuardias ? "Guardias" : "Cobertura de salas"} — ${MONTHS[mes]} ${anio}</title><style>
 @page{size:A4 landscape;margin:8mm}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Inter',system-ui,sans-serif;color:#0F172A;font-size:10px;zoom:${soloGuardias ? ".97" : ".88"}}
 h1{font-size:18px;letter-spacing:-.3px}
 .sub{font-size:11px;color:#475569}
 .head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #0F172A;padding-bottom:5px;margin-bottom:7px}
-.tag{font-size:9.5px;font-weight:800;background:#0F172A;color:#fff;padding:3px 9px;border-radius:5px}
+.tag{font-size:9.5px;font-weight:800;color:#fff;padding:3px 9px;border-radius:5px;white-space:nowrap}
+.tag.firme{background:#0F172A}
+.tag.firme span{display:block;font-size:7.5px;font-weight:600;opacity:.75;letter-spacing:.2px}
+.tag.borrador{background:#B91C1C}
+.agua{position:fixed;top:30%;left:0;right:0;text-align:center;font-size:120px;font-weight:800;color:rgba(185,28,28,.07);letter-spacing:14px;transform:rotate(-18deg);pointer-events:none;z-index:0}
+.head,.bloques,table,.pie{position:relative;z-index:1}
 .bloques{display:flex;gap:8px;margin-bottom:7px}
 .bloque{flex:1;border:1.5px solid #CBD5E1;border-radius:7px;padding:5px 8px}
 .bloque h3{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin-bottom:5px}
@@ -4234,7 +4447,8 @@ td.off{background:#F1F5F9}td.finde{background:#F8FAFC}
 .obs{font-size:7.5px;color:#713F12;background:#FEF9C3;border-radius:3px;padding:1px 3px;margin-top:2px;line-height:1.25}
 .pie{margin-top:6px;font-size:8.5px;color:#475569;line-height:1.45;border-top:1px solid #CBD5E1;padding-top:6px}
 </style></head><body>
-<div class="head"><div><h1>${soloGuardias ? "Guardias" : "Cobertura de salas"} · ${MONTHS[mes]} ${anio}</h1><div class="sub">Residencia de Terapia Intensiva — Hospital Británico</div></div><div class="tag">BORRADOR SUJETO A CAMBIOS</div></div>
+${agua}
+<div class="head"><div><h1>${soloGuardias ? "Guardias" : "Cobertura de salas"} · ${MONTHS[mes]} ${anio}</h1><div class="sub">Residencia de Terapia Intensiva — Hospital Británico</div></div>${sello}</div>
 <div class="bloques">
 ${soloGuardias
   ? `<div class="bloque"><h3>Guardias del mes por residente</h3>${bloqueConteo || '<div class="nota">Sin guardias cargadas</div>'}</div>
