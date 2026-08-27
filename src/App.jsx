@@ -1891,6 +1891,11 @@ function timeAgo(iso) {
   return `hace ${Math.floor(h / 24)} d`;
 }
 
+// A partir de acá el resumen de pases se considera viejo y se vuelve a pedir
+// solo al abrir la pestaña. Hora y media: más que el intervalo nominal del cron
+// (2 h) sería inútil, y menos que esto haría trabajo de más sin ganar nada.
+const PASES_FRESCO_MS = 90 * 60 * 1000;
+
 function PasesView({ isAdmin }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1930,6 +1935,34 @@ function PasesView({ isAdmin }) {
     }, () => setLoading(false));
     return unsub;
   }, []);
+
+  // Refresco automático al abrir la pestaña, si el resumen está viejo.
+  //
+  // La sincronización de fondo la dispara un cron de GitHub Actions cada 2
+  // horas, pero el scheduler de GitHub es "best effort" y en la práctica no
+  // cumple: medido sobre este mismo repo, los intervalos reales van de 1h55 a
+  // 4h36, y llegó a estar 13 horas sin correr una sola vez. Por eso no se
+  // puede depender solo de él. Esto cubre el caso que importa —alguien abre la
+  // pestaña y quiere ver los pases de ahora— sin tocar el cron ni sumar otro
+  // servicio: si el dato está viejo, se pide una sincronización y listo.
+  //
+  // Se dispara una sola vez por apertura de la pestaña. Si varios lo abren a
+  // la vez pueden salir dos o tres pedidos en simultáneo, pero el endpoint es
+  // idempotente y en cuanto el primero termina, el onSnapshot le refresca el
+  // updatedAt a todos y los demás ya no entran.
+  const yaRefresco = useRef(false);
+  useEffect(() => {
+    if (loading || yaRefresco.current) return;
+    const edad = data && data.updatedAt ? Date.now() - new Date(data.updatedAt).getTime() : Infinity;
+    if (edad < PASES_FRESCO_MS) return;
+    yaRefresco.current = true;
+    setSyncing(true);
+    fetch("/api/sync-pases")
+      .then((r) => r.json())
+      .then((j) => { if (!j.ok) setSyncMsg("⚠ No se pudo actualizar el resumen"); })
+      .catch(() => setSyncMsg("⚠ No se pudo actualizar el resumen"))
+      .finally(() => { setSyncing(false); setTimeout(() => setSyncMsg(null), 5000); });
+  }, [loading, data]);
 
   const order = data?.unitOrder?.length ? data.unitOrder : Object.keys(data?.units || {});
   const activeUnit = unit && order.includes(unit) ? unit : order[0];
