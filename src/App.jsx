@@ -4514,7 +4514,9 @@ h1{font-size:17px;letter-spacing:-.3px}
 .chip b{font-size:.6em;color:#fff;padding:.5px 3.5px;border-radius:3px;font-weight:800}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 .nota{font-size:11px;color:#64748B;font-style:italic}
-.pie{margin-top:4px;font-size:8px;color:#334155;line-height:1.4;border-top:1px solid #94A3B8;padding-top:4px}
+.pie{margin-top:4px;font-size:8px;color:#334155;line-height:1.4;border-top:1px solid #94A3B8;padding-top:4px;break-inside:avoid;page-break-inside:avoid}
+table{break-inside:auto}
+tr{break-inside:avoid;page-break-inside:avoid}
 `;
 
 // El ajuste a una sola página corre DENTRO de la hoja, no desde la app. Así la
@@ -4540,7 +4542,20 @@ table{width:100%;border-collapse:collapse;table-layout:fixed}
 // página, que es lo que hace que un mes flaco no salga con letra diminuta.
 const AJUSTE_HOJA_JS = `
 (function(){
-  var body=document.body, PW=1030, PH=716, MAXZ=1.75;
+  var body=document.body, PW=1030, MAXZ=1.75;
+  // Cuánto alto queda para la hoja. En una compu son 716 px: A4 apaisada a
+  // 96 dpi menos los márgenes de @page.
+  //
+  // En iPhone y iPad hay que reservar más. El diálogo de impresión de iOS
+  // estampa SIEMPRE un encabezado y un pie propios —la URL, la fecha y el
+  // "Página 1 de 2"— y, a diferencia de Chrome en la compu, no hay ninguna
+  // casilla para desactivarlos. Eso se come alto de la hoja, y como el sistema
+  // no expone cuánto se quedó, no queda otra que reservárselo de antemano. Sin
+  // esta reserva la hoja pasa apenas del alto útil y septiembre salía en dos
+  // páginas: la primera completa y la segunda con el pie de la hoja solo.
+  var esIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+              (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  var PH = esIOS ? 652 : 716;
   // OJO: acá NO se puede usar documentElement.scrollHeight. Nunca devuelve menos
   // que el alto del viewport, así que en una ventana alta —la de cualquiera con
   // la pantalla maximizada— el alto medido se quedaba clavado en el alto de la
