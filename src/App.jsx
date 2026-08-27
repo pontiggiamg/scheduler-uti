@@ -1891,10 +1891,13 @@ function timeAgo(iso) {
   return `hace ${Math.floor(h / 24)} d`;
 }
 
-// A partir de acá el resumen de pases se considera viejo y se vuelve a pedir
-// solo al abrir la pestaña. Hora y media: más que el intervalo nominal del cron
-// (2 h) sería inútil, y menos que esto haría trabajo de más sin ganar nada.
-const PASES_FRESCO_MS = 90 * 60 * 1000;
+// A partir de acá el resumen de pases se considera viejo y se vuelve a pedir al
+// abrir la pestaña. Quince minutos es, en la práctica, "se actualiza cada vez
+// que alguien entra": los pases de Drive se editan durante todo el día, así que
+// un umbral largo dejaba ver un resumen de una hora aunque hubiera alguien
+// mirando. No se pone en cero para que, si varios entran seguido, no se
+// dispare una sincronización por cada click.
+const PASES_FRESCO_MS = 15 * 60 * 1000;
 
 function PasesView({ isAdmin }) {
   const [data, setData] = useState(null);
