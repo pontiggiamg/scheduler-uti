@@ -3703,6 +3703,20 @@ const HORA_AVISO_TARDE = 17;
 // Hasta esta hora de la mañana sigue en el hospital la guardia de la noche
 // anterior; después arranca la actividad normal y está todo el mundo.
 const HORA_FIN_GUARDIA = 8;
+// A qué hora cambia el día para el servicio. NO es la medianoche: a las 3 de la
+// mañana del jueves el que está en la UTI sigue siendo el equipo del miércoles,
+// así que hasta esta hora la pantalla tiene que seguir mostrando el miércoles.
+const HORA_CAMBIO_DIA = 6;
+
+// La fecha "de hoy" según el servicio, no según el reloj. Se calcula en hora de
+// Buenos Aires para que dé lo mismo desde dónde se mire la página: alguien
+// consultando desde otro huso tiene que ver el día que se está trabajando acá.
+function fechaDeServicio() {
+  const ymd = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "America/Argentina/Buenos_Aires" }).format(new Date());
+  const d = new Date(`${ymd}T00:00:00`);
+  if (horaAR() < HORA_CAMBIO_DIA) d.setDate(d.getDate() - 1);
+  return d;
+}
 
 const INVITADO_VIGENCIA_MS = 15 * 24 * 60 * 60 * 1000; // 15 días
 
@@ -3729,7 +3743,18 @@ function parseDeGuardia(lista) {
 }
 
 function QuienEstaHoyView({ isAdmin, embedded }) {
-  const hoy = useMemo(() => new Date(), []);
+  // El día se recalcula solo. Esta pantalla suele quedar abierta toda la noche
+  // en el office o en un celular apoyado, así que si el día cambiara únicamente
+  // al recargar, a las 6 de la mañana seguiría mostrando el día anterior.
+  const [hoyIso, setHoyIso] = useState(() => isoDate(fechaDeServicio()));
+  useEffect(() => {
+    const t = setInterval(() => setHoyIso((cur) => {
+      const ahora = isoDate(fechaDeServicio());
+      return ahora === cur ? cur : ahora;
+    }), 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
+  const hoy = useMemo(() => new Date(`${hoyIso}T00:00:00`), [hoyIso]);
   const manana = useMemo(() => shift(hoy, 1), [hoy]);
   const ayer = useMemo(() => shift(hoy, -1), [hoy]);
   // Ayer, hoy y mañana pueden caer en hasta tres documentos semanales
@@ -3806,7 +3831,12 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
   // todo el mundo, así que no hay a quién advertir.
   const guardiaActiva = useMemo(() => {
     const h = horaAR();
-    if (h >= HORA_AVISO_TARDE) return parseDeGuardia((diaHoy || {}).deGuardia);
+    // De la tarde en adelante, y también de madrugada, el que está es el equipo
+    // de guardia del día de servicio en curso — que de madrugada ya es el día
+    // anterior del calendario, porque el día recién cambia a las 6.
+    if (h >= HORA_AVISO_TARDE || h < HORA_CAMBIO_DIA) return parseDeGuardia((diaHoy || {}).deGuardia);
+    // Entre las 6 y las 8 el día ya dio vuelta pero la guardia de anoche sigue
+    // en el hospital hasta que entrega.
     if (h < HORA_FIN_GUARDIA) return parseDeGuardia((diaDe(ayer) || {}).deGuardia);
     return null; // horario de actividad normal: nadie está "fuera del hospital"
   }, [semanas, diaHoy, ayer, hoy]);
