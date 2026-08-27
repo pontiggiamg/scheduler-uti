@@ -4092,10 +4092,13 @@ function hoyTexto() {
 // Vista previa de una hoja. Es el mismo HTML que sale por la impresora, metido
 // en un iframe y escalado para que entre en el ancho que haya. Se usa un
 // iframe y no un div para que el CSS de la hoja no se mezcle con el de la app.
-function HojaPreview({ html, alto = 730 }) {
+function HojaPreview({ html }) {
   const cont = useRef(null);
   const [k, setK] = useState(1);
-  const ANCHO = 1040;
+  // Exactamente el área imprimible de una A4 apaisada a 96 dpi, la misma que
+  // usa el ajuste dentro de la hoja. Así la vista previa es la hoja entera, ni
+  // recortada ni con espacio de más.
+  const ANCHO = 1030, alto = 716;
   useEffect(() => {
     const medir = () => {
       const w = cont.current ? cont.current.clientWidth : ANCHO;
@@ -4110,7 +4113,7 @@ function HojaPreview({ html, alto = 730 }) {
   return (
     <div ref={cont} style={{ width: "100%", height: alto * k, overflow: "hidden", borderRadius: 10, border: "1px solid #E2E8F0", background: "#fff" }}>
       {html
-        ? <iframe title="vista previa" srcDoc={html} sandbox="allow-same-origin"
+        ? <iframe title="vista previa" srcDoc={hojaAjustada(html, false)} sandbox="allow-scripts" scrolling="no"
             style={{ width: ANCHO, height: alto, border: "none", transform: `scale(${k})`, transformOrigin: "top left", display: "block" }} />
         : <div style={{ padding: 26, fontSize: 12.5, color: "#64748B" }}>Cargando el cronograma…</div>}
     </div>
@@ -4239,7 +4242,7 @@ function ImpresionesView({ user, isAdmin }) {
   const sel = { fontSize: 13, padding: "8px 10px", borderRadius: 8, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155" };
   const rotulo = { fontSize: 10.5, fontWeight: 700, color: "#64748B", marginBottom: 3 };
 
-  const bloquePrevia = (titulo, bajada, color, tipo, html, alto) => (
+  const bloquePrevia = (titulo, bajada, color, tipo, html) => (
     <div style={caja}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 11 }}>
         <div style={{ flex: "1 1 300px" }}>
@@ -4251,7 +4254,7 @@ function ImpresionesView({ user, isAdmin }) {
           <button onClick={() => imprimirEsto(tipo, false)} disabled={!datosMes} style={{ ...btn(color), opacity: datosMes ? 1 : 0.5 }}>🎨 Imprimir en color</button>
         </div>
       </div>
-      <HojaPreview html={html} alto={alto} />
+      <HojaPreview html={html} />
     </div>
   );
 
@@ -4319,12 +4322,12 @@ function ImpresionesView({ user, isAdmin }) {
       {bloquePrevia(
         `🏥 Cobertura de salas · ${MONTHS[mes]} ${anio}`,
         "Las tres salas día por día, postguardia, guardia, equipos por UTI, días libres de los R4 y quién está afuera por rotación o vacaciones.",
-        "#0F172A", "salas", htmlSalas, 760)}
+        "#0F172A", "salas", htmlSalas)}
 
       {bloquePrevia(
         `🌙 Guardias · ${MONTHS[mes]} ${anio}`,
         "Solo quién está de guardia cada día, en grande, con el conteo por persona y por nivel. Es el que conviene pegar en la pared.",
-        "#9F1239", "guardias", htmlGuardias, 760)}
+        "#9F1239", "guardias", htmlGuardias)}
 
       {/* ── Cualquier otro cronograma ── */}
       <div style={caja}>
@@ -4450,67 +4453,97 @@ const CSS_IMPRESION = `
 @page{size:A4 landscape;margin:8mm}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Inter',system-ui,sans-serif;color:#0F172A;font-size:10px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-h1{font-size:18px;letter-spacing:-.3px}
-.sub{font-size:11px;color:#475569}
-.head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #0F172A;padding-bottom:5px;margin-bottom:7px}
+h1{font-size:17px;letter-spacing:-.3px}
+.sub{font-size:10px;color:#475569}
+.head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #0F172A;padding-bottom:4px;margin-bottom:5px}
 .tag{font-size:9.5px;font-weight:800;color:#fff;padding:3px 9px;border-radius:5px;white-space:nowrap}
 .tag.firme{background:#0F172A}
 .tag.firme span{display:block;font-size:7.5px;font-weight:600;opacity:.75;letter-spacing:.2px}
 .tag.borrador{background:#B91C1C}
 .agua{position:fixed;top:30%;left:0;right:0;text-align:center;font-size:130px;font-weight:800;color:rgba(120,120,120,.13);letter-spacing:16px;transform:rotate(-18deg);pointer-events:none;z-index:0}
 .head,.bloques,table,.pie{position:relative;z-index:1}
-.bloques{display:flex;gap:8px;margin-bottom:7px}
-.bloque{flex:1;border:1.5px solid #94A3B8;border-radius:7px;padding:5px 8px}
-.bloque h3{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#334155;margin-bottom:4px}
-.eq,.par{display:inline-flex;align-items:center;gap:5px;margin:0 9px 2px 0;flex-wrap:wrap}
-.eqn{font-size:9px;font-weight:800;padding:2px 6px;border-radius:4px}
-.txt{font-size:9.5px;color:#334155}
-.chip{display:inline-flex;align-items:center;gap:2px;border-radius:9px;padding:1px 5px;font-size:10px;font-weight:700;margin:1px}
-.chip b{font-size:6.5px;color:#fff;padding:0 2.5px;border-radius:2px;font-weight:800}
+.bloques{display:flex;gap:7px;margin-bottom:5px}
+.bloque{flex:1;border:1.5px solid #94A3B8;border-radius:7px;padding:4px 7px}
+.bloque h3{font-size:8.5px;text-transform:uppercase;letter-spacing:.5px;color:#334155;margin-bottom:2px}
+.eq,.par{display:inline-flex;align-items:center;gap:4px;margin:0 8px 1px 0;flex-wrap:wrap}
+.eqn{font-size:11px;font-weight:800;padding:2.5px 7px;border-radius:4px}
+.txt{font-size:11px;color:#334155}
+/* Los chips son lo que la gente lee de lejos y a contraluz en el office, así que
+   van grandes a propósito y todo lo demás de la hoja se apretó para pagarlos.
+   Suena contraintuitivo agrandarlos cuando la hoja tiene que entrar en una
+   página, pero funciona: el ajuste maqueta el body a 1030/zoom px de
+   ancho, así que un tipo más grande baja el zoom y a la vez ensancha las
+   columnas en la misma proporción. Lo único que se paga es el tamaño relativo
+   del título y los rótulos, que es exactamente lo que sobra en esta hoja.
+   El badge de nivel va en em para que crezca con el chip. */
+.chip{display:inline-flex;align-items:center;gap:3px;border-radius:10px;padding:1.5px 7px;font-size:17px;font-weight:700;margin:.5px;white-space:nowrap}
+.chip b{font-size:.6em;color:#fff;padding:.5px 3.5px;border-radius:3px;font-weight:800}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
-.nota{font-size:8.5px;color:#64748B;font-style:italic}
-.pie{margin-top:6px;font-size:8.5px;color:#334155;line-height:1.45;border-top:1px solid #94A3B8;padding-top:6px}
+.nota{font-size:11px;color:#64748B;font-style:italic}
+.pie{margin-top:4px;font-size:8px;color:#334155;line-height:1.4;border-top:1px solid #94A3B8;padding-top:4px}
 `;
 
-// Ajusta la hoja para que entre en UNA sola página y recién ahí imprime.
-// Antes el zoom era un número fijo y por eso los meses de seis semanas —agosto
-// de 2026, por ejemplo— se partían en dos páginas. Ahora se mide la altura
-// real y se calcula el zoom necesario. Se itera un par de veces porque al
-// achicar entra más ancho y el alto vuelve a cambiar.
-function ajustarYImprimir(win, maxZoom) {
-  const hacerlo = () => {
-    try {
-      const body = win.document.body;
-      const PW = 1030, PH = 712; // A4 apaisada a 96dpi, con colchón de margen
-      let z = maxZoom;
-      for (let i = 0; i < 5; i++) {
-        body.style.zoom = "1";
-        body.style.width = PW / z + "px";
-        const alto = Math.max(body.scrollHeight, win.document.documentElement.scrollHeight);
-        const necesario = Math.min(maxZoom, PH / alto);
-        if (Math.abs(necesario - z) < 0.005) { z = necesario; break; }
-        z = necesario;
+// El ajuste a una sola página corre DENTRO de la hoja, no desde la app. Así la
+// misma hoja se comporta igual en la ventana de impresión y en el iframe de la
+// vista previa: lo que se ve en pantalla es literalmente lo que sale impreso.
+//
+// Cómo funciona: la hoja se maqueta a PW/z píxeles de ancho y después se escala
+// por z, así que el alto impreso es alto(PW/z) * z. Se busca el z más grande
+// que todavía entra, por bisección.
+//
+// OJO, dos cosas que ya se aprendieron a los golpes y no hay que deshacer:
+//
+// 1) Acá antes había un punto fijo (z = PH/alto, repetido) y ESTABA MAL.
+//    Oscilaba en vez de converger: al bajar el zoom la hoja se maqueta más
+//    ancha, entonces se vuelve más baja, entonces permite subir el zoom, que la
+//    angosta de nuevo. Con letra chica el rebote no se notaba; al agrandar los
+//    chips se hizo grande y la hoja salía en dos páginas.
+// 2) La altura se mide aplicando el zoom de verdad, no escalando una medición
+//    hecha a zoom 1. Chrome redondea cada caja al aplicar zoom y con treinta y
+//    pico de filas ese redondeo suma varios puntos porcentuales de alto.
+//
+// El zoom puede pasar de 1: si sobra papel la hoja se agranda hasta llenar la
+// página, que es lo que hace que un mes flaco no salga con letra diminuta.
+const AJUSTE_HOJA_JS = `
+(function(){
+  var body=document.body, PW=1030, PH=716, MAXZ=1.75;
+  function alturaCon(z){ body.style.width=(PW/z)+"px"; body.style.zoom=String(z); return document.documentElement.scrollHeight; }
+  function anchoDesborda(){ return document.documentElement.scrollWidth > PW+2; }
+  function ajustar(){
+    var z=1;
+    try{
+      if(alturaCon(1)>PH){
+        var lo=0.3,hi=1;
+        for(var i=0;i<12;i++){ var m=(lo+hi)/2; if(alturaCon(m)<=PH) lo=m; else hi=m; }
+        z=lo;
+      } else if(!anchoDesborda()){
+        var lo2=1,hi2=MAXZ;
+        for(var j=0;j<10;j++){ var m2=(lo2+hi2)/2; alturaCon(m2);
+          if(document.documentElement.scrollHeight<=PH && !anchoDesborda()) lo2=m2; else hi2=m2; }
+        z=lo2;
       }
-      body.style.width = PW / z + "px";
-      body.style.zoom = String(z);
-    } catch (e) { /* si algo falla, se imprime igual sin ajustar */ }
-    setTimeout(() => { win.focus(); win.print(); }, 150);
-  };
-  const fuentes = win.document.fonts && win.document.fonts.ready;
-  if (fuentes && typeof fuentes.then === "function") fuentes.then(() => setTimeout(hacerlo, 80)).catch(() => setTimeout(hacerlo, 400));
-  else setTimeout(hacerlo, 400);
+      alturaCon(z);
+    }catch(e){ /* si algo falla se muestra igual, sin ajustar */ }
+  }
+  function arrancar(){ ajustar(); if(window.__imprimirAlAjustar){ setTimeout(function(){ window.focus(); window.print(); }, 150); } }
+  var f=document.fonts && document.fonts.ready;
+  if(f && typeof f.then==="function") f.then(function(){ setTimeout(arrancar,80); }).catch(function(){ setTimeout(arrancar,400); });
+  else setTimeout(arrancar,400);
+})();`;
+
+// Le pega el ajuste a la hoja. Con imprimir=true además dispara la impresión.
+function hojaAjustada(html, imprimir) {
+  const script = `<script>${imprimir ? "window.__imprimirAlAjustar=true;" : ""}${AJUSTE_HOJA_JS}<\/script></body>`;
+  return html.replace("</body>", script);
 }
 
-// Las hojas se arman como un documento HTML completo y recién después se
-// deciden a dónde va: a una ventana nueva para imprimir, o a un iframe para
-// verlo en pantalla dentro de la app. Así lo que se ve es exactamente lo que
-// sale por la impresora, sin dos maquetados que se puedan desincronizar.
-function abrirHoja(html, maxZoom) {
+// Las hojas se arman como un documento HTML completo y recién después se decide
+// a dónde va: a una ventana nueva para imprimir, o al iframe de la vista previa.
+function abrirHoja(html) {
   const win = window.open("", "_blank");
   if (!win) return;
-  win.document.write(html);
+  win.document.write(hojaAjustada(html, true));
   win.document.close();
-  ajustarYImprimir(win, maxZoom);
 }
 
 function htmlSemana({ lunes, week, equipos, borrador, emisor, bn }) {
@@ -4553,17 +4586,17 @@ function htmlSemana({ lunes, week, equipos, borrador, emisor, bn }) {
   return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${borrador ? "Borrador — " : ""}Scheduler UTI — Semana del ${rango}</title><style>
 ${CSS_IMPRESION}
 .tag.borrador{background:${P.tagBorrador}}
-col.lblcol{width:86px}
-thead th{font-size:10.5px;background:#0F172A;color:#fff;padding:4px 3px;border:1px solid #0F172A}
-thead th small{display:block;font-size:8.5px;font-weight:600;opacity:.8}
+col.lblcol{width:74px}
+thead th{font-size:12.5px;background:#0F172A;color:#fff;padding:4px 3px;border:1px solid #0F172A}
+thead th small{display:block;font-size:10px;font-weight:600;opacity:.8}
 thead th.fs{background:#475569}
-th.lbl{font-size:8.5px;font-weight:800;color:#fff;border:1px solid #94A3B8;padding:3px;vertical-align:middle;line-height:1.2}
-th.lbl span{display:block;font-size:6.5px;font-weight:600;opacity:.85}
+th.lbl{font-size:11.5px;font-weight:800;color:#fff;border:1px solid #94A3B8;padding:3px;vertical-align:middle;line-height:1.2}
+th.lbl span{display:block;font-size:8.5px;font-weight:600;opacity:.85}
 td{border:1px solid #94A3B8;vertical-align:top;padding:3px;height:52px}
 td.finde{background:${P.finde}}
 td.g{background:${P.bn ? "#F3F4F6" : "#FFF1F2"};height:46px}
-td.obs{background:${P.obs[0]};color:${P.obs[1]};font-size:8.5px;line-height:1.3;height:auto;padding:4px;${P.bn ? "border-left:3px solid #111827;" : ""}}
-td.rec{background:${P.rec[0]};color:${P.rec[1]};font-size:8.5px;line-height:1.3;height:auto;padding:4px;${P.bn ? "border-left:3px dashed #111827;" : ""}}
+td.obs{background:${P.obs[0]};color:${P.obs[1]};font-size:10.5px;line-height:1.3;height:auto;padding:4px;${P.bn ? "border-left:3px solid #111827;" : ""}}
+td.rec{background:${P.rec[0]};color:${P.rec[1]};font-size:10.5px;line-height:1.3;height:auto;padding:4px;${P.bn ? "border-left:3px dashed #111827;" : ""}}
 </style></head><body>
 ${agua}
 <div class="head"><div><h1>Semana del ${rango}</h1><div class="sub">Residencia de Terapia Intensiva — Hospital Británico</div></div>${sello}</div>
@@ -4584,7 +4617,7 @@ ${filaTexto("Recordatorios", "recordatorios", "rec")}
 </body></html>`;
 }
 
-function abrirSemana(opts) { abrirHoja(htmlSemana(opts), 1); }
+function abrirSemana(opts) { abrirHoja(htmlSemana(opts)); }
 
 function htmlMes({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador, emisor, bn }) {
   const soloGuardias = tipo === "guardias";
@@ -4643,20 +4676,20 @@ function htmlMes({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador, emis
   return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${borrador ? "Borrador — " : ""}${soloGuardias ? "Guardias" : "Cobertura de salas"} — ${MONTHS[mes]} ${anio}</title><style>
 ${CSS_IMPRESION}
 .tag.borrador{background:${P.tagBorrador}}
-thead th{font-size:10px;background:#0F172A;color:#fff;padding:4px;border:1px solid #0F172A}
-td{border:1px solid #94A3B8;vertical-align:top;padding:2.5px;height:62px}
-td.g-solo{height:80px;text-align:center;vertical-align:middle}
-td.g-solo .num{font-size:14px;text-align:left}
-.gbig{display:flex;flex-direction:column;align-items:center;gap:3px;margin-top:4px}
-.gbig .chip{font-size:12.5px;padding:3px 10px;border-radius:14px}
-.gbig .chip b{font-size:8px;padding:1px 3.5px}
-.cnt{font-size:11px;font-weight:800;color:#1F2937;margin:0 7px 0 1px}
+thead th{font-size:13px;background:#0F172A;color:#fff;padding:3px;border:1px solid #0F172A}
+td{border:1px solid #94A3B8;vertical-align:top;padding:2px 3px}
+td.g-solo{height:82px;text-align:center;vertical-align:middle}
+td.g-solo .num{font-size:15px;text-align:left}
+.gbig{display:flex;flex-direction:column;align-items:center;gap:4px;margin-top:5px}
+.gbig .chip{font-size:15px;padding:3.5px 12px;border-radius:16px}
+.gbig .chip b{font-size:9.5px;padding:1px 4px}
+.cnt{font-size:12px;font-weight:800;color:#1F2937;margin:0 7px 0 1px}
 td.off{background:${P.off}}td.finde{background:${P.finde}}
-.num{font-size:12px;font-weight:800;margin-bottom:2px}
-.fer{font-size:7px;background:${P.bn ? "#111827" : "#FDE68A"};color:${P.bn ? "#fff" : "#92400E"};padding:1px 4px;border-radius:6px;vertical-align:middle}
-.fila{display:flex;align-items:flex-start;gap:2px;margin-bottom:.5px;flex-wrap:wrap;line-height:1.15}
-.fila .lbl{font-size:7px;font-weight:800;color:#fff;border-radius:3px;padding:1.5px 3px;min-width:15px;text-align:center;flex-shrink:0;margin-top:1.5px}
-.obs{font-size:7.5px;color:${P.obs[1]};background:${P.obs[0]};border-radius:3px;padding:1px 3px;margin-top:2px;line-height:1.25;${P.bn ? "border-left:2.5px solid #111827;" : ""}}
+.num{font-size:14px;font-weight:800;margin-bottom:1px}
+.fer{font-size:9px;background:${P.bn ? "#111827" : "#FDE68A"};color:${P.bn ? "#fff" : "#92400E"};padding:1px 4px;border-radius:6px;vertical-align:middle}
+.fila{display:flex;align-items:flex-start;gap:3px;margin-bottom:0;flex-wrap:wrap;line-height:1.05}
+.fila .lbl{font-size:11.5px;font-weight:800;color:#fff;border-radius:4px;padding:2px 5px;min-width:26px;text-align:center;flex-shrink:0;margin-top:2px}
+.obs{font-size:10px;color:${P.obs[1]};background:${P.obs[0]};border-radius:3px;padding:1px 3px;margin-top:1px;line-height:1.25;${P.bn ? "border-left:2.5px solid #111827;" : ""}}
 </style></head><body>
 ${agua}
 <div class="head"><div><h1>${soloGuardias ? "Guardias" : "Cobertura de salas"} · ${MONTHS[mes]} ${anio}</h1><div class="sub">Residencia de Terapia Intensiva — Hospital Británico</div></div>${sello}</div>
@@ -4668,12 +4701,14 @@ ${soloGuardias
      <div class="bloque"><h3>Días libres R4</h3>${libresHtml}</div>
      <div class="bloque"><h3>Fuera de sala este mes</h3><div class="txt" style="line-height:1.6"><b>Rotan:</b> ${esc(rotan)}<br><b>Vacaciones:</b> ${esc(vac)}<br><span style="color:#64748B">Los que rotan dentro del país siguen haciendo guardias.</span></div></div>`}
 </div>
-<table><thead><tr>${DAYS.map((d) => `<th>${d}</th>`).join("")}</tr></thead><tbody>${filas}</tbody></table>
+<table>
+<colgroup>${DAYS.map((_, i) => `<col style="width:${soloGuardias ? 100 / 7 : isWeekendIdx(i) ? 9 : 16.4}%">`).join("")}</colgroup>
+<thead><tr>${DAYS.map((d) => `<th>${d}</th>`).join("")}</tr></thead><tbody>${filas}</tbody></table>
 <div class="pie">${pie}<br>${soloGuardias ? "<b>La guardia empieza a las 16 h.</b> Siempre dos residentes, uno de ellos R3 o R4. Los fines de semana, un R3 con un R2." : "<b>Referencias:</b> U1/U2/U3 = sala · PG = postguardia · G = de guardia (desde las 16 h)."}${P.leyenda}</div>
 </body></html>`;
 }
 
-function abrirBorrador(opts) { abrirHoja(htmlMes(opts), opts.tipo === "guardias" ? 1 : 0.95); }
+function abrirBorrador(opts) { abrirHoja(htmlMes(opts)); }
 
 
 /* ══════════════════ GUARDIAS POR RESIDENTE ══════════════════ */
