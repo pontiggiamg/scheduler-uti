@@ -4451,7 +4451,11 @@ function selloImpresion({ borrador, emisor, esc }) {
 // CSS que comparten las tres hojas.
 const CSS_IMPRESION = `
 @page{size:A4 landscape;margin:8mm}
-*{box-sizing:border-box;margin:0;padding:0}
+/* En el diálogo de Chrome la casilla "Gráficos de fondo" viene DESTILDADA por
+   defecto, y sin esto los chips salen en blanco: se pierde el color y, peor, en
+   blanco y negro se pierde el relleno que separa un chip del otro. Puesto en *
+   y no solo en body para que no dependa de la herencia. */
+*{box-sizing:border-box;margin:0;padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 body{font-family:'Inter',system-ui,sans-serif;color:#0F172A;font-size:10px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 h1{font-size:17px;letter-spacing:-.3px}
 .sub{font-size:10px;color:#475569}
@@ -4507,8 +4511,18 @@ table{width:100%;border-collapse:collapse;table-layout:fixed}
 const AJUSTE_HOJA_JS = `
 (function(){
   var body=document.body, PW=1030, PH=716, MAXZ=1.75;
-  function alturaCon(z){ body.style.width=(PW/z)+"px"; body.style.zoom=String(z); return document.documentElement.scrollHeight; }
-  function anchoDesborda(){ return document.documentElement.scrollWidth > PW+2; }
+  // OJO: acá NO se puede usar documentElement.scrollHeight. Nunca devuelve menos
+  // que el alto del viewport, así que en una ventana alta —la de cualquiera con
+  // la pantalla maximizada— el alto medido se quedaba clavado en el alto de la
+  // ventana por más que la hoja se achicara, la bisección se iba hasta el piso
+  // y la hoja salía maquetada a tres mil y pico de píxeles: en el papel, una
+  // guarda chiquita arriba de una hoja vacía. En headless no se veía porque la
+  // ventana es más baja que la hoja. body.scrollHeight es el alto real del
+  // contenido y no depende del viewport; por el zoom va en unidades locales,
+  // así que se multiplica por z para tenerlo en píxeles impresos.
+  function alturaCon(z){ _z=z; body.style.width=(PW/z)+"px"; body.style.zoom=String(z); return body.scrollHeight*z; }
+  function anchoDesborda(){ return body.scrollWidth*z0() > PW+2; }
+  var _z=1; function z0(){ return _z; }
   function ajustar(){
     var z=1;
     try{
@@ -4518,8 +4532,8 @@ const AJUSTE_HOJA_JS = `
         z=lo;
       } else if(!anchoDesborda()){
         var lo2=1,hi2=MAXZ;
-        for(var j=0;j<10;j++){ var m2=(lo2+hi2)/2; alturaCon(m2);
-          if(document.documentElement.scrollHeight<=PH && !anchoDesborda()) lo2=m2; else hi2=m2; }
+        for(var j=0;j<10;j++){ var m2=(lo2+hi2)/2;
+          if(alturaCon(m2)<=PH && !anchoDesborda()) lo2=m2; else hi2=m2; }
         z=lo2;
       }
       alturaCon(z);
