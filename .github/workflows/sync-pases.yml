@@ -1,4 +1,4 @@
-﻿name: Sincronizar pases automaticamente
+name: Sincronizar pases automaticamente
 
 # Vercel Hobby (el plan gratuito) solo permite cron jobs que corran una vez
 # por dia, asi que la sincronizacion automatica cada 2 horas la hacemos aca,
@@ -11,7 +11,7 @@
 # usa "1-23/2" en vez de "0-22/2".
 on:
   schedule:
-    - cron: "0 1-23/2 * * *"
+    - cron: "7 1-23/2 * * *"
   workflow_dispatch: {}
 
 jobs:
