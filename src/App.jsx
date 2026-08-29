@@ -21,7 +21,9 @@ const TAB_META = {
   scheduler: { icon: "📅", label: "Semana" },
   rotaciones: { icon: "🔄", label: "Rotaciones y Vacaciones" },
   pases: { icon: "🛏️", label: "Pases" },
-  chipa: { icon: "🥐", label: "Chipa y Aura" },
+  // El 🥐 es el ícono de la pestaña y le corresponde a la chipa; el ✨ va pegado
+  // a "Aura" en la etiqueta para que cada votación tenga su símbolo a la vista.
+  chipa: { icon: "🥐", label: "Chipa y Aura ✨" },
   academico: { icon: "📚", label: "Calendario Académico" },
   articulo: { icon: "📄", label: "Artículo de la semana" },
   registro: { icon: "📋", label: "Registro" },
