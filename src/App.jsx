@@ -21,7 +21,7 @@ const TAB_META = {
   scheduler: { icon: "📅", label: "Semana" },
   rotaciones: { icon: "🔄", label: "Rotaciones y Vacaciones" },
   pases: { icon: "🛏️", label: "Pases" },
-  chipa: { icon: "🥐", label: "Chipa" },
+  chipa: { icon: "🥐", label: "Chipa y Aura" },
   academico: { icon: "📚", label: "Calendario Académico" },
   articulo: { icon: "📄", label: "Artículo de la semana" },
   registro: { icon: "📋", label: "Registro" },
@@ -498,13 +498,21 @@ function motivoNoDisponible(name, date, rotPorAnio, diaLibre) {
 // chipa_votes/{weekId}   → candidatos y recuento de votos (público)
 // chipa_voters/{weekId}  → uids que ya votaron esa semana (solo para bloquear el doble voto)
 // Así se ve cuántos votos tiene cada uno, pero no quién votó a quién.
+//
+// Son DOS votaciones sobre la misma lista de candidatos: la chipa (castigo) y
+// el aura (premio). Comparten documento y se distinguen por el campo: los votos
+// van en `counts` y `countsAura`, y los votantes en `voted` y `votedAura`. Se
+// hizo así, y no con documentos separados, para no migrar nada: el historial de
+// chipa que ya existía sigue leyéndose igual y las semanas viejas simplemente
+// no tienen aura.
 
 function normalizeChipaWeek(raw, weekId) {
-  if (!raw || typeof raw !== "object") return { weekStart: weekId, candidates: [], counts: {} };
+  if (!raw || typeof raw !== "object") return { weekStart: weekId, candidates: [], counts: {}, countsAura: {} };
   return {
     weekStart: typeof raw.weekStart === "string" ? raw.weekStart : weekId,
     candidates: Array.isArray(raw.candidates) ? raw.candidates.filter((n) => LEVEL[n]) : [],
     counts: raw.counts && typeof raw.counts === "object" ? raw.counts : {},
+    countsAura: raw.countsAura && typeof raw.countsAura === "object" ? raw.countsAura : {},
   };
 }
 
@@ -2173,7 +2181,47 @@ function ResumenIAPaciente({ p, state, onGenerar }) {
   );
 }
 
-/* ══════════════════ CHIPA DE LA SEMANA VIEW ══════════════════ */
+/* ══════════════════ CHIPA Y AURA DE LA SEMANA VIEW ══════════════════ */
+
+// Dos votaciones por semana, con los MISMOS candidatos y opuestas en signo: la
+// chipa es el castigo y el aura es el premio. Cada uno vota una vez en cada
+// una, y las dos son independientes: se puede ganar las dos la misma semana.
+const PREMIOS = {
+  chipa: {
+    clave: "chipa",
+    titulo: "Chipa de la semana",
+    bajada: "El castigo — el que se la ganó paga la chipa",
+    emoji: "🥐",
+    campoVotos: "counts",
+    campoVotantes: "voted",
+    degrade: "linear-gradient(135deg,#7C2D12,#9A3412 60%,#C2410C)",
+    acento: "#C2410C",
+    ganadorBg: "#FFF7ED",
+    ganadorBd: "#FB923C",
+    ganadorTx: "#9A3412",
+    trofeo: "🥐",
+    yaVotaste: "✓ Ya votaste la chipa de esta semana",
+    invitacion: "Tocá a quien se ganó la chipa. El voto es anónimo y no se puede cambiar.",
+    vacio: "Todavía no se eligieron los candidatos de esta semana.",
+  },
+  aura: {
+    clave: "aura",
+    titulo: "Aura de la semana",
+    bajada: "El premio — el que la tuvo se la ganó",
+    emoji: "✨",
+    campoVotos: "countsAura",
+    campoVotantes: "votedAura",
+    degrade: "linear-gradient(135deg,#4C1D95,#6D28D9 60%,#8B5CF6)",
+    acento: "#7C3AED",
+    ganadorBg: "#F5F3FF",
+    ganadorBd: "#A78BFA",
+    ganadorTx: "#5B21B6",
+    trofeo: "🏆",
+    yaVotaste: "✓ Ya votaste el aura de esta semana",
+    invitacion: "Tocá a quien tuvo el aura. El voto es anónimo y no se puede cambiar.",
+    vacio: "Todavía no se eligieron los candidatos de esta semana.",
+  },
+};
 
 function ChipaView({ isAdmin, user }) {
   const realMonday = useMemo(() => mondayOf(new Date()), []);
@@ -2182,9 +2230,10 @@ function ChipaView({ isAdmin, user }) {
   const weekId = isoDate(monday);
   const isRealWeek = weekId === realWeekId;
 
-  const [week, setWeek] = useState({ weekStart: weekId, candidates: [], counts: {} });
+  const [week, setWeek] = useState({ weekStart: weekId, candidates: [], counts: {}, countsAura: {} });
   const [loading, setLoading] = useState(true);
-  const [voted, setVoted] = useState(null); // null = todavía no se sabe, true/false ya resuelto
+  // null = todavía no se sabe, true/false ya resuelto. Una por votación.
+  const [voted, setVoted] = useState({ chipa: null, aura: null });
   const [status, setStatus] = useState("idle");
   const [editingCandidates, setEditingCandidates] = useState(false);
   const [pickerSel, setPickerSel] = useState([]);
@@ -2197,7 +2246,7 @@ function ChipaView({ isAdmin, user }) {
     setLoading(true);
     const ref = doc(db, "chipa_votes", weekId);
     const unsub = onSnapshot(ref, (snap) => {
-      setWeek(snap.exists() ? normalizeChipaWeek(snap.data(), weekId) : { weekStart: weekId, candidates: [], counts: {} });
+      setWeek(snap.exists() ? normalizeChipaWeek(snap.data(), weekId) : { weekStart: weekId, candidates: [], counts: {}, countsAura: {} });
       setLoading(false);
     }, () => setLoading(false));
     return unsub;
@@ -2207,9 +2256,10 @@ function ChipaView({ isAdmin, user }) {
     if (!user?.uid) return;
     const ref = doc(db, "chipa_voters", weekId);
     const unsub = onSnapshot(ref, (snap) => {
-      const list = snap.exists() && Array.isArray(snap.data().voted) ? snap.data().voted : [];
-      setVoted(list.includes(user.uid));
-    }, () => setVoted(false));
+      const d = snap.exists() ? snap.data() : {};
+      const yaVoto = (campo) => Array.isArray(d[campo]) && d[campo].includes(user.uid);
+      setVoted({ chipa: yaVoto("voted"), aura: yaVoto("votedAura") });
+    }, () => setVoted({ chipa: false, aura: false }));
     return unsub;
   }, [weekId, user?.uid]);
 
@@ -2228,13 +2278,16 @@ function ChipaView({ isAdmin, user }) {
     setEditingCandidates(false);
   };
 
-  const castVote = async (name) => {
-    if (!user?.uid || voted || voting || !week.candidates.includes(name)) return;
+  // Un voto por persona y por votación. Los recuentos y los votantes viven en
+  // campos distintos según el premio, así que votar la chipa no consume el
+  // voto del aura ni al revés.
+  const castVote = async (name, premio) => {
+    if (!user?.uid || voted[premio.clave] || voting || !week.candidates.includes(name)) return;
     setVoting(true);
     try {
-      await setDoc(doc(db, "chipa_votes", weekId), { weekStart: weekId, counts: { [name]: increment(1) } }, { merge: true });
-      await setDoc(doc(db, "chipa_voters", weekId), { voted: arrayUnion(user.uid) }, { merge: true });
-    } catch (e) { console.error("voto chipa", e); }
+      await setDoc(doc(db, "chipa_votes", weekId), { weekStart: weekId, [premio.campoVotos]: { [name]: increment(1) } }, { merge: true });
+      await setDoc(doc(db, "chipa_voters", weekId), { [premio.campoVotantes]: arrayUnion(user.uid) }, { merge: true });
+    } catch (e) { console.error("voto " + premio.clave, e); }
     setVoting(false);
   };
 
@@ -2254,17 +2307,54 @@ function ChipaView({ isAdmin, user }) {
 
   if (loading) return <Skeleton />;
 
-  const maxVotes = Math.max(0, ...week.candidates.map((n) => week.counts[n] || 0));
-  const totalVotes = week.candidates.reduce((s, n) => s + (week.counts[n] || 0), 0);
+  const votacion = (premio) => {
+    const cuenta = (n) => (week[premio.campoVotos] || {})[n] || 0;
+    const maxVotos = Math.max(0, ...week.candidates.map(cuenta));
+    const total = week.candidates.reduce((s, n) => s + cuenta(n), 0);
+    const yaVoto = !!voted[premio.clave];
+    return (
+      <div style={{ marginBottom: 20 }}>
+        <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "11px 15px", marginBottom: 10, borderRadius: 13, background: premio.degrade, color: "#fff" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 21 }}>{premio.emoji}</span>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: -0.3 }}>{premio.titulo}</div>
+              <div style={{ fontSize: 10.5, opacity: 0.75 }}>{premio.bajada}</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.85 }}>{total} voto{total === 1 ? "" : "s"}</div>
+        </div>
+
+        {week.candidates.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "26px 20px", color: "#64748B", fontSize: 12.5, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
+            {premio.emoji} {premio.vacio}
+            {isAdmin && <div style={{ fontSize: 11.5, marginTop: 8 }}>Tocá "Elegir candidatos" para arrancar la votación.</div>}
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 8 }}>
+              {week.candidates.map((n) => (
+                <CandidateCard key={n} name={n} count={cuenta(n)} isWinner={maxVotos > 0 && cuenta(n) === maxVotos}
+                  premio={premio} disabled={yaVoto || voting} onVote={() => castVote(n, premio)} />
+              ))}
+            </div>
+            <div style={{ textAlign: "center", padding: "4px 4px", fontSize: 12, fontWeight: 600, color: yaVoto ? premio.acento : "#94A3B8" }}>
+              {yaVoto ? premio.yaVotaste : premio.invitacion}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div>
-      <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#7C2D12,#9A3412 60%,#C2410C)", color: "#fff" }}>
+      <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 22 }}>🥐</span>
           <div>
-            <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Chipa de la semana</div>
-            <div style={{ fontSize: 10.5, opacity: 0.7 }}>{totalVotes} voto{totalVotes === 1 ? "" : "s"}</div>
+            <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Chipa y Aura</div>
+            <div style={{ fontSize: 10.5, opacity: 0.6 }}>Dos votaciones, los mismos candidatos</div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -2289,7 +2379,8 @@ function ChipaView({ isAdmin, user }) {
 
       {editingCandidates ? (
         <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 14, marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600, marginBottom: 10 }}>Tocá para agregar o sacar candidatos de esta semana:</div>
+          <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600, marginBottom: 4 }}>Tocá para agregar o sacar candidatos de esta semana:</div>
+          <div style={{ fontSize: 11, color: "#94A3B8", marginBottom: 10 }}>La lista es la misma para la chipa y para el aura.</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
             {ALL.map((n) => {
               const on = pickerSel.includes(n);
@@ -2307,23 +2398,10 @@ function ChipaView({ isAdmin, user }) {
             <button onClick={() => setEditingCandidates(false)} style={{ background: "#E2E8F0", color: "#64748B", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
           </div>
         </div>
-      ) : week.candidates.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "40px 20px", color: "#64748B", fontSize: 13, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
-          🥐 Todavía no se eligieron los candidatos de esta semana.
-          {isAdmin && <div style={{ fontSize: 11.5, marginTop: 8 }}>Tocá "Elegir candidatos" para arrancar la votación.</div>}
-        </div>
       ) : (
         <>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
-            {week.candidates.map((n) => {
-              const count = week.counts[n] || 0;
-              const isWinner = maxVotes > 0 && count === maxVotes;
-              return <CandidateCard key={n} name={n} count={count} isWinner={isWinner} disabled={!!voted || voting} onVote={() => castVote(n)} />;
-            })}
-          </div>
-          <div style={{ textAlign: "center", padding: "8px 4px", fontSize: 12, fontWeight: 600, color: voted ? "#16A34A" : "#94A3B8" }}>
-            {voted ? "✓ Ya votaste esta semana — gracias 🍞" : "Tocá a un candidato para votarlo. El voto es anónimo y no se puede cambiar."}
-          </div>
+          {votacion(PREMIOS.chipa)}
+          {votacion(PREMIOS.aura)}
         </>
       )}
 
@@ -2346,14 +2424,15 @@ function ChipaView({ isAdmin, user }) {
   );
 }
 
-function CandidateCard({ name, count, isWinner, disabled, onVote }) {
+function CandidateCard({ name, count, isWinner, premio, disabled, onVote }) {
   const c = COLOR[LEVEL[name]];
+  const gana = isWinner && count > 0;
   return (
-    <div onClick={disabled ? undefined : onVote} style={{ cursor: disabled ? "default" : "pointer", userSelect: "none", flex: "1 1 130px", maxWidth: 180, textAlign: "center", padding: "16px 10px", borderRadius: 14, background: isWinner ? "#FFFBEB" : "#fff", border: `2px solid ${isWinner ? "#FBBF24" : "#E2E8F0"}`, boxShadow: isWinner ? "0 0 0 3px #FBBF2433" : "0 1px 3px rgba(15,23,42,.04)", transition: "transform .1s", opacity: disabled ? 0.75 : 1 }}>
-      <div style={{ fontSize: 26, marginBottom: 4 }}>{isWinner && count > 0 ? "🏆" : "🥐"}</div>
+    <div onClick={disabled ? undefined : onVote} style={{ cursor: disabled ? "default" : "pointer", userSelect: "none", flex: "1 1 130px", maxWidth: 180, textAlign: "center", padding: "16px 10px", borderRadius: 14, background: gana ? premio.ganadorBg : "#fff", border: `2px solid ${gana ? premio.ganadorBd : "#E2E8F0"}`, boxShadow: gana ? `0 0 0 3px ${premio.ganadorBd}44` : "0 1px 3px rgba(15,23,42,.04)", transition: "transform .1s", opacity: disabled ? 0.75 : 1 }}>
+      <div style={{ fontSize: 26, marginBottom: 4 }}>{gana ? premio.trofeo : premio.emoji}</div>
       <div style={{ fontWeight: 800, fontSize: 14, color: "#0F172A" }}>{name}</div>
       <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 5px", borderRadius: 3, background: c.solid, color: "#fff", letterSpacing: 0.2 }}>{LEVEL[name]}</span>
-      <div style={{ marginTop: 8, fontSize: 20, fontWeight: 800, color: isWinner ? "#B45309" : "#334155" }}>{count}</div>
+      <div style={{ marginTop: 8, fontSize: 20, fontWeight: 800, color: gana ? premio.ganadorTx : "#334155" }}>{count}</div>
       <div style={{ fontSize: 9.5, color: "#64748B", fontWeight: 600 }}>voto{count === 1 ? "" : "s"}</div>
     </div>
   );
@@ -2361,20 +2440,29 @@ function CandidateCard({ name, count, isWinner, disabled, onVote }) {
 
 function ChipaHistoryRow({ week }) {
   const monday = new Date(`${week.weekStart}T12:00:00`);
-  const maxVotes = Math.max(0, ...week.candidates.map((n) => week.counts[n] || 0));
-  const winners = maxVotes > 0 ? week.candidates.filter((n) => (week.counts[n] || 0) === maxVotes) : [];
-  const sorted = [...week.candidates].sort((a, b) => (week.counts[b] || 0) - (week.counts[a] || 0));
+  const linea = (premio) => {
+    const cuenta = (n) => (week[premio.campoVotos] || {})[n] || 0;
+    const max = Math.max(0, ...week.candidates.map(cuenta));
+    const ganadores = max > 0 ? week.candidates.filter((n) => cuenta(n) === max) : [];
+    const ordenados = [...week.candidates].sort((a, b) => cuenta(b) - cuenta(a)).filter(cuenta);
+    return (
+      <div style={{ marginTop: 5 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: premio.acento }}>
+          {premio.emoji} {ganadores.length === 0 ? "Sin votos" : `${premio.trofeo} ${ganadores.join(" y ")}`}
+        </div>
+        {ordenados.length > 0 && (
+          <div style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
+            {ordenados.map((n) => `${n} (${cuenta(n)})`).join(" · ")}
+          </div>
+        )}
+      </div>
+    );
+  };
   return (
     <div style={{ background: "#fff", borderRadius: 10, border: "1px solid #E2E8F0", padding: "9px 13px" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
-        <div style={{ fontSize: 11, color: "#64748B", fontWeight: 600 }}>{dm(monday)} — {dm(shift(monday, 6))}</div>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#B45309" }}>
-          {winners.length === 0 ? "Sin votos" : `🏆 ${winners.join(" y ")}`}
-        </div>
-      </div>
-      <div style={{ fontSize: 11, color: "#64748B", marginTop: 4 }}>
-        {sorted.map((n) => `${n} (${week.counts[n] || 0})`).join(" · ")}
-      </div>
+      <div style={{ fontSize: 11, color: "#64748B", fontWeight: 600 }}>{dm(monday)} — {dm(shift(monday, 6))}</div>
+      {linea(PREMIOS.chipa)}
+      {linea(PREMIOS.aura)}
     </div>
   );
 }
