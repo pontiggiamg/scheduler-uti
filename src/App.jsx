@@ -10,7 +10,7 @@ const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 // Pestañas de nivel superior de la app. El orden por defecto se usa si todavía
 // no hay nada guardado en Firestore (scheduler/ui-config); el admin puede
 // reordenarlas arrastrando y ese orden se guarda ahí, compartido para todos.
-const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "chipa", "academico", "articulo", "registro", "hoy", "accesos", "impresiones"];
+const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "paseapp", "chipa", "academico", "articulo", "registro", "hoy", "accesos", "impresiones"];
 // La pestaña se llamaba "borradores" y pasó a llamarse "impresiones": lo que
 // sale de ahí es definitivo salvo que se lo marque expresamente como borrador.
 // El orden de pestañas guardado en Firestore puede tener todavía el nombre
@@ -21,6 +21,10 @@ const TAB_META = {
   scheduler: { icon: "📅", label: "Semana" },
   rotaciones: { icon: "🔄", label: "Rotaciones y Vacaciones" },
   pases: { icon: "🛏️", label: "Pases" },
+  // Pase App: el pase de guardia editable. Cada residente tiene su propia copia
+  // guardada en su cuenta, así que la pestaña la ve cualquiera que entró a la
+  // app, no solo la jefatura.
+  paseapp: { icon: "🩺", label: "Pase App", tag: "Alpha" },
   // El 🥐 es el ícono de la pestaña y le corresponde a la chipa; el ✨ va pegado
   // a "Aura" en la etiqueta para que cada votación tenga su símbolo a la vista.
   chipa: { icon: "🥐", label: "Chipa y Aura ✨" },
@@ -759,6 +763,9 @@ function AuthenticatedApp() {
               onDragEnd={handleTabDragEnd}
             >
               {meta.icon} {meta.label}
+              {/* Etiqueta 'Alpha': avisa que la pestaña está en prueba y que lo
+                  que se guarde ahí puede cambiar de forma sin aviso. */}
+              {meta.tag && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", background: tab === key ? "#334155" : "#CBD5E1", color: tab === key ? "#E2E8F0" : "#475569", borderRadius: 4, padding: "1px 5px" }}>{meta.tag}</span>}
             </TabBtn>
           );
         })}
@@ -767,6 +774,7 @@ function AuthenticatedApp() {
       {tab === "scheduler" && <SchedulerView isAdmin={isAdmin} />}
       {tab === "rotaciones" && <RotacionesView isAdmin={isAdmin} />}
       {tab === "pases" && <PasesView isAdmin={isAdmin} />}
+      {tab === "paseapp" && <PaseAppView user={user} />}
       {tab === "chipa" && <ChipaView isAdmin={isAdmin} user={user} />}
       {tab === "academico" && <AcademicoView isAdmin={isAdmin} />}
       {tab === "articulo" && <ArticuloSemanaView isAdmin={isAdmin} />}
@@ -5786,3 +5794,705 @@ const NAV = { background: "rgba(255,255,255,.14)", border: "none", borderRadius:
 const INPUT = { padding: "6px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", background: "#fff", color: "#0F172A" };
 
 const TEXTAREA = { width: "100%", minHeight: 52, padding: "6px 8px", borderRadius: 7, border: "1px solid #E2E8F0", background: "#fff", fontSize: 11.5, lineHeight: 1.45, color: "#1F2937", fontWeight: 500, fontFamily: "'Inter', system-ui, sans-serif", resize: "vertical", outline: "none", boxSizing: "border-box" };
+
+/* ══════════════════ PASE APP (alpha) ══════════════════
+
+   El pase de guardia editable. Arranca de la foto que el sync trae del Drive y
+   cada residente edita SU copia, que se guarda en Firestore bajo su uid. Nadie
+   ve la copia de nadie: es una libreta personal, no el registro del servicio.
+
+   Tres decisiones que conviene entender antes de tocar esto:
+
+   1) La foto del Drive NO se toca nunca. Se guarda entera junto con la copia
+      editada, y de la comparación entre las dos sale el resaltado de lo que se
+      agregó. Por eso no hacen falta versiones: hay dos textos y un interruptor.
+
+   2) Lo editado se marca con un diff POR PALABRAS, no por carácter. Agregar
+      "PL s/p" tiene que verse como dos palabras nuevas y no como siete letras
+      sueltas intercaladas.
+
+   3) Las anotaciones son temporales por definición, pero no se borran solas:
+      hay un botón explícito. Un borrado automático a las 24 h le puede comer a
+      alguien una nota a mitad de guardia, y eso es peor que arrastrar datos
+      viejos un día de más.
+*/
+
+// Colección propia. Un documento por residente y por pase: id = uid + fecha de
+// la foto, así cambiar de pase no pisa lo de la guardia anterior.
+const PASEAPP_COL = "pase_guardia";
+
+const PA_ROT = {
+  ap: "Antecedentes", ea: "Enfermedad actual", req: "Requerimientos e intercurrencias",
+  tto: "Tratamiento", labo: "Laboratorio", eab: "Estado ácido-base", cultivos: "Cultivos",
+  estudios: "Estudios", accesos: "Accesos e imágenes",
+};
+// El orden en que se muestran los campos. Si el Drive trae un campo que no está
+// acá, no se ve: por eso EAB está en la lista aunque solo lo use parte del
+// plantel. Cualquier campo nuevo del Drive hay que agregarlo en los dos lados.
+const PA_ORDEN = ["ap", "ea", "req", "tto", "labo", "eab", "cultivos", "estudios", "accesos"];
+const PA_TIPOS = ["Medicación", "Intercurrencia", "Estudio", "Procedimiento", "Otro"];
+const PA_PESO_SUPUESTO = 70;
+
+// La unidad de cada infusión no está escrita en el pase: depende de la droga.
+const PA_UNIDAD = {
+  Fentanilo: "mcg", Remifentanilo: "mcg", Dexmedetomidina: "mcg",
+  Ketamina: "mg", Morfina: "mg", Noradrenalina: "mg", Midazolam: "mg", Propofol: "mg",
+};
+// Rango habitual, solo como control de sanidad del dato: si cae afuera casi
+// siempre es un ritmo viejo o una dilución mal escrita, no una mala dosis.
+const PA_RANGO = {
+  Fentanilo: [0.5, 10], Remifentanilo: [1, 12], Dexmedetomidina: [0.2, 1.5],
+  Morfina: [0.005, 0.2], Ketamina: [0.05, 1.5], Noradrenalina: [0.0006, 0.18],
+  Midazolam: [0.02, 0.2], Propofol: [0.5, 4],
+};
+const PA_INFUS = {
+  FENTANILO: "Fentanilo", FNT: "Fentanilo", KETAMINA: "Ketamina", KETA: "Ketamina",
+  MORFINA: "Morfina", NORADRENALINA: "Noradrenalina", NORA: "Noradrenalina",
+  MIDAZOLAM: "Midazolam", MIDA: "Midazolam", PROPOFOL: "Propofol",
+  // "DEXMEDETO 400/100/3" aparece así en la 1.4: el nombre entero casi nunca
+  // se escribe completo, conviene tener las formas cortas.
+  DEXMEDETOMIDINA: "Dexmedetomidina", DEXMEDETO: "Dexmedetomidina", DEXME: "Dexmedetomidina",
+  PRECEDEX: "Dexmedetomidina", REMIFENTANILO: "Remifentanilo", REMI: "Remifentanilo",
+};
+const PA_FARMACOS = new Set(["BISO", "LACOSAMIDA", "ZOLPIDEM", "HIDRO", "MESTINON",
+  "PREGABALINA", "MEPREDNISONA", "ARIPIPRAZOL", "VALPROICO", "OLANZAPINA", "QUETIAPINA",
+  "METADONA", "SANDOSTATIN", "PARACETAMOL", "TRAMADOL", "NIMODIPINA", "METOCLOPRAMIDA",
+  "ONDANSETRON", "MORFINA", "BUPRENORFINA", "DEXAMETASONA", "HALOPERIDOL", "LORAZEPAM",
+  "ENOXAPARINA", "LEVETIRACETAM", "FENITOINA"]);
+
+// ── Nombres ────────────────────────────────────────────────────────────────
+// El pase mezcla dos convenciones de sexo: F/H (femenino/hombre) y M
+// (masculino). "Laluf, Carla Yamela, M" y "Fuentes Armando, M" no pueden ser la
+// misma M, así que la M sola se descarta en vez de adivinar.
+const PA_SEXO = { F: "Femenino", H: "Masculino" };
+const PA_CHICAS = new Set(["de", "del", "la", "las", "los", "y", "da", "di", "van", "von"]);
+const paTitulo = (s) => s.split(/\s+/).map((w, i) => {
+  const lw = w.toLowerCase();
+  return i > 0 && PA_CHICAS.has(lw) ? lw : lw.charAt(0).toUpperCase() + lw.slice(1);
+}).join(" ");
+
+function paNombre(raw) {
+  let t = (raw || "").replace(/\s+/g, " ").trim();
+  let edad = null, sexo = null;
+  let m = t.match(/(\d{1,3})\s*(?:AÑOS?|Años?|años?)?\s*$/);
+  if (m) { const e = +m[1]; if (e > 0 && e < 120) { edad = e; t = t.slice(0, m.index); } }
+  t = t.replace(/[\s,.]+$/, "");
+  m = t.match(/,\s*([FHM])\s*$/);
+  if (m) { sexo = PA_SEXO[m[1]] || null; t = t.slice(0, m.index).replace(/[\s,.]+$/, ""); }
+  let nombre;
+  if (t.includes(",")) {
+    const [ap, no] = t.split(/,(.+)/);
+    nombre = `${paTitulo(no.trim())} ${paTitulo(ap.trim())}`;
+  } else {
+    // Sin coma no se sabe dónde termina el apellido: invertir a ciegas convierte
+    // "Hasan Nicolás Daniel" en "Daniel Hasan Nicolás". Se deja el orden.
+    nombre = paTitulo(t);
+  }
+  return { nombre: nombre.trim(), edad, sexo };
+}
+
+// Acentos que el pase escribe en mayúscula sin tilde y se pierden al bajar.
+const PA_ACENTOS = {
+  lucido: "lúcido", lucida: "lúcida", distension: "distensión", serohematico: "serohemático",
+  cateter: "catéter", via: "vía", vias: "vías", dias: "días", ultima: "última", ultimo: "último",
+  septico: "séptico", septica: "séptica", hipotension: "hipotensión", infeccion: "infección",
+  internacion: "internación", evolucion: "evolución", reaccion: "reacción", cirugia: "cirugía",
+  oxigeno: "oxígeno", clinico: "clínico", clinica: "clínica", cronico: "crónico", cronica: "crónica",
+  toracico: "torácico", toracica: "torácica", gastrico: "gástrico", hepatico: "hepático",
+  pulmon: "pulmón", cardiaco: "cardíaco", neurologico: "neurológico", antibiotico: "antibiótico",
+  antibioticos: "antibióticos", sedacion: "sedación", intubacion: "intubación",
+  extubacion: "extubación", traqueostomia: "traqueostomía", laparotomia: "laparotomía",
+  coleccion: "colección", colecciones: "colecciones", perforacion: "perforación",
+  fistula: "fístula", neumonia: "neumonía", transfusion: "transfusión", funcion: "función",
+  presion: "presión", hemodinamico: "hemodinámico", organico: "orgánico",
+};
+const PA_COMUNES = new Set(["SIN", "POR", "CON", "PARA", "DEL", "LOS", "LAS", "UNA",
+  "NO", "SI", "SE", "SU", "AL", "EN", "MAS", "ANTE", "TRAS", "SOBRE", "HOY", "DIA", "DIAS",
+  "FOCO", "DOLOR", "LEVE", "ALTA", "BAJA", "ESTA", "ESTE", "CADA", "TODO", "TODA"]);
+
+const PA_EXPANDIR = [
+  [/\bHDE\b/gi, "hemodinámicamente estable"], [/\bVE\s+S\/\s*O2\b/gi, "ventilando espontáneo sin O₂"],
+  [/\bVE\s+SIN\s+O2\b/gi, "ventilando espontáneo sin O₂"], [/\bEOT\b/gi, "extubación"],
+  [/\bVVC\b/gi, "vía venosa central"], [/\bDVE\b/gi, "drenaje ventricular externo"],
+  [/\bTAP\b/gi, "tubo pleural"], [/\bNET\b/gi, "nutrición enteral total"],
+  [/\bNPT\b/gi, "nutrición parenteral total"], [/\bNE\b/gi, "nutrición enteral"],
+  [/\bDICLO\b/gi, "diclofenac"], [/\bBISO\b/gi, "bisoprolol"], [/\bPRECEDEX\b/gi, "dexmedetomidina"],
+  [/\bRHA\b/gi, "ruidos hidroaéreos"], [/\bISQX\b/gi, "infección de sitio quirúrgico"],
+  [/\bEPM\b/gi, "episodio psicomotriz"], [/\bVEDA\b/gi, "videoendoscopia digestiva alta"],
+  [/\bVATS\b/gi, "cirugía toracoscópica videoasistida"], [/\bCBO\b/gi, "cerebro"],
+  [/\bPEND\b/gi, "pendiente"], [/\bCIR\b/gi, "catéter peridural"], [/\bTFG\b/gi, "filtrado glomerular"],
+];
+
+function paLimpiar(txt) {
+  if (!txt) return txt;
+  let t = txt.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  const letras = t.replace(/[^a-zA-ZáéíóúñÁÉÍÓÚÑ]/g, "");
+  const mays = (t.match(/[A-ZÁÉÍÓÚÑ]/g) || []).length;
+  if (letras.length && mays / letras.length >= 0.55) {
+    // Solo palabras de 5+ letras o conectores comunes: las siglas cortas (QX,
+    // TAP, HDE) son el vocabulario real del servicio y se respetan.
+    t = t.replace(/\b[A-ZÁÉÍÓÚÑ]{2,}\b/g, (w) => {
+      if (/\d/.test(w)) return w;
+      if (!PA_COMUNES.has(w) && w.length < 5) return w;
+      const low = w.toLowerCase();
+      return PA_ACENTOS[low] || low;
+    });
+    t = t.replace(/(^|\n|(?<=[.;] ))([a-záéíóúñ])/g, (m, a, b) => a + b.toUpperCase());
+  }
+  for (const [re, rep] of PA_EXPANDIR) t = t.replace(re, rep);
+  return t;
+}
+
+// ── Parseo de infusiones y pendientes ──────────────────────────────────────
+function paProcesar(raw, unidad) {
+  const campos = raw.fields || {};
+  const todo = Object.values(campos).join(" ");
+  const inf = [], vistos = new Set();
+  // Las infusiones no siempre están en TTO: la 1.1 las tiene en enfermedad
+  // actual. Se busca en todos los campos. NA solo cuenta en tratamiento, porque
+  // en laboratorio es el sodio.
+  for (const [campo, txt] of Object.entries(campos)) {
+    const re = /\b([A-ZÁÉÍÓÚÑ]{2,15})\s+(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)\s*(?:→\s*([0-9.,]+))?/g;
+    let m;
+    while ((m = re.exec(txt || ""))) {
+      const droga = PA_INFUS[m[1]] || (m[1] === "NA" && campo === "tto" ? "Noradrenalina" : null);
+      if (!droga) continue;
+      const k = `${droga}|${m[2]}|${m[3]}|${m[4]}`;
+      if (vistos.has(k)) continue;
+      vistos.add(k);
+      inf.push({ droga, mg: +m[2], ml: +m[3], ritmo: +m[4],
+        declarada: m[5] ? parseFloat(m[5].replace(",", ".")) : null,
+        campo: campo === "tto" ? null : campo });
+    }
+  }
+  const interm = [];
+  const reI = /\b([A-ZÁÉÍÓÚÑ]{3,15})\s+(\d+)\s*\/\s*(\d+)\b(?!\s*\/)/g;
+  let mi;
+  while ((mi = reI.exec(campos.tto || ""))) {
+    if (PA_FARMACOS.has(mi[1]) && [4, 6, 8, 12, 24].includes(+mi[3]))
+      interm.push({ droga: paTitulo(mi[1]), mg: +mi[2], cada: +mi[3] });
+  }
+  const mp = todo.match(/PESO\s*(?:REAL\s*)?(?:DE\s*)?(\d{2,3})\s*KG/i);
+  const pend = (campos.pendiente || "")
+    .split(/\n|\/\/|(?<=[a-zA-ZáéíóúÁÉÍÓÚ0-9])\s+\/\s+(?=[A-ZÁÉÍÓÚ])/)
+    .map((x) => x.replace(/^[\s/]+|[\s/]+$/g, "")).filter(Boolean)
+    .map((x) => ({ texto: paLimpiar(x), listo: false }));
+  const req = (campos.req || "").split("\n").map((x) => x.trim()).filter(Boolean);
+  const ult = req.length ? req[req.length - 1] : "";
+  const limpios = {};
+  for (const [k, v] of Object.entries(campos)) if (k !== "pendiente") limpios[k] = paLimpiar(v);
+  return {
+    unidad, cama: raw.bed, ...paNombre(raw.name),
+    mi: paLimpiar(raw.mi || ""), campos: limpios,
+    peso: mp ? +mp[1] : null, infusiones: inf, intermitentes: interm,
+    pendientes: pend, anotaciones: [], balance: { ingresos: [], egresos: [] },
+    sinCompletar: !req.length || /^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(ult),
+  };
+}
+
+// ── Diff por palabras ──────────────────────────────────────────────────────
+// Palabra y no carácter: agregar "PL s/p" tiene que leerse como dos palabras
+// nuevas, no como siete letras sueltas intercaladas en el texto.
+function paDiff(a, b) {
+  if (a === b) return [{ t: "=", v: a }];
+  const A = (a || "").split(/(\s+)/), B = (b || "").split(/(\s+)/);
+  const n = A.length, m = B.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = []; let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { out.push({ t: "=", v: A[i] }); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) { out.push({ t: "-", v: A[i] }); i++; }
+    else { out.push({ t: "+", v: B[j] }); j++; }
+  }
+  while (i < n) out.push({ t: "-", v: A[i++] });
+  while (j < m) out.push({ t: "+", v: B[j++] });
+  return out;
+}
+
+function TextoMarcado({ actual, original }) {
+  if (actual === original) return <>{actual}</>;
+  return (
+    <>
+      {paDiff(original || "", actual || "").map((d, i) =>
+        d.t === "=" ? <span key={i}>{d.v}</span>
+        : d.t === "+" ? <ins key={i} style={{ background: "#FFF6E5", color: "#8A4B00", fontWeight: 600, textDecoration: "none", borderRadius: 2, boxShadow: "inset 0 -2px 0 #E9C48A" }}>{d.v}</ins>
+        : <del key={i} style={{ color: "#94A3B8", opacity: 0.7 }}>{d.v}</del>)}
+    </>
+  );
+}
+
+function paDosis(inf, pesoReal) {
+  const peso = pesoReal || PA_PESO_SUPUESTO;
+  const u = PA_UNIDAD[inf.droga];
+  if (!u) return { sinUnidad: true, peso };
+  const kgh = (inf.mg / inf.ml) * inf.ritmo / peso;
+  return { u, kgh, kgmin: kgh / 60, peso, supuesto: !pesoReal };
+}
+
+/* ── La vista ───────────────────────────────────────────────────────────── */
+function PaseAppView({ user }) {
+  const [foto, setFoto] = useState(null);        // pase del Drive, nunca se toca
+  const [mio, setMio] = useState(null);          // mi copia editable
+  const [cargando, setCargando] = useState(true);
+  const [uSel, setUSel] = useState(null);
+  const [iSel, setISel] = useState(0);
+  const [verOriginal, setVerOriginal] = useState(false);
+  const [enFoco, setEnFoco] = useState(null);
+  const [plegado, setPlegado] = useState({ arm: true, anot: true, pend: false, bal: true });
+  const [tipoSel, setTipoSel] = useState("Intercurrencia");
+  const [estado, setEstado] = useState("");
+  const [arm, setArm] = useState({});
+  const undo = useRef([]);
+  const guardarTimer = useRef(null);
+
+  const docId = user && foto ? `${user.uid}__${(foto.tomado || "").slice(0, 10)}` : null;
+
+  // 1) La foto del Drive
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "scheduler", "pases-latest"), (snap) => {
+      if (!snap.exists()) { setCargando(false); return; }
+      const d = snap.data();
+      // Igual que la pestaña Pases: si el sync no dejó unitOrder, se usan las
+      // claves de units para no quedarse sin unidades por un campo faltante.
+      const unidades = d.unitOrder?.length ? d.unitOrder : Object.keys(d.units || {});
+      const pacientes = unidades.flatMap((u) =>
+        (d.units?.[u] || []).map((p) => paProcesar(p, u)));
+      setFoto({ tomado: d.updatedAt, unidades, pacientes });
+      setUSel((cur) => cur || unidades[0] || null);
+      setCargando(false);
+    }, () => setCargando(false));
+    return unsub;
+  }, []);
+
+  // 2) Mi copia. Si no existe todavía, arranca siendo la foto.
+  useEffect(() => {
+    if (!docId || !foto) return;
+    let vivo = true;
+    getDoc(doc(db, PASEAPP_COL, docId)).then((snap) => {
+      if (!vivo) return;
+      if (snap.exists() && Array.isArray(snap.data().pacientes)) {
+        setMio(snap.data().pacientes);
+        setEstado("Recuperado de tu última sesión");
+      } else {
+        setMio(JSON.parse(JSON.stringify(foto.pacientes)));
+      }
+    }).catch(() => setMio(JSON.parse(JSON.stringify(foto.pacientes))));
+    return () => { vivo = false; };
+  }, [docId, foto]);
+
+  const guardar = (datos) => {
+    if (!docId) return;
+    clearTimeout(guardarTimer.current);
+    guardarTimer.current = setTimeout(async () => {
+      try {
+        await setDoc(doc(db, PASEAPP_COL, docId), {
+          uid: user.uid, email: user.email || "", nombre: user.displayName || "",
+          tomado: foto.tomado, guardadoEn: new Date().toISOString(), pacientes: datos,
+        });
+        setEstado("Guardado " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }));
+      } catch (e) { console.error("guardar pase", e); setEstado("No se pudo guardar"); }
+    }, 700);
+  };
+
+  // Toda mutación pasa por acá: apila para deshacer y guarda.
+  const mutar = (fn) => {
+    setMio((cur) => {
+      undo.current.push(JSON.stringify(cur));
+      if (undo.current.length > 40) undo.current.shift();
+      const next = JSON.parse(JSON.stringify(cur));
+      fn(next);
+      guardar(next);
+      return next;
+    });
+  };
+  const deshacer = () => {
+    if (!undo.current.length) { setEstado("Nada para deshacer"); return; }
+    const prev = JSON.parse(undo.current.pop());
+    setMio(prev); guardar(prev);
+    setEstado("Deshecho · quedan " + undo.current.length);
+  };
+  const reiniciar = async () => {
+    if (!confirm("Esto borra tus anotaciones y ediciones, y vuelve a traer el pase del Drive.\n\n¿Seguro?")) return;
+    const limpio = JSON.parse(JSON.stringify(foto.pacientes));
+    undo.current = [];
+    setMio(limpio);
+    try { await deleteDoc(doc(db, PASEAPP_COL, docId)); } catch (e) { /* si no existía, da igual */ }
+    setEstado("Pase sincronizado y anotaciones borradas");
+  };
+
+  if (cargando || !mio || !foto) return <Skeleton />;
+
+  const idxUnidad = mio.map((p, i) => [p, i]).filter(([p]) => p.unidad === uSel).map(([, i]) => i);
+  const idx = idxUnidad.includes(iSel) ? iSel : (idxUnidad[0] ?? 0);
+  const o = foto.pacientes[idx] || {};
+  const p = verOriginal ? o : (mio[idx] || {});
+  const editable = !verOriginal;
+  const campos = PA_ORDEN.filter((k) => p.campos && p.campos[k] !== undefined);
+
+  // Dónde van las dosis calculadas. Lo natural es debajo de Tratamiento, pero
+  // hay pacientes que no tienen campo TTO en el Drive y llevan las infusiones
+  // escritas en enfermedad actual (1.1, 1.4, 2.5, 3.2, 3.7 al momento de
+  // escribir esto). Si se anclaran a "tto" a secas, esos cinco se quedarían sin
+  // ninguna dosis a la vista, que es justo el dato que hay que mirar. Cuando no
+  // hay tto se muestran en un bloque aparte al final, no colgadas del último
+  // campo que haya quedado, porque leer las dosis abajo de "Accesos" confunde.
+  const hayTto = campos.includes("tto");
+
+  const editarCampo = (k, txt) => mutar((d) => { d[idx].campos[k] = txt; });
+  const B = { fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "7px 12px", borderRadius: 5, border: "1.5px solid #E2E8F0", background: "#fff", color: "#0F172A", cursor: "pointer" };
+  const BP = { ...B, background: "#0F5F66", borderColor: "#0F5F66", color: "#fff" };
+  const ROT = { fontFamily: "ui-monospace,monospace", fontSize: 10.5, fontWeight: 600, letterSpacing: ".09em", textTransform: "uppercase" };
+  const caja = { background: "#fff", border: "1px solid #E2E8F0", borderRadius: 8, marginBottom: 12, overflow: "hidden" };
+
+  const Plegable = ({ k, titulo, color, n, children }) => (
+    <div style={{ ...caja, borderLeft: color ? `4px solid ${color}` : caja.border }}>
+      <div onClick={() => setPlegado((s) => ({ ...s, [k]: !s[k] }))}
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 14px", cursor: "pointer", userSelect: "none" }}>
+        <span style={{ fontSize: 10, color: "#64748B", transform: plegado[k] ? "rotate(-90deg)" : "none", transition: "transform .15s" }}>▼</span>
+        <span style={{ ...ROT, color: color || "#64748B" }}>{titulo}</span>
+        {n > 0 && <span style={{ background: color || "#64748B", color: "#fff", borderRadius: 9, padding: "0 6px", fontSize: 10, fontFamily: "ui-monospace,monospace" }}>{n}</span>}
+      </div>
+      {!plegado[k] && <div style={{ padding: "0 14px 13px" }}>{children}</div>}
+    </div>
+  );
+
+  const totalBal = (lista) => (lista || []).reduce((s, x) => s + (Number(x.ml) || 0), 0);
+  const ing = totalBal(p.balance?.ingresos), egr = totalBal(p.balance?.egresos);
+
+  return (
+    <div>
+      <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
+        <span style={{ fontSize: 22 }}>🩺</span>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3, display: "flex", alignItems: "center", gap: 7 }}>
+            Pase App
+            <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".08em", background: "#B45309", padding: "2px 6px", borderRadius: 3 }}>ALPHA</span>
+          </div>
+          <div style={{ fontSize: 10.5, opacity: 0.6 }}>
+            Foto del Drive {foto.tomado ? new Date(foto.tomado).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"} · {mio.length} camas · tu copia privada
+          </div>
+        </div>
+        <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.7 }}>{estado}</span>
+      </div>
+
+      <div className="no-print" style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+        <button onClick={deshacer} style={B}>↶ Deshacer</button>
+        <button onClick={reiniciar} style={B}>Borrar mis anotaciones y sincronizar pase</button>
+        <label style={{ ...B, display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <input type="checkbox" checked={verOriginal} onChange={(e) => setVerOriginal(e.target.checked)}
+            style={{ width: 16, height: 16, accentColor: "#0F5F66", margin: 0 }} />
+          Ver versión sin editar
+        </label>
+      </div>
+
+      <div className="no-print" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 9 }}>
+        {foto.unidades.map((u) => {
+          const g = mio.filter((x) => x.unidad === u);
+          const pend = g.reduce((s, x) => s + (x.pendientes || []).filter((y) => !y.listo).length, 0);
+          return (
+            <button key={u} onClick={() => { setUSel(u); setISel(mio.findIndex((x) => x.unidad === u)); }}
+              style={{ ...B, fontSize: 13, fontWeight: 700, ...(u === uSel ? { background: "#0F172A", borderColor: "#0F172A", color: "#fff" } : {}) }}>
+              {u} <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 10, opacity: 0.7 }}>{g.length}{pend ? ` · ${pend} pend` : ""}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="no-print" style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 8, marginBottom: 10 }}>
+        {idxUnidad.map((i) => {
+          const x = mio[i];
+          const pend = (x.pendientes || []).filter((y) => !y.listo).length;
+          return (
+            <button key={i} onClick={() => setISel(i)}
+              style={{ flex: "0 0 auto", fontFamily: "ui-monospace,monospace", fontSize: 13, fontWeight: 600, padding: "6px 11px", borderRadius: 4, border: "1.5px solid #E2E8F0", cursor: "pointer", background: i === idx ? "#0F5F66" : "#fff", color: i === idx ? "#fff" : "#64748B" }}>
+              {x.cama}{pend ? " •" : ""}
+              <span style={{ display: "block", fontSize: 8.5, fontWeight: 500, opacity: 0.75 }}>{(x.nombre || "").split(" ").pop().slice(0, 8)}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {verOriginal && (
+        <div style={{ padding: "9px 13px", borderRadius: 6, background: "#FFF6E5", border: "1px solid #E9C48A", color: "#8A4B00", fontSize: 12.5, fontWeight: 600, marginBottom: 12 }}>
+          Viendo la foto original del Drive, sin tus cambios. Destildá arriba para volver a tu versión.
+        </div>
+      )}
+
+      <div style={caja}>
+        <div style={{ padding: "12px 14px", borderBottom: "1px solid #E2E8F0" }}>
+          <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: -0.2 }}>{p.nombre}</div>
+          <div style={{ fontSize: 12.5, color: "#64748B", marginTop: 3 }}>
+            {p.edad ? `${p.edad} años` : ""}{p.sexo ? ` · ${p.sexo}` : ""}
+          </div>
+          <div style={{ fontSize: 12.5, color: "#64748B", marginTop: 5 }}>{p.mi}</div>
+          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 9 }}>
+            <span style={{ fontSize: 11.5, border: "1px solid #E2E8F0", borderRadius: 4, padding: "3px 8px" }}>
+              Cama <b style={{ fontFamily: "ui-monospace,monospace" }}>{p.cama}</b>
+            </span>
+            <span style={{ fontSize: 11.5, border: `1px ${p.peso ? "solid" : "dashed"} #E2E8F0`, borderRadius: 4, padding: "3px 8px", display: "flex", alignItems: "center", gap: 5 }}>
+              Peso
+              <input type="number" value={p.peso || ""} placeholder="—" disabled={!editable}
+                onChange={(e) => mutar((d) => { d[idx].peso = e.target.value ? +e.target.value : null; })}
+                style={{ width: 56, fontFamily: "ui-monospace,monospace", fontSize: 13, padding: "3px 5px", border: "1px solid #E2E8F0", borderRadius: 4 }} /> kg
+            </span>
+            {p.sinCompletar && <span style={{ fontSize: 11.5, border: "1px dashed #FCA5A5", color: "#B91C1C", borderRadius: 4, padding: "3px 8px" }}>Último día sin completar</span>}
+          </div>
+        </div>
+
+        {campos.map((k) => {
+          const txt = p.campos[k] || "", orig = o.campos?.[k] || "";
+          const cambiado = txt !== orig;
+          return (
+            <div key={k} style={{ borderBottom: "1px solid #E2E8F0" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px" }}>
+                <span style={{ ...ROT, color: "#64748B" }}>{PA_ROT[k]}</span>
+                <span style={{ marginLeft: "auto", fontSize: 11, color: cambiado ? "#8A4B00" : "#94A3B8" }}>
+                  {cambiado ? "editado" : "tocá para editar"}
+                </span>
+              </div>
+              <div style={{ padding: "0 14px 12px", fontSize: 14 }}>
+                <div contentEditable={editable} suppressContentEditableWarning
+                  onFocus={() => setEnFoco(k)}
+                  onBlur={(e) => { editarCampo(k, e.currentTarget.innerText); setEnFoco(null); }}
+                  style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", outline: "none", background: enFoco === k ? "rgba(15,95,102,.06)" : "transparent", borderRadius: 3, minHeight: 20 }}>
+                  {/* Mientras el campo tiene el foco se muestra texto plano: si le
+                      metemos marcas mientras se escribe, el cursor salta al inicio. */}
+                  {verOriginal || enFoco === k ? txt : <TextoMarcado actual={txt} original={orig} />}
+                </div>
+              </div>
+              {k === "tto" && <DosisDe p={p} />}
+            </div>
+          );
+        })}
+
+        {/* Sin campo Tratamiento, las dosis van igual: bloque propio al final. */}
+        {!hayTto && (
+          <div style={{ borderBottom: "1px solid #E2E8F0" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px" }}>
+              <span style={{ ...ROT, color: "#64748B" }}>Tratamiento</span>
+              <span style={{ marginLeft: "auto", fontSize: 11, color: "#94A3B8" }}>según lo escrito arriba</span>
+            </div>
+            <DosisDe p={p} />
+          </div>
+        )}
+      </div>
+
+      <Plegable k="bal" titulo="Balance" color="#1D4ED8" n={(p.balance?.ingresos?.length || 0) + (p.balance?.egresos?.length || 0)}>
+        <div style={{ display: "grid", gap: 12 }}>
+          {[["ingresos", "Ingresos", ing], ["egresos", "Egresos", egr]].map(([campo, rot, tot]) => (
+            <div key={campo}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 5 }}>
+                <span style={{ ...ROT, fontSize: 9.5, color: "#64748B" }}>{rot}</span>
+                <span style={{ marginLeft: "auto", fontFamily: "ui-monospace,monospace", fontWeight: 700, fontSize: 14 }}>{tot} ml</span>
+              </div>
+              {(p.balance?.[campo] || []).map((x, k) => (
+                <div key={k} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0", borderTop: k ? "1px solid #F1F5F9" : "none" }}>
+                  <span style={{ flex: 1, fontSize: 13.5 }}>{x.que}</span>
+                  <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 13.5, fontWeight: 600 }}>{x.ml} ml</span>
+                  {editable && <span onClick={() => mutar((d) => { d[idx].balance[campo].splice(k, 1); })} style={{ cursor: "pointer", color: "#94A3B8" }}>×</span>}
+                </div>
+              ))}
+              {editable && <FilaBalance onAdd={(que, ml) => mutar((d) => {
+                if (!d[idx].balance) d[idx].balance = { ingresos: [], egresos: [] };
+                d[idx].balance[campo].push({ que, ml });
+              })} />}
+            </div>
+          ))}
+          <div style={{ borderTop: "1px solid #E2E8F0", paddingTop: 9, display: "flex", alignItems: "baseline", gap: 8 }}>
+            <span style={{ ...ROT, fontSize: 9.5, color: "#64748B" }}>Balance</span>
+            <span style={{ marginLeft: "auto", fontFamily: "ui-monospace,monospace", fontWeight: 700, fontSize: 17, color: ing - egr >= 0 ? "#1D4ED8" : "#B91C1C" }}>
+              {ing - egr >= 0 ? "+" : ""}{ing - egr} ml
+            </span>
+          </div>
+          <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.45 }}>
+            El balance lo cargás vos en la cama: no viene en el pase del Drive.
+          </div>
+        </div>
+      </Plegable>
+
+      <Plegable k="arm" titulo="Mecánica ventilatoria">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(112px,1fr))", gap: 9, marginBottom: 10 }}>
+          {[["pl", "Presión meseta"], ["pe", "PEEP programada"], ["pt", "PEEP total"], ["vt", "Volumen corriente"]].map(([k2, lab]) => (
+            <div key={k2}>
+              <label style={{ fontSize: 11, color: "#64748B", display: "block", marginBottom: 3 }}>{lab}</label>
+              <input type="number" value={arm[k2] ?? ""} onChange={(e) => setArm((s) => ({ ...s, [k2]: e.target.value }))}
+                style={{ width: "100%", fontFamily: "ui-monospace,monospace", fontSize: 14, padding: "6px 8px", border: "1.5px solid #E2E8F0", borderRadius: 5 }} />
+            </div>
+          ))}
+        </div>
+        {(() => {
+          const n = (v) => (v === "" || v == null || isNaN(+v) ? null : +v);
+          const pl = n(arm.pl), pe = n(arm.pe), pt = n(arm.pt), vt = n(arm.vt);
+          const peep = pt ?? pe;
+          const dp = pl != null && peep != null ? pl - peep : null;
+          return (
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", borderTop: "1px solid #E2E8F0", paddingTop: 10 }}>
+              {[["Driving pressure", dp != null ? dp.toFixed(1) : "—"],
+                ["Auto-PEEP", pt != null && pe != null ? (pt - pe).toFixed(1) : "—"],
+                ["Compliance", dp && vt ? (vt / dp).toFixed(1) : "—"]].map(([l, v]) => (
+                <div key={l} style={{ fontSize: 12, color: "#64748B" }}>{l}
+                  <b style={{ display: "block", fontFamily: "ui-monospace,monospace", fontSize: 19, color: "#0F172A" }}>{v}</b>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+        <div style={{ fontSize: 11.5, color: "#64748B", marginTop: 8, lineHeight: 1.45 }}>
+          Driving = meseta − PEEP total. Auto-PEEP = PEEP total − PEEP programada. Compliance = Vt / driving. No vienen en el pase: se cargan en la cama.
+        </div>
+      </Plegable>
+
+      <Plegable k="anot" titulo="Anotaciones durante la guardia" color="#8A4B00" n={(p.anotaciones || []).length}>
+        {editable && (
+          <>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>
+              {PA_TIPOS.map((t) => (
+                <button key={t} onClick={() => setTipoSel(t)}
+                  style={{ fontFamily: "ui-monospace,monospace", fontSize: 10.5, fontWeight: 600, padding: "5px 9px", borderRadius: 4, border: "1.5px solid #E9C48A", cursor: "pointer", background: t === tipoSel ? "#8A4B00" : "transparent", color: t === tipoSel ? "#fff" : "#8A4B00" }}>{t}</button>
+              ))}
+            </div>
+            <NuevaAnotacion onAdd={(txt) => mutar((d) => {
+              d[idx].anotaciones = d[idx].anotaciones || [];
+              d[idx].anotaciones.push({ hora: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }), tipo: tipoSel, texto: txt });
+            })} />
+          </>
+        )}
+        {(p.anotaciones || []).length === 0
+          ? <div style={{ fontSize: 13, color: "#64748B", fontStyle: "italic" }}>Todavía no anotaste nada de este paciente.</div>
+          : (p.anotaciones || []).map((x, k) => (
+            <div key={k} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "8px 0", borderTop: k ? "1px solid #F1F5F9" : "none" }}>
+              <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 11, color: "#8A4B00", paddingTop: 2 }}>{x.hora}</span>
+              <span style={{ flex: 1, fontSize: 14 }}>
+                <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 9, border: "1px solid #E9C48A", color: "#8A4B00", borderRadius: 3, padding: "1px 5px", marginRight: 6 }}>{x.tipo}</span>
+                {x.texto}
+              </span>
+              {editable && <span onClick={() => mutar((d) => { d[idx].anotaciones.splice(k, 1); })} style={{ cursor: "pointer", color: "#94A3B8" }}>×</span>}
+            </div>
+          ))}
+      </Plegable>
+
+      <Plegable k="pend" titulo="Pendientes" color="#0F5F66" n={(p.pendientes || []).filter((x) => !x.listo).length}>
+        {(p.pendientes || []).length === 0
+          ? <div style={{ fontSize: 13, color: "#64748B", fontStyle: "italic" }}>Sin pendientes cargados para este paciente.</div>
+          : (p.pendientes || []).map((x, k) => (
+            <div key={k} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "6px 0", borderTop: k ? "1px solid #F1F5F9" : "none" }}>
+              <input type="checkbox" checked={x.listo} disabled={!editable}
+                onChange={() => mutar((d) => { d[idx].pendientes[k].listo = !d[idx].pendientes[k].listo; })}
+                style={{ width: 19, height: 19, accentColor: "#0F5F66", marginTop: 1 }} />
+              <span style={{ flex: 1, fontSize: 14.5, textDecoration: x.listo ? "line-through" : "none", color: x.listo ? "#94A3B8" : "inherit" }}>{x.texto}</span>
+              {editable && <span onClick={() => mutar((d) => { d[idx].pendientes.splice(k, 1); })} style={{ cursor: "pointer", color: "#94A3B8" }}>×</span>}
+            </div>
+          ))}
+        {editable && <NuevoPendiente onAdd={(txt) => mutar((d) => {
+          d[idx].pendientes = d[idx].pendientes || [];
+          d[idx].pendientes.push({ texto: txt, listo: false });
+        })} />}
+      </Plegable>
+
+      <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.5, padding: "4px 2px" }}>
+        <b>Versión alpha.</b> Tu copia se guarda en tu cuenta y nadie más la ve. Las anotaciones son temporales: cuando entra un pase nuevo, usá "Borrar mis anotaciones y sincronizar pase". Si algo no funciona o te falta algo, decímelo.
+      </div>
+    </div>
+  );
+}
+
+function DosisDe({ p }) {
+  const inf = p.infusiones || [], interm = p.intermitentes || [];
+  if (!inf.length && !interm.length) return null;
+  const fila = { display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center", padding: "7px 0", borderTop: "1px solid #F1F5F9" };
+  return (
+    <div style={{ margin: "0 14px 12px", paddingTop: 10, borderTop: "1px dashed #E2E8F0" }}>
+      <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 9.5, letterSpacing: ".09em", textTransform: "uppercase", color: "#64748B", marginBottom: 7 }}>Dosis calculadas</div>
+      {!p.peso && inf.length > 0 && (
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#B91C1C", marginBottom: 8 }}>Dosis en paciente de {PA_PESO_SUPUESTO} kg</div>
+      )}
+      {inf.map((x, k) => {
+        const g = paDosis(x, p.peso);
+        const det = `${x.mg} ${g.u || "?"} / ${x.ml} ml · ${x.ritmo} ml/h · ${g.peso} kg`;
+        if (g.sinUnidad) return (
+          <div key={k} style={fila}>
+            <div><div style={{ fontWeight: 600, fontSize: 14 }}>{x.droga}</div><div style={{ fontSize: 11.5, color: "#64748B", fontFamily: "ui-monospace,monospace" }}>{det}</div></div>
+            <div style={{ color: "#B91C1C", fontSize: 11.5, textAlign: "right", maxWidth: 150 }}>sin unidad definida</div>
+          </div>
+        );
+        const dec = x.declarada;
+        const dif = dec != null && Math.abs(g.kgh - dec) / Math.max(dec, 1e-9) > 0.10;
+        const r = PA_RANGO[x.droga];
+        const fuera = r && (g.kgh < r[0] || g.kgh > r[1]);
+        return (
+          <div key={k}>
+            <div style={fila}>
+              <div><div style={{ fontWeight: 600, fontSize: 14 }}>{x.droga}</div><div style={{ fontSize: 11.5, color: "#64748B", fontFamily: "ui-monospace,monospace" }}>{det}</div></div>
+              <div style={{ fontFamily: "ui-monospace,monospace", fontWeight: 600, fontSize: 14.5, textAlign: "right", whiteSpace: "nowrap" }}>
+                {g.kgh.toFixed(3)} <em style={{ fontStyle: "normal", fontSize: 11, color: "#64748B" }}>{g.u}/kg/h</em><br />
+                {g.kgmin.toFixed(4)} <em style={{ fontStyle: "normal", fontSize: 11, color: "#64748B" }}>{g.u}/kg/min</em>
+              </div>
+            </div>
+            {dec != null && (
+              <div style={{ fontSize: 11.5, marginTop: -3, marginBottom: 5, color: dif ? "#B91C1C" : "#64748B", fontWeight: dif ? 600 : 400 }}>
+                {dif ? "⚠ No coincide" : "✓ Coincide"} · el pase anota <b>{dec}</b>
+              </div>
+            )}
+            {fuera && <div style={{ fontSize: 11.5, marginTop: -3, marginBottom: 5, color: "#B91C1C" }}>⚠ Fuera del rango habitual ({r[0]}–{r[1]} {g.u}/kg/h). Revisá el ritmo o la dilución escritos.</div>}
+            {x.campo && <div style={{ fontSize: 11, color: "#94A3B8", marginTop: -3, marginBottom: 5 }}>Escrita en {PA_ROT[x.campo] || x.campo}, no en tratamiento.</div>}
+          </div>
+        );
+      })}
+      {interm.map((x, k) => (
+        <div key={"i" + k} style={fila}>
+          <div><div style={{ fontWeight: 600, fontSize: 14 }}>{x.droga}</div><div style={{ fontSize: 11.5, color: "#64748B", fontFamily: "ui-monospace,monospace" }}>dosis intermitente</div></div>
+          <div style={{ fontFamily: "ui-monospace,monospace", fontWeight: 600, fontSize: 14.5 }}>{x.mg} mg c/{x.cada} h</div>
+        </div>
+      ))}
+      <div style={{ fontSize: 11.5, color: "#64748B", marginTop: 8, lineHeight: 1.45 }}>
+        Fórmula: dosis ÷ dilución × ritmo ÷ peso. <b>Verificá contra la bomba antes de usar.</b>
+      </div>
+    </div>
+  );
+}
+
+function NuevaAnotacion({ onAdd }) {
+  const [v, setV] = useState("");
+  const enviar = () => { const t = v.trim(); if (!t) return; onAdd(t); setV(""); };
+  return (
+    <div style={{ display: "flex", gap: 7, marginBottom: 10 }}>
+      <input value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enviar()}
+        placeholder="Qué pasó…" style={{ flex: 1, fontSize: 14, padding: "7px 9px", border: "1.5px solid #E2E8F0", borderRadius: 5, fontFamily: "inherit" }} />
+      <button onClick={enviar} style={{ background: "#0F5F66", color: "#fff", border: "none", borderRadius: 5, padding: "7px 13px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Anotar</button>
+    </div>
+  );
+}
+
+function NuevoPendiente({ onAdd }) {
+  const [v, setV] = useState("");
+  const enviar = () => { const t = v.trim(); if (!t) return; onAdd(t); setV(""); };
+  return (
+    <div style={{ display: "flex", gap: 7, marginTop: 9 }}>
+      <input value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enviar()}
+        placeholder="Agregar pendiente…" style={{ flex: 1, fontSize: 14, padding: "7px 9px", border: "1.5px solid #E2E8F0", borderRadius: 5, fontFamily: "inherit" }} />
+      <button onClick={enviar} style={{ background: "#0F5F66", color: "#fff", border: "none", borderRadius: 5, padding: "7px 13px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Agregar</button>
+    </div>
+  );
+}
+
+function FilaBalance({ onAdd }) {
+  const [que, setQue] = useState("");
+  const [ml, setMl] = useState("");
+  const enviar = () => {
+    const q = que.trim(), n = Number(ml);
+    if (!q || !isFinite(n)) return;
+    onAdd(q, n); setQue(""); setMl("");
+  };
+  return (
+    <div style={{ display: "flex", gap: 6, marginTop: 7 }}>
+      <input value={que} onChange={(e) => setQue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enviar()}
+        placeholder="Qué" style={{ flex: 1, fontSize: 13.5, padding: "6px 8px", border: "1.5px solid #E2E8F0", borderRadius: 5, fontFamily: "inherit" }} />
+      <input type="number" value={ml} onChange={(e) => setMl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enviar()}
+        placeholder="ml" style={{ width: 72, fontSize: 13.5, padding: "6px 8px", border: "1.5px solid #E2E8F0", borderRadius: 5, fontFamily: "ui-monospace,monospace" }} />
+      <button onClick={enviar} style={{ background: "#fff", border: "1.5px solid #E2E8F0", borderRadius: 5, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>+</button>
+    </div>
+  );
+}
