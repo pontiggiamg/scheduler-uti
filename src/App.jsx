@@ -168,13 +168,23 @@ const LEVEL = {
   [JEFE]: "JR",
 };
 
+// ── Paleta "Pizarra" ──────────────────────────────────────────────────────
+// El chip va SIEMPRE blanco con el nombre en tinta casi negra, y el nivel se
+// lee en dos barras gruesas, una a cada lado, del color del nivel. Se eligió
+// así a propósito: el nombre es lo que hay que leer y queda con el máximo
+// contraste posible aunque la fila abajo esté pintada de color, mientras que el
+// nivel se percibe de reojo sin tener que leerlo. Los colores están
+// desaturados para que convivan con los pasteles de las filas.
+// `solid` es el color de la barra y del chip cuando está seleccionado; `bg` y
+// `bd` quedan para los lugares donde todavía se usa un chip relleno.
 const COLOR = {
-  // Dorado para el jefe: bien lejos del azul/verde/naranja de los tres niveles,
-  // para que se distinga de un vistazo que esa cobertura es una excepción.
-  JR: { bg: "#FEF3C7", bd: "#FCD34D", tx: "#78350F", solid: "#D97706" },
-  R2: { bg: "#DBEAFE", bd: "#93C5FD", tx: "#1E3A8A", solid: "#3B82F6" },
-  R3: { bg: "#D1FAE5", bd: "#6EE7B7", tx: "#065F46", solid: "#10B981" },
-  R4: { bg: "#FFEDD5", bd: "#FDBA74", tx: "#9A3412", solid: "#F97316" },
+  // Dorado apagado para el jefe: bien lejos del ladrillo, el verde y el azul de
+  // los tres niveles, para que se distinga de un vistazo que esa cobertura es
+  // una excepción.
+  JR: { bg: "#FBF3DF", bd: "#D9C27E", tx: "#4A3A06", solid: "#7A5A00" },
+  R2: { bg: "#E6EDF6", bd: "#A9C0DC", tx: "#12365E", solid: "#1B4F8A" },
+  R3: { bg: "#E1F0EA", bd: "#96C7B4", tx: "#0A4A36", solid: "#0B6E4F" },
+  R4: { bg: "#F8E9DD", bd: "#DFB48C", tx: "#7A3806", solid: "#B4530A" },
 };
 
 const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
@@ -190,12 +200,19 @@ const WEEKDAYS_FULL = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Vi
 // Cada fila de UTI tiene su propio color para distinguirse a simple vista,
 // elegidos a propósito lejos del azul de R2 y el verde de R3 (ver COLOR más
 // abajo) para que el chip del residente nunca se camufle contra el fondo.
+// Cada fila de la grilla se pinta entera de su pastel. `tint` es el fondo de
+// las celdas, `rotulo` el fondo de la etiqueta de la izquierda —un tono más
+// saturado, para que identifique la fila sin taparle el color a los chips— y
+// `accent` el color del texto de esa etiqueta. Los cinco pasteles tienen la
+// misma claridad a propósito: ninguna fila tiene que pesar más que las otras.
 const SLOTS = [
-  { key: "uti1", label: "UTI 1", accent: "#0E7490", tint: "#CFFAFE" },
-  { key: "uti2", label: "UTI 2", accent: "#BE185D", tint: "#FCE7F3" },
-  { key: "uti3", label: "UTI 3", accent: "#A16207", tint: "#FEF3C7" },
-  { key: "postguardia", label: "Postguardia", accent: "#A855F7", tint: "#E9D5FF" },
+  { key: "uti1", label: "UTI 1", accent: "#0B4952", tint: "#E4F1F4", rotulo: "#BFE0E6" },
+  { key: "uti2", label: "UTI 2", accent: "#7A2145", tint: "#FAE7EE", rotulo: "#F0CBD9" },
+  { key: "uti3", label: "UTI 3", accent: "#6B4E10", tint: "#FBF0DC", rotulo: "#F2DFB8" },
+  { key: "postguardia", label: "Postguardia", accent: "#413577", tint: "#ECEAF7", rotulo: "#D6D2EC" },
 ];
+// La fila de guardia no es un slot de sala pero se pinta con el mismo criterio.
+const FILA_GUARDIA = { accent: "#7E2419", tint: "#FBE6E3", rotulo: "#F2C9C3" };
 
 const SLOT_KEYS = SLOTS.map((s) => s.key);
 
@@ -1298,7 +1315,7 @@ function SchedulerView({ isAdmin }) {
 
             {SLOTS.filter((s) => s.key !== "postguardia").map((slot, ri) => (
               <Fragment key={slot.key}>
-                <RowLabel label={slot.label} color={slot.accent} />
+                <RowLabel label={slot.label} color={slot.accent} fondo={slot.rotulo} />
                 {DAYS.map((_, di) => (
                   utiBloqueada(di) ? (
                     <Cell key={di} tint={week.days[di].feriado ? "#FEF9E7" : "#F1F5F9"} lastCol={di === DAYS.length - 1}>
@@ -1319,24 +1336,24 @@ function SchedulerView({ isAdmin }) {
               </Fragment>
             ))}
 
-            <RowLabel label="De guardia" color="#9F1239" sub="se superpone" />
+            <RowLabel label="De guardia" color={FILA_GUARDIA.accent} sub="se superpone" fondo={FILA_GUARDIA.rotulo} />
             {DAYS.map((_, di) => {
               const lista = week.days[di].deGuardia;
               return (
-                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (isAdmin) setGuardiaEdit(di); }} tint="#FFF1F2" pad={5} lastCol={di === DAYS.length - 1}>
+                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (isAdmin) setGuardiaEdit(di); }} tint={FILA_GUARDIA.tint} pad={5} lastCol={di === DAYS.length - 1}>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 3, minHeight: 40, alignContent: "flex-start", cursor: isAdmin ? "pointer" : "default" }}>
                     {lista.length === 0 ? (
-                      <div className="no-print" style={{ fontSize: 10, color: "#FDA4AF", fontStyle: "italic", padding: "10px 4px", width: "100%", textAlign: "center" }}>{isAdmin ? "+ elegir guardia" : "—"}</div>
+                      <div className="no-print" style={{ fontSize: 10, color: "#C08A82", fontStyle: "italic", padding: "10px 4px", width: "100%", textAlign: "center" }}>{isAdmin ? "+ elegir guardia" : "—"}</div>
                     ) : lista.map((n) => <ChipGuardia key={n} name={n} />)}
                   </div>
-                  <div className="print-only-block" style={{ fontSize: 11.5, lineHeight: 1.4, color: "#881337", fontWeight: 600, padding: "6px 8px" }}>{lista.length ? lista.join(", ") : "—"}</div>
+                  <div className="print-only-block" style={{ fontSize: 11.5, lineHeight: 1.4, color: FILA_GUARDIA.accent, fontWeight: 600, padding: "6px 8px" }}>{lista.length ? lista.join(", ") : "—"}</div>
                 </Cell>
               );
             })}
 
             {SLOTS.filter((s) => s.key === "postguardia").map((slot) => (
               <Fragment key={slot.key}>
-                <RowLabel label={slot.label} color={slot.accent} />
+                <RowLabel label={slot.label} color={slot.accent} fondo={slot.rotulo} />
                 {DAYS.map((_, di) => (
                   <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DAYS.length - 1}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
@@ -1653,6 +1670,27 @@ function RotacionesView({ isAdmin }) {
     if (expanded[mi] !== undefined) return expanded[mi];
     const m = data.months[mi];
     return m.assignments.length > 0 || !!m.notes.trim();
+  };
+
+  // Vaciar el historial. Borra las dos colecciones enteras: los votos y también
+  // quiénes votaron, así las semanas quedan como nuevas y se podría volver a
+  // votar cualquiera de ellas. No hay vuelta atrás, por eso pide escribir
+  // BORRAR: un solo click de confirmación es demasiado poco para algo que no se
+  // puede deshacer.
+  const borrarHistorial = async () => {
+    if (!isAdmin || textoBorrar.trim().toUpperCase() !== "BORRAR") return;
+    setBorrando("yendo");
+    try {
+      for (const col of ["chipa_votes", "chipa_voters"]) {
+        const snap = await getDocs(collection(db, col));
+        await Promise.all(snap.docs.map((d) => deleteDoc(doc(db, col, d.id))));
+      }
+      setHistory(null); setShowHistory(false);
+      setWeek({ weekStart: weekId, candidates: [], counts: {}, countsAura: {} });
+      setVoted({ chipa: false, aura: false });
+      setStatus("saved"); setTimeout(() => setStatus("idle"), 1800);
+    } catch (e) { console.error("borrar historial", e); setStatus("error"); }
+    setBorrando(false); setTextoBorrar("");
   };
 
   const S = { saving: { t: "Guardando…", c: "#CBD5E1" }, saved: { t: "✓ Guardado", c: "#86EFAC" }, error: { t: "⚠ Error", c: "#FCA5A5" } }[status];
@@ -2265,6 +2303,8 @@ function ChipaView({ isAdmin, user }) {
   const [history, setHistory] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [borrando, setBorrando] = useState(false);   // "confirmar" | "yendo" | false
+  const [textoBorrar, setTextoBorrar] = useState("");
 
   useEffect(() => {
     setLoading(true);
@@ -2347,6 +2387,27 @@ function ChipaView({ isAdmin, user }) {
       setShowHistory(true);
     } catch (e) { console.error(e); }
     setHistoryLoading(false);
+  };
+
+  // Vaciar el historial. Borra las dos colecciones enteras: los votos y también
+  // quiénes votaron, así las semanas quedan como nuevas y se podría volver a
+  // votar cualquiera de ellas. No hay vuelta atrás, por eso pide escribir
+  // BORRAR: un solo click de confirmación es demasiado poco para algo que no se
+  // puede deshacer.
+  const borrarHistorial = async () => {
+    if (!isAdmin || textoBorrar.trim().toUpperCase() !== "BORRAR") return;
+    setBorrando("yendo");
+    try {
+      for (const col of ["chipa_votes", "chipa_voters"]) {
+        const snap = await getDocs(collection(db, col));
+        await Promise.all(snap.docs.map((d) => deleteDoc(doc(db, col, d.id))));
+      }
+      setHistory(null); setShowHistory(false);
+      setWeek({ weekStart: weekId, candidates: [], counts: {}, countsAura: {} });
+      setVoted({ chipa: false, aura: false });
+      setStatus("saved"); setTimeout(() => setStatus("idle"), 1800);
+    } catch (e) { console.error("borrar historial", e); setStatus("error"); }
+    setBorrando(false); setTextoBorrar("");
   };
 
   const S = { saving: { t: "Guardando…", c: "#CBD5E1" }, saved: { t: "✓ Guardado", c: "#86EFAC" }, error: { t: "⚠ Error", c: "#FCA5A5" } }[status];
@@ -2462,6 +2523,34 @@ function ChipaView({ isAdmin, user }) {
             </div>
           )
         )}
+
+        {isAdmin && showHistory && (
+          <div className="no-print" style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid #C7CFD8" }}>
+            {borrando ? (
+              <div style={{ background: "#fff", border: "1.5px solid #C08A82", borderLeft: "5px solid #8E2222", borderRadius: 3, padding: "12px 14px" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#8E2222", marginBottom: 3 }}>Vaciar el historial de Chipa y Aura</div>
+                <div style={{ fontSize: 11.5, color: "#5A636E", lineHeight: 1.5, marginBottom: 10 }}>
+                  Se borran todas las semanas, las dos votaciones y también quiénes votaron, así que las semanas quedan como nuevas y se puede volver a votar. <b style={{ color: "#8E2222" }}>No se puede deshacer.</b> Escribí BORRAR para confirmar.
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <input value={textoBorrar} onChange={(e) => setTextoBorrar(e.target.value)} placeholder="BORRAR" disabled={borrando === "yendo"}
+                    style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1, padding: "7px 11px", borderRadius: 3, border: "1.5px solid #C7CFD8", fontFamily: "inherit", color: "#12161B", width: 130 }} />
+                  <button onClick={borrarHistorial} disabled={borrando === "yendo" || textoBorrar.trim().toUpperCase() !== "BORRAR"}
+                    style={{ background: textoBorrar.trim().toUpperCase() === "BORRAR" ? "#8E2222" : "#C7CFD8", color: "#fff", border: "none", borderRadius: 3, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: textoBorrar.trim().toUpperCase() === "BORRAR" ? "pointer" : "default" }}>
+                    {borrando === "yendo" ? "Borrando…" : "Vaciar el historial"}
+                  </button>
+                  <button onClick={() => { setBorrando(false); setTextoBorrar(""); }} disabled={borrando === "yendo"}
+                    style={{ background: "none", color: "#5A636E", border: "none", fontSize: 12.5, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", padding: "8px 4px" }}>Cancelar</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => setBorrando("confirmar")}
+                style={{ background: "none", border: "none", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "#8E2222", cursor: "pointer", padding: "2px 0" }}>
+                Vaciar el historial de Chipa y Aura
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2564,6 +2653,27 @@ function AcademicoView({ isAdmin }) {
   };
 
   const removeActivity = (id) => { if (!isAdmin) return; if (!confirm("¿Eliminar esta actividad?")) return; const next = clone(data); next.activities = next.activities.filter((a) => a.id !== id); save(next); };
+
+  // Vaciar el historial. Borra las dos colecciones enteras: los votos y también
+  // quiénes votaron, así las semanas quedan como nuevas y se podría volver a
+  // votar cualquiera de ellas. No hay vuelta atrás, por eso pide escribir
+  // BORRAR: un solo click de confirmación es demasiado poco para algo que no se
+  // puede deshacer.
+  const borrarHistorial = async () => {
+    if (!isAdmin || textoBorrar.trim().toUpperCase() !== "BORRAR") return;
+    setBorrando("yendo");
+    try {
+      for (const col of ["chipa_votes", "chipa_voters"]) {
+        const snap = await getDocs(collection(db, col));
+        await Promise.all(snap.docs.map((d) => deleteDoc(doc(db, col, d.id))));
+      }
+      setHistory(null); setShowHistory(false);
+      setWeek({ weekStart: weekId, candidates: [], counts: {}, countsAura: {} });
+      setVoted({ chipa: false, aura: false });
+      setStatus("saved"); setTimeout(() => setStatus("idle"), 1800);
+    } catch (e) { console.error("borrar historial", e); setStatus("error"); }
+    setBorrando(false); setTextoBorrar("");
+  };
 
   const S = { saving: { t: "Guardando…", c: "#CBD5E1" }, saved: { t: "✓ Guardado", c: "#86EFAC" }, error: { t: "⚠ Error", c: "#FCA5A5" } }[status];
 
@@ -4147,7 +4257,7 @@ function DiaCard({ label, emoji, fecha, dia, onPick }) {
           ))
         )}
 
-        <FilaResidentes label="Postguardia" color="#A855F7" nombres={dia.postguardia} onPick={onPick} />
+        <FilaResidentes label="Postguardia" color={SLOTS[3].accent} nombres={dia.postguardia} onPick={onPick} />
       </div>
     </div>
   );
@@ -4164,15 +4274,15 @@ function DiaCard({ label, emoji, fecha, dia, onPick }) {
 function FilaDeGuardia({ lista, onPick }) {
   const personas = useMemo(() => parseDeGuardia(lista), [lista]);
   return (
-    <div style={{ background: "#FFF1F2", border: "1.5px solid #FECDD3", borderRadius: 12, padding: "9px 12px" }}>
+    <div style={{ background: FILA_GUARDIA.tint, border: `1.5px solid ${FILA_GUARDIA.rotulo}`, borderRadius: 12, padding: "9px 12px" }}>
       <div style={{ display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: 5, marginBottom: 6 }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, color: "#9F1239", letterSpacing: 0.4, textTransform: "uppercase" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, color: FILA_GUARDIA.accent, letterSpacing: 0.4, textTransform: "uppercase" }}>
           <span style={{ fontSize: 13 }}>🌙</span> De guardia
         </span>
-        <span style={{ fontSize: 10.5, fontWeight: 600, color: "#BE586B" }}>(a partir de las 16:00 hs)</span>
+        <span style={{ fontSize: 10.5, fontWeight: 600, color: FILA_GUARDIA.accent, opacity: 0.75 }}>(a partir de las 16:00 hs)</span>
       </div>
       {personas.length === 0 ? (
-        <div style={{ fontSize: 11.5, color: "#FDA4AF", fontStyle: "italic" }}>Sin cargar.</div>
+        <div style={{ fontSize: 11.5, color: "#C08A82", fontStyle: "italic" }}>Sin cargar.</div>
       ) : (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
           {personas.map((p, i) => (
@@ -4602,9 +4712,11 @@ function paletaImpresion(bn) {
   if (!bn) {
     return {
       bn: false,
-      chips: { R2: ["#DBEAFE", "#93C5FD", "#1E3A8A", "#3B82F6"], R3: ["#D1FAE5", "#6EE7B7", "#065F46", "#10B981"], R4: ["#FFEDD5", "#FDBA74", "#9A3412", "#F97316"], JR: ["#FEF3C7", "#FCD34D", "#78350F", "#D97706"] },
+      // Los mismos niveles que en pantalla, para que el papel y la app no se
+      // lean distinto.
+      chips: { R2: [COLOR.R2.bg, COLOR.R2.bd, COLOR.R2.tx, COLOR.R2.solid], R3: [COLOR.R3.bg, COLOR.R3.bd, COLOR.R3.tx, COLOR.R3.solid], R4: [COLOR.R4.bg, COLOR.R4.bd, COLOR.R4.tx, COLOR.R4.solid], JR: [COLOR.JR.bg, COLOR.JR.bd, COLOR.JR.tx, COLOR.JR.solid] },
       borde: { R2: "1.2px solid", R3: "1.2px solid", R4: "1.2px solid", JR: "1.2px solid" },
-      fila: { uti1: "#0E7490", uti2: "#BE185D", uti3: "#A16207", postguardia: "#A855F7", guardia: "#9F1239", fuera: "#475569" },
+      fila: { uti1: SLOTS[0].accent, uti2: SLOTS[1].accent, uti3: SLOTS[2].accent, postguardia: SLOTS[3].accent, guardia: FILA_GUARDIA.accent, fuera: "#475569" },
       finde: "#F8FAFC", off: "#F1F5F9", obs: ["#FEF9C3", "#713F12"], rec: ["#EFF6FF", "#1E3A8A"],
       leyenda: "",
       tagBorrador: "#B91C1C",
@@ -5149,17 +5261,24 @@ function GuardiasSection({ cobertura, isAdmin }) {
         <select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: "1px solid #E2E8F0", fontFamily: "inherit", color: "#334155", fontWeight: 700 }}>
           {opciones.map((o) => <option key={o.clave} value={o.clave}>{o.label}</option>)}
         </select>
-        {!cargando && resumen && ["R4", "R3", "R2"].map((lv) => {
-          const dif = resumen.porNivel[lv] - cupos[lv];
-          return (
-            <span key={lv} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, padding: "5px 10px", borderRadius: 8, background: dif === 0 ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${dif === 0 ? "#BBF7D0" : "#FECACA"}` }}>
-              <b style={{ fontSize: 9.5, color: "#fff", background: COLOR[lv].solid, padding: "1px 5px", borderRadius: 3 }}>{lv}</b>
-              <span style={{ fontWeight: 700, color: "#0F172A", fontVariantNumeric: "tabular-nums" }}>{resumen.porNivel[lv]}/{cupos[lv]}</span>
-              <span style={{ color: dif === 0 ? "#15803D" : "#B91C1C", fontWeight: 600 }}>{dif === 0 ? "exacto" : dif > 0 ? `+${dif}` : dif}</span>
-            </span>
-          );
-        })}
       </div>
+
+      {/* El cupo del mes, en una línea. Antes eran tres pastillas con recuadro;
+          es un dato de control que se mira de reojo y no necesita ese peso. */}
+      {!cargando && resumen && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 20px", fontSize: 12.5, color: "#5A636E", marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid #C7CFD8" }}>
+          <span>Cupo de {MONTHS[mes].toLowerCase()} · <b style={{ color: "#12161B", fontVariantNumeric: "tabular-nums" }}>{cupos.R4 + cupos.R3 + cupos.R2}</b> lugares</span>
+          {["R4", "R3", "R2"].map((lv) => {
+            const dif = resumen.porNivel[lv] - cupos[lv];
+            return (
+              <span key={lv} style={{ fontVariantNumeric: "tabular-nums" }}>
+                {lv} <b style={{ color: "#12161B" }}>{resumen.porNivel[lv]}</b>/{cupos[lv]}{" "}
+                <span style={{ color: dif === 0 ? "#0B6E4F" : "#8E2222", fontWeight: 600 }}>{dif === 0 ? "exacto" : dif > 0 ? `sobran ${dif}` : `faltan ${-dif}`}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {cargando && <div style={caja}><span style={{ fontSize: 12.5, color: "#64748B" }}>Leyendo las semanas del mes…</span></div>}
 
@@ -5634,18 +5753,25 @@ const MenuItem = ({ children, onClick, danger }) => (<button onClick={onClick} s
 
 const Banner = ({ tone, children }) => { const c = tone === "warn" ? { bg: "#FEF2F2", bd: "#FECACA", tx: "#991B1B", icon: "⛔" } : { bg: "#EFF6FF", bd: "#BFDBFE", tx: "#1E40AF", icon: "👆" }; return (<div style={{ display: "flex", alignItems: "center", gap: 7, background: c.bg, border: `1px solid ${c.bd}`, color: c.tx, padding: "6px 12px", borderRadius: 9, fontSize: 12, fontWeight: 500 }}><span>{c.icon}</span><span>{children}</span></div>); };
 
-const Corner = () => (<div style={{ background: "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "2px solid #E2E8F0" }} />);
+const Corner = () => (<div style={{ background: "#F1F3F6", borderBottom: "2px solid #C7CFD8", borderRight: "2px solid #C7CFD8" }} />);
 
-const DayHead = ({ name, date, isToday, isWeekend, feriado }) => (<div style={{ padding: "9px 4px", textAlign: "center", background: feriado ? "#FEF3C7" : isToday ? "#EFF6FF" : isWeekend ? "#F1F5F9" : "#F8FAFC", borderBottom: "2px solid #E2E8F0", borderRight: "1px solid #F1F5F9" }}><div style={{ fontWeight: 700, fontSize: 12.5, color: feriado ? "#92400E" : isToday ? "#1D4ED8" : isWeekend ? "#94A3B8" : "#0F172A" }}>{name}</div><div style={{ fontSize: 10.5, color: feriado ? "#B45309" : isToday ? "#3B82F6" : "#94A3B8", fontWeight: isToday ? 700 : 500 }}>{dm(date)}</div>{feriado && <div style={{ fontSize: 8, fontWeight: 800, color: "#92400E", background: "#FDE68A", borderRadius: 999, padding: "1px 6px", marginTop: 2, display: "inline-block", letterSpacing: 0.3 }}>🎌 FERIADO</div>}</div>);
+const DayHead = ({ name, date, isToday, isWeekend, feriado }) => (<div style={{ padding: "9px 4px", textAlign: "center", background: feriado ? "#FBF0DC" : isToday ? "#E4F1F4" : isWeekend ? "#E7EBEF" : "#F1F3F6", borderBottom: "2px solid #C7CFD8", borderRight: "1px solid #DFE4EA" }}><div style={{ fontWeight: 700, fontSize: 12.5, color: feriado ? "#92400E" : isToday ? "#1D4ED8" : isWeekend ? "#94A3B8" : "#0F172A" }}>{name}</div><div style={{ fontSize: 10.5, color: feriado ? "#B45309" : isToday ? "#3B82F6" : "#94A3B8", fontWeight: isToday ? 700 : 500 }}>{dm(date)}</div>{feriado && <div style={{ fontSize: 8, fontWeight: 800, color: "#92400E", background: "#FDE68A", borderRadius: 999, padding: "1px 6px", marginTop: 2, display: "inline-block", letterSpacing: 0.3 }}>🎌 FERIADO</div>}</div>);
 
-const RowLabel = ({ label, color, sub, className }) => (<div className={className} style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end", textAlign: "right", padding: "8px 10px", background: "#F8FAFC", borderRight: "2px solid #E2E8F0", borderBottom: "2px solid #D1D5DB", borderTop: "2px solid #D1D5DB" }}><div style={{ fontWeight: 700, fontSize: 11, color, letterSpacing: 0.1 }}>{label}</div>{sub && <div style={{ fontSize: 8.5, color: "#64748B", marginTop: 1 }}>{sub}</div>}</div>);
+// `fondo` es el pastel saturado de la fila. Si no se pasa, la etiqueta queda
+// gris como antes (las filas de texto libre, que no llevan color).
+const RowLabel = ({ label, color, sub, fondo, className }) => (<div className={className} style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end", textAlign: "right", padding: "8px 10px", background: fondo || "#F1F3F6", borderRight: "2px solid #C7CFD8", borderBottom: "2px solid #C7CFD8", borderTop: "2px solid #C7CFD8" }}><div style={{ fontWeight: 700, fontSize: 11, color, letterSpacing: 0.1 }}>{label}</div>{sub && <div style={{ fontSize: 8.5, color: color, opacity: 0.75, marginTop: 1 }}>{sub}</div>}</div>);
 
-const Cell = ({ children, onClick, tint, ring, pad = 4, lastCol, lastRow, className }) => (<div className={className} onClick={onClick} style={{ padding: pad, minHeight: 46, display: "flex", flexDirection: "column", gap: 3, background: tint, borderRight: lastCol ? "none" : "1px solid #F1F5F9", borderBottom: lastRow ? "none" : "1px solid #F1F5F9", boxShadow: ring ? `inset 0 0 0 1.5px ${ring}66` : "none", cursor: ring ? "pointer" : "default", transition: "background .12s, box-shadow .12s" }}>{children}</div>);
+const Cell = ({ children, onClick, tint, ring, pad = 4, lastCol, lastRow, className }) => (<div className={className} onClick={onClick} style={{ padding: pad, minHeight: 46, display: "flex", flexDirection: "column", gap: 3, background: tint, borderRight: lastCol ? "none" : "1px solid rgba(18,22,27,.10)", borderBottom: lastRow ? "none" : "1px solid rgba(18,22,27,.10)", boxShadow: ring ? `inset 0 0 0 1.5px ${ring}66` : "none", cursor: ring ? "pointer" : "default", transition: "background .12s, box-shadow .12s" }}>{children}</div>);
 
 function Chip({ name, selected, onPick, onRemove, alerta }) {
   const lv = LEVEL[name]; const c = COLOR[lv];
   const esJefe = lv === "JR";
-  return (<div onClick={onPick} title={alerta || undefined} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3.5px 6px 3.5px 8px", borderRadius: 7, background: selected ? c.solid : c.bg, border: alerta && !selected ? "1.5px solid #F59E0B" : `1.5px solid ${selected ? c.solid : c.bd}`, color: selected ? "#fff" : c.tx, fontWeight: 600, fontSize: 11.5, cursor: "pointer", userSelect: "none", boxShadow: selected ? `0 0 0 3px ${c.solid}33` : alerta ? "0 0 0 2px #FDE68A" : "none", transition: "all .12s", ...(esJefe && !selected ? SKIN_JR : {}) }}>
+  // Blanco con el nombre en tinta y una barra gruesa del color del nivel a cada
+  // lado. Cuando está seleccionado se rellena, que es la única señal fuerte que
+  // necesita. Si tiene alerta, el borde superior e inferior pasa a ámbar.
+  const barra = `6px solid ${c.solid}`;
+  const marco = alerta && !selected ? "1.5px solid #D97706" : `1.5px solid ${selected ? c.solid : "#C7CFD8"}`;
+  return (<div onClick={onPick} title={alerta || undefined} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3.5px 5px", borderRadius: 3, background: selected ? c.solid : "#fff", borderTop: marco, borderBottom: marco, borderLeft: selected ? marco : barra, borderRight: selected ? marco : barra, color: selected ? "#fff" : "#12161B", fontWeight: 600, fontSize: 11.5, cursor: "pointer", userSelect: "none", boxShadow: selected ? `0 0 0 3px ${c.solid}33` : alerta ? "0 0 0 2px #FDE68A" : "none", transition: "all .12s", ...(esJefe && !selected ? SKIN_JR : {}) }}>
     {alerta && <span title={alerta} style={{ fontSize: 10, lineHeight: 1, cursor: "help" }}>⚠️</span>}
     {lv === "JR" && <span style={{ fontSize: 10, lineHeight: 1 }}>👑</span>}
     <span style={{ flex: 1, lineHeight: 1.3 }}>{name}</span>
@@ -5673,8 +5799,8 @@ const Dash = () => (<div style={{ color: "#64748B", fontSize: 11, textAlign: "ce
 const Skeleton = () => (<div style={{ height: 460, borderRadius: 14, background: "linear-gradient(90deg,#F1F5F9 25%,#E2E8F0 50%,#F1F5F9 75%)", backgroundSize: "200% 100%", animation: "sk 1.2s infinite", display: "flex", alignItems: "center", justifyContent: "center", color: "#64748B", fontSize: 13 }}>Cargando…<style>{`@keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}`}</style></div>);
 
 const Legend = () => (<div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 14, flexWrap: "wrap" }}>
-  {Object.entries(COLOR).map(([lv, c]) => (<div key={lv} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#64748B", fontWeight: 500 }}><span style={{ width: 11, height: 11, borderRadius: 3.5, background: c.bg, border: `1.5px solid ${c.bd}` }} />{lv === "JR" ? "👑 Jefe de residentes" : lv}</div>))}
-  <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#64748B", fontWeight: 500 }}><span style={{ width: 11, height: 11, borderRadius: 3.5, background: "#E9D5FF", border: "1.5px solid #D8B4FE" }} />Postguardia</div>
+  {Object.entries(COLOR).map(([lv, c]) => (<div key={lv} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#64748B", fontWeight: 500 }}><span style={{ width: 13, height: 11, borderRadius: 2, background: "#fff", borderTop: "1.5px solid #C7CFD8", borderBottom: "1.5px solid #C7CFD8", borderLeft: `4px solid ${c.solid}`, borderRight: `4px solid ${c.solid}` }} />{lv === "JR" ? "👑 Jefe de residentes" : lv}</div>))}
+  <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#64748B", fontWeight: 500 }}><span style={{ width: 11, height: 11, borderRadius: 3.5, background: SLOTS[3].tint, border: `1.5px solid ${SLOTS[3].rotulo}` }} />Postguardia</div>
 </div>);
 
 /* ══════════════════ ESTILOS ══════════════════ */
