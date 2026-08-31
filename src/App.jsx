@@ -493,6 +493,19 @@ function motivoNoDisponible(name, date, rotPorAnio, diaLibre) {
   return null;
 }
 
+// Quiénes están en el servicio durante una semana dada. Se usa para armar solos
+// los candidatos de la chipa y del aura: no tiene sentido votar a alguien que
+// está de vacaciones, rotando afuera o con su semana libre de fin de año.
+//
+// Alcanza con que esté UN día hábil de la semana. Alguien que vuelve de
+// vacaciones el jueves estuvo en el servicio esa semana y puede ser candidato.
+// El día libre semanal de los R4 no cuenta como ausencia: es un solo día.
+function disponiblesEsaSemana(lunes, rotPorAnio) {
+  return ALL.filter((n) =>
+    [0, 1, 2, 3, 4].some((i) => !motivoNoDisponible(n, shift(lunes, i), rotPorAnio, null))
+  );
+}
+
 /* ══════════════════ MODELO CHIPA DE LA SEMANA ══════════════════ */
 
 // Cada semana vive en su propio documento (id = lunes de esa semana, YYYY-MM-DD)
@@ -2192,7 +2205,6 @@ const PREMIOS = {
   chipa: {
     clave: "chipa",
     titulo: "Chipa de la semana",
-    bajada: "El castigo — el que se la ganó paga la chipa",
     emoji: "🥐",
     campoVotos: "counts",
     campoVotantes: "voted",
@@ -2204,12 +2216,11 @@ const PREMIOS = {
     trofeo: "🥐",
     yaVotaste: "✓ Ya votaste la chipa de esta semana",
     invitacion: "Tocá a quien se ganó la chipa. El voto es anónimo y no se puede cambiar.",
-    vacio: "Todavía no se eligieron los candidatos de esta semana.",
+    vacio: "Nadie disponible esa semana.",
   },
   aura: {
     clave: "aura",
     titulo: "Aura de la semana",
-    bajada: "El premio — el que la tuvo se la ganó",
     emoji: "✨",
     campoVotos: "countsAura",
     campoVotantes: "votedAura",
@@ -2221,12 +2232,23 @@ const PREMIOS = {
     trofeo: "🏆",
     yaVotaste: "✓ Ya votaste el aura de esta semana",
     invitacion: "Tocá a quien tuvo el aura. El voto es anónimo y no se puede cambiar.",
-    vacio: "Todavía no se eligieron los candidatos de esta semana.",
+    vacio: "Nadie disponible esa semana.",
   },
 };
 
+// Qué semana se muestra al entrar. De lunes a viernes, la semana en curso.
+// Sábado y domingo ya apuntan a la semana que viene: para la votación el fin de
+// semana cuenta como el arranque de la semana siguiente, no como el final de la
+// que se termina. Es una decisión de Gonzalo, no un descuido de calendario.
+function semanaDeVotacionPorDefecto() {
+  const hoy = new Date();
+  const di = hoy.getDay(); // 0 domingo, 6 sábado
+  const lunes = mondayOf(hoy);
+  return di === 0 || di === 6 ? shift(lunes, 7) : lunes;
+}
+
 function ChipaView({ isAdmin, user }) {
-  const realMonday = useMemo(() => mondayOf(new Date()), []);
+  const realMonday = useMemo(() => semanaDeVotacionPorDefecto(), []);
   const realWeekId = isoDate(realMonday);
   const [monday, setMonday] = useState(() => realMonday);
   const weekId = isoDate(monday);
@@ -2265,9 +2287,30 @@ function ChipaView({ isAdmin, user }) {
     return unsub;
   }, [weekId, user?.uid]);
 
+  // Rotaciones y vacaciones del año (y del siguiente, para la semana que cruza
+  // diciembre), que es lo que define quién está disponible esa semana.
+  const [rotPorAnio, setRotPorAnio] = useState({});
+  const aniosSemana = useMemo(() => [...new Set([monday.getFullYear(), shift(monday, 6).getFullYear()])], [weekId]);
+  useEffect(() => {
+    const unsubs = aniosSemana.map((y) =>
+      onSnapshot(doc(db, "scheduler", `rotaciones-${y}`), (snap) => {
+        setRotPorAnio((cur) => ({ ...cur, [y]: snap.exists() ? normalizeRot(snap.data()) : emptyRotYear() }));
+      }, () => {})
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [aniosSemana.join(",")]);
+
+  // Los candidatos se arman solos con los que estuvieron esa semana. Si la
+  // jefatura guardó una lista a mano para esa semana, esa manda: sirve de
+  // escape y además es lo que mantiene intacto el historial viejo, que se
+  // cargaba siempre a mano.
+  const candidatos = useMemo(() => (
+    week.candidates.length ? week.candidates : disponiblesEsaSemana(monday, rotPorAnio)
+  ), [week.candidates, weekId, rotPorAnio]);
+
   useEffect(() => { setEditingCandidates(false); }, [weekId]);
 
-  const openPicker = () => { setPickerSel(week.candidates); setEditingCandidates(true); };
+  const openPicker = () => { setPickerSel(candidatos); setEditingCandidates(true); };
   const toggleCandidate = (n) => setPickerSel((cur) => (cur.includes(n) ? cur.filter((x) => x !== n) : [...cur, n]));
 
   const saveCandidates = async () => {
@@ -2284,7 +2327,7 @@ function ChipaView({ isAdmin, user }) {
   // campos distintos según el premio, así que votar la chipa no consume el
   // voto del aura ni al revés.
   const castVote = async (name, premio) => {
-    if (!user?.uid || voted[premio.clave] || voting || !week.candidates.includes(name)) return;
+    if (!user?.uid || voted[premio.clave] || voting || !candidatos.includes(name)) return;
     setVoting(true);
     try {
       await setDoc(doc(db, "chipa_votes", weekId), { weekStart: weekId, [premio.campoVotos]: { [name]: increment(1) } }, { merge: true });
@@ -2298,7 +2341,8 @@ function ChipaView({ isAdmin, user }) {
     setHistoryLoading(true);
     try {
       const snap = await getDocs(query(collection(db, "chipa_votes"), orderBy("weekStart", "desc")));
-      const weeks = snap.docs.map((d) => normalizeChipaWeek(d.data(), d.id)).filter((w) => w.weekStart < realWeekId && w.candidates.length > 0);
+      const conAlgo = (w) => w.candidates.length > 0 || Object.keys(w.counts || {}).length > 0 || Object.keys(w.countsAura || {}).length > 0;
+      const weeks = snap.docs.map((d) => normalizeChipaWeek(d.data(), d.id)).filter((w) => w.weekStart < realWeekId && conAlgo(w));
       setHistory(weeks);
       setShowHistory(true);
     } catch (e) { console.error(e); }
@@ -2311,31 +2355,28 @@ function ChipaView({ isAdmin, user }) {
 
   const votacion = (premio) => {
     const cuenta = (n) => (week[premio.campoVotos] || {})[n] || 0;
-    const maxVotos = Math.max(0, ...week.candidates.map(cuenta));
-    const total = week.candidates.reduce((s, n) => s + cuenta(n), 0);
+    const maxVotos = Math.max(0, ...candidatos.map(cuenta));
+    const total = candidatos.reduce((s, n) => s + cuenta(n), 0);
     const yaVoto = !!voted[premio.clave];
     return (
       <div style={{ marginBottom: 20 }}>
         <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "11px 15px", marginBottom: 10, borderRadius: 13, background: premio.degrade, color: "#fff" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 21 }}>{premio.emoji}</span>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: -0.3 }}>{premio.titulo}</div>
-              <div style={{ fontSize: 10.5, opacity: 0.75 }}>{premio.bajada}</div>
-            </div>
+            <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: -0.3 }}>{premio.titulo}</div>
           </div>
           <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.85 }}>{total} voto{total === 1 ? "" : "s"}</div>
         </div>
 
-        {week.candidates.length === 0 ? (
+        {candidatos.length === 0 ? (
           <div style={{ textAlign: "center", padding: "26px 20px", color: "#64748B", fontSize: 12.5, background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0" }}>
             {premio.emoji} {premio.vacio}
-            {isAdmin && <div style={{ fontSize: 11.5, marginTop: 8 }}>Tocá "Elegir candidatos" para arrancar la votación.</div>}
+            <div style={{ fontSize: 11.5, marginTop: 8 }}>Los candidatos salen solos de quiénes están en el servicio.{isAdmin ? ' Podés forzar una lista con "Elegir candidatos".' : ""}</div>
           </div>
         ) : (
           <>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 8 }}>
-              {week.candidates.map((n) => (
+              {candidatos.map((n) => (
                 <CandidateCard key={n} name={n} count={cuenta(n)} isWinner={maxVotos > 0 && cuenta(n) === maxVotos}
                   premio={premio} disabled={yaVoto || voting} onVote={() => castVote(n, premio)} />
               ))}
@@ -2356,7 +2397,7 @@ function ChipaView({ isAdmin, user }) {
           <span style={{ fontSize: 22 }}>🥐</span>
           <div>
             <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Chipa y Aura</div>
-            <div style={{ fontSize: 10.5, opacity: 0.6 }}>Dos votaciones, los mismos candidatos</div>
+            <div style={{ fontSize: 10.5, opacity: 0.6 }}>Los candidatos son los que están esa semana</div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -2382,7 +2423,7 @@ function ChipaView({ isAdmin, user }) {
       {editingCandidates ? (
         <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", padding: 14, marginBottom: 12 }}>
           <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600, marginBottom: 4 }}>Tocá para agregar o sacar candidatos de esta semana:</div>
-          <div style={{ fontSize: 11, color: "#94A3B8", marginBottom: 10 }}>La lista es la misma para la chipa y para el aura.</div>
+          <div style={{ fontSize: 11, color: "#94A3B8", marginBottom: 10 }}>Normalmente no hace falta: la lista sale sola de quiénes están en el servicio esa semana. Guardar acá la fija a mano para esta semana, en las dos votaciones.</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
             {ALL.map((n) => {
               const on = pickerSel.includes(n);
@@ -2442,11 +2483,16 @@ function CandidateCard({ name, count, isWinner, premio, disabled, onVote }) {
 
 function ChipaHistoryRow({ week }) {
   const monday = new Date(`${week.weekStart}T12:00:00`);
+  // Desde que los candidatos se arman solos, las semanas nuevas no guardan la
+  // lista. Para el historial no hace falta: alcanza con quién recibió votos.
+  const nombres = week.candidates.length
+    ? week.candidates
+    : ALL.filter((n) => (week.counts || {})[n] || (week.countsAura || {})[n]);
   const linea = (premio) => {
     const cuenta = (n) => (week[premio.campoVotos] || {})[n] || 0;
-    const max = Math.max(0, ...week.candidates.map(cuenta));
-    const ganadores = max > 0 ? week.candidates.filter((n) => cuenta(n) === max) : [];
-    const ordenados = [...week.candidates].sort((a, b) => cuenta(b) - cuenta(a)).filter(cuenta);
+    const max = Math.max(0, ...nombres.map(cuenta));
+    const ganadores = max > 0 ? nombres.filter((n) => cuenta(n) === max) : [];
+    const ordenados = [...nombres].sort((a, b) => cuenta(b) - cuenta(a)).filter(cuenta);
     return (
       <div style={{ marginTop: 5 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: premio.acento }}>
