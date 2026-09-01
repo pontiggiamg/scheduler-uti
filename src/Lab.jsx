@@ -1,9 +1,26 @@
 /* ══════════════════════════════════════════════════════════════════════════
-   LABORATORIO — cuatro apuestas sobre qué debería ser esta herramienta
+   LABORATORIO — /lab-jr
 
-   Vive en una ruta que no figura en ninguna pestaña ni en ningún menú: hay
-   que saber la URL. No es seguridad —cualquiera que la adivine entra— pero
-   alcanza para que no aparezca sola mientras se decide.
+   QUÉ ES ESTA RUTA
+   ----------------
+   El banco de pruebas del proyecto. Acá se prueba cualquier cosa nueva antes
+   de que llegue a las pestañas que usa el plantel: funciona con los datos
+   reales de Firestore, pero no está enlazada desde ningún menú, así que nadie
+   se la cruza por accidente en medio de una guardia.
+
+   La regla, decidida con Gonzalo el 1/9/2026: lo que está a medio hacer vive
+   acá; a la app "de verdad" solo pasa lo que ya se probó. Una app que doce
+   personas usan a las tres de la mañana no es lugar para experimentar.
+
+   No es seguridad: cualquiera que adivine la URL entra. Es separación de
+   ambientes, que es otra cosa y para esto alcanza.
+
+   CÓMO SE AGREGA UN EXPERIMENTO
+   -----------------------------
+   1. Un componente nuevo en su propio archivo (ver LabMotor.jsx de ejemplo).
+   2. Se importa acá arriba.
+   3. Se lo engancha al estado `viendo`, como está hecho con "motor".
+   Nada de esto toca App.jsx ni las pestañas del plantel.
 
    Qué es esto y qué NO es. Son cuatro PROTOTIPOS: la pantalla principal de
    cada apuesta, funcionando con los datos reales de Firestore, cada una con
@@ -113,16 +130,29 @@ function Encabezado() {
   return (
     <div style={{ background: C.tinta, color: "#fff", borderRadius: 10, padding: "20px 22px", marginBottom: 18 }}>
       <div style={{ fontFamily: MONO, fontSize: 10.5, letterSpacing: ".14em", opacity: 0.6, marginBottom: 7 }}>
-        LABORATORIO · NO ENLAZADO DESDE NINGUNA PESTAÑA
+        LABORATORIO · /LAB-JR · NO ENLAZADO DESDE NINGUNA PESTAÑA
       </div>
       <div style={{ fontSize: 23, fontWeight: 800, letterSpacing: -0.4, marginBottom: 8 }}>
-        Cuatro apuestas sobre qué debería ser esto
+        Banco de pruebas
       </div>
       <div style={{ fontSize: 13.5, lineHeight: 1.6, opacity: 0.85, maxWidth: 720 }}>
-        Cada una parte de una idea distinta sobre dónde está el valor. No son cuatro versiones
-        de lo mismo: son cuatro respuestas a la pregunta de qué estás construyendo. La idea es
-        que descartes tres. Cada ficha dice la apuesta, por qué la haría, qué puede salir mal
-        y qué averiguarías antes de invertir tiempo.
+        Acá se prueba lo nuevo antes de que llegue a las pestañas que usa el plantel.
+        Funciona con los datos reales, pero no aparece en ningún menú: nadie se lo cruza
+        en medio de una guardia. Lo que está a medio hacer vive acá; a la app pasa
+        solo lo que ya se probó.
+      </div>
+      <div style={{ marginTop: 14, paddingTop: 13, borderTop: "1px solid rgba(255,255,255,.15)" }}>
+        <div style={{ fontFamily: MONO, fontSize: 10, letterSpacing: ".12em", opacity: 0.55, marginBottom: 5 }}>
+          EN PRUEBA AHORA
+        </div>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 5 }}>
+          Cuatro apuestas sobre qué debería ser esta herramienta
+        </div>
+        <div style={{ fontSize: 13, lineHeight: 1.55, opacity: 0.8, maxWidth: 720 }}>
+          Cuatro respuestas distintas a la pregunta de qué estás construyendo. La idea es que
+          descartes tres. Cada ficha dice la apuesta, por qué la haría, qué puede salir mal y
+          qué averiguarías antes de invertir tiempo.
+        </div>
       </div>
     </div>
   );
