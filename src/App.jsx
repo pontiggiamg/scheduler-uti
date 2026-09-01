@@ -5301,7 +5301,8 @@ function GuardiasSection({ cobertura, isAdmin }) {
       {!cargando && resumen && (
         <>
           {(resumen.huecos.length > 0 || resumen.sobrantes.length > 0) && (
-            <div style={{ ...caja, background: "#FEF2F2", borderColor: "#FECACA" }}>
+
+      <div style={{ ...caja, background: "#FEF2F2", borderColor: "#FECACA" }}>
               <div style={{ fontSize: 12.5, fontWeight: 800, color: "#B91C1C", marginBottom: 5 }}>Días que no cierran en dos</div>
               {[...resumen.sobrantes, ...resumen.huecos].map((x) => (
                 <div key={x.iso} style={{ fontSize: 12, color: "#7F1D1D" }}>
@@ -5863,12 +5864,23 @@ const PA_TIPOS = ["Medicación", "Intercurrencia", "Estudio", "Procedimiento", "
 const PA_PESO_SUPUESTO = 70;
 
 // La unidad de cada infusión no está escrita en el pase: depende de la droga.
+// Los vasoactivos se titulan en mcg/kg/min, no en mcg/kg/h: para esos se
+// muestran las dos. Para sedoanalgesia la de por hora alcanza.
+const PA_POR_MINUTO = new Set(["Noradrenalina", "Adrenalina", "Dobutamina", "Dopamina"]);
 const PA_UNIDAD = {
   Fentanilo: "mcg", Remifentanilo: "mcg", Dexmedetomidina: "mcg",
   Ketamina: "mg", Morfina: "mg", Noradrenalina: "mg", Midazolam: "mg", Propofol: "mg",
 };
-// Rango habitual, solo como control de sanidad del dato: si cae afuera casi
-// siempre es un ritmo viejo o una dilución mal escrita, no una mala dosis.
+// Rango habitual, solo como control de sanidad del DATO: si cae afuera casi
+// siempre es un ritmo viejo o una dilución mal escrita, no una mala dosis. No
+// es una recomendación de dosificación y no pretende serlo.
+//
+// Contrastados con fuentes abiertas (StatPearls / NCBI Bookshelf, agosto 2026):
+// dexmedetomidina, mantenimiento 0.2–0.7 mcg/kg/h y hasta 1.5 para alcanzar
+// sedación, por eso el techo en 1.5. Noradrenalina: las fuentes para adultos
+// la dan en mcg/min absolutos y no por kilo, así que el rango de acá es una
+// conversión de uso, amplia a propósito (equivale a 0.01–3 mcg/kg/min) para
+// que marque sólo lo groseramente improbable.
 const PA_RANGO = {
   Fentanilo: [0.5, 10], Remifentanilo: [1, 12], Dexmedetomidina: [0.2, 1.5],
   Morfina: [0.005, 0.2], Ketamina: [0.05, 1.5], Noradrenalina: [0.0006, 0.18],
@@ -5949,6 +5961,12 @@ const PA_ACENTOS = {
   hemorragico: "hemorrágico", trombotico: "trombótico", embolico: "embólico",
   respiratorio: "respiratorio", renal: "renal", hepatica: "hepática",
   arteria: "arteria", venosa: "venosa", radiologia: "radiología", tomografia: "tomografía",
+  // Las que ya vienen acentuadas EN MAYÚSCULA necesitan su entrada igual: al
+  // bajarlas quedan con la tilde puesta ("Órdenes") y parecen nombre propio.
+  "órdenes": "órdenes", ordenes: "órdenes", "última": "última", "último": "último",
+  "lúcida": "lúcida", "lúcido": "lúcido", "hepático": "hepático", "ángulo": "ángulo",
+  "cráneo": "cráneo", "tórax": "tórax", "vómitos": "vómitos", "síntomas": "síntomas",
+  "mecánica": "mecánica", "línea": "línea", "días": "días", "día": "día",
 };
 // Palabras que SÍ se bajan a minúscula aunque sean cortas. Sin esto, "TC DE
 // ABDOMEN Y PELVIS" queda como "TC DE abdomen Y pelvis": las siglas de 2-4
@@ -5967,7 +5985,21 @@ const PA_COMUNES = new Set(["SIN", "POR", "CON", "PARA", "DEL", "LOS", "LAS", "U
   "PESO", "KG", "MG", "ML", "DIA", "DIAS", "NOCHE", "HS", "GR", "MCG", "AMP", "GOTAS",
   "DIETA", "BLANDA", "AGUA", "LIBRE", "VIA", "ORAL", "TOTAL", "PARCIAL", "PLAN",
   "ALTA", "PASE", "CAMA", "SALA", "TURNO", "CONTROL", "SEGUIR", "IGUAL", "MISMO",
-  "AYER", "MAÑANA", "TARDE", "SEMANA", "MES", "AÑO", "AÑOS", "VECES", "CADA"]);
+  "AYER", "MAÑANA", "TARDE", "SEMANA", "MES", "AÑO", "AÑOS", "VECES", "CADA",
+  "AUTO", "MALA", "MALO", "BUENA", "BUENO", "ORDENES", "ÓRDENES", "ULTIMA", "ÚLTIMA",
+  "NOCHE", "NOCTURNO", "NIEGA", "REFIERE", "PERSISTE", "CONTINUA", "SIGUE",
+  "BILIOSO", "SEROSO", "SEROSOS", "SEROHEMATICO", "SEROHEMÁTICO", "PURULENTO",
+  "CERV", "CERVICAL", "DISTENDIDO", "BLANDO", "DEPRESIBLE", "DOLOROSO",
+  // Palabras castellanas que el pase escribe en mayúscula y no son siglas.
+  // Sin esto el detector las marca como jerga desconocida y hace ruido.
+  "LADO", "TOMA", "MASA", "MIDE", "HACE", "FOSA", "BASE", "NIVEL", "CURSO",
+  "CAMBIOS", "AUMENTO", "MENOR", "MAYOR", "LIBRE", "MEDIA", "GUARDIA", "SALA",
+  "NEGATIVO", "POSITIVO", "PERSISTE", "INICIA", "SUSP", "STOP", "VIAS", "VÍAS",
+  "DERRAME", "PLEURAL", "HEMATOMA", "SUBDURAL", "PARIETAL", "FRONTO", "PARIETO",
+  "INSULAR", "INFERIOR", "SUPERIOR", "ANTERIOR", "ESPESOR", "MULTIPLES",
+  "MÚLTIPLES", "CONTEXTO", "PREVIO", "HACIA", "TURBIO", "SEDACIÓN", "SEDACION",
+  "STATUS", "FIEBRE", "DOLOR", "EDEMA", "ASTA", "DIFUSA", "SIGNOS", "AUSENTE",
+  "AUSENTES", "PRESENTE", "VITAL", "FUNCIONANTE", "CUBIERTAS", "GASAS"]);
 
 // Abreviaturas de fármacos que se escriben cortas pero son nombres, no siglas:
 // conviene verlas con inicial mayúscula y no en bloque. Se resuelven en
@@ -5981,23 +6013,156 @@ const PA_DROGAS_CORTAS = {
 };
 
 const PA_EXPANDIR = [
-  [/\bHDE\b/gi, "hemodinámicamente estable"], [/\bVE\s+S\/\s*O2\b/gi, "ventilando espontáneo sin O₂"],
-  [/\bVE\s+SIN\s+O2\b/gi, "ventilando espontáneo sin O₂"], [/\bEOT\b/gi, "extubación"],
+  [/\bHDE\b/gi, "hemodinámicamente estable"], [/\bHDI\b/gi, "hemodinámicamente inestable"],
+  // "VE" tiene una variante por residente. Todas dicen lo mismo: si respira
+  // solo y con cuánto oxígeno. Se unifican como "VE sin O₂" / "VE con O₂ a
+  // N L/min", que es la forma corta que ya se lee de un vistazo.
+  [/\bVE\s*S\/?\s*O\s*2\b/gi, "VE sin O₂"],
+  [/\bVE\s+SIN\s+O\s*2\b/gi, "VE sin O₂"],
+  [/\bVE\s+SIN\s+REQ\.?\s*(?:DE)?\s*O\s*2\b/gi, "VE sin O₂"],
+  [/\bVE\s+O2A?\s*([\d.,]+)\s*L(?:TS?|\/M(?:IN)?)?\b/gi, "VE con O₂ a $1 L/min"],
+  [/\bVE\s+([\d.,]+)\s*L(?:TS?|\/M(?:IN)?)?\b/gi, "VE con O₂ a $1 L/min"],
+  [/\bEOT\b/gi, "extubación"],
   [/\bVVC\b/gi, "vía venosa central"], [/\bDVE\b/gi, "drenaje ventricular externo"],
   [/\bTAP\b/gi, "tubo pleural"], [/\bNET\b/gi, "nutrición enteral total"],
   [/\bNPT\b/gi, "nutrición parenteral total"], [/\bNE\b/gi, "nutrición enteral"],
   [/\bDICLO\b/gi, "diclofenac"], [/\bBISO\b/gi, "bisoprolol"], [/\bPRECEDEX\b/gi, "dexmedetomidina"],
+  [/\bRHA\s*\+/gi, "ruidos hidroaéreos presentes"],
   [/\bRHA\b/gi, "ruidos hidroaéreos"], [/\bISQX\b/gi, "infección de sitio quirúrgico"],
   [/\bEPM\b/gi, "episodio psicomotriz"], [/\bVEDA\b/gi, "videoendoscopia digestiva alta"],
   [/\bVATS\b/gi, "cirugía toracoscópica videoasistida"], [/\bCBO\b/gi, "cerebro"],
   // Unidades pegadas al número: "120MG" → "120 mg", "20ML" → "20 ml".
   [/(\d)\s*MG\b/gi, "$1 mg"], [/(\d)\s*ML\b/gi, "$1 ml"], [/(\d)\s*KG\b/gi, "$1 kg"],
-  [/(\d)\s*MCG\b/gi, "$1 mcg"], [/(\d)\s*GR\b/gi, "$1 g"],
+  [/(\d)\s*MCG\b/gi, "$1 mcg"], [/(\d)\s*GRS?\b/gi, "$1 g"],
   // "FURO 20 DIA" quiere decir 20 por día, no "20 día".
   [/(\d)\s+D[IÍ]A\b/gi, "$1 por día"],
   [/\bDIA\b/g, "día"], [/\bdia\b/g, "día"], [/\bDIAS\b/g, "días"], [/\bdias\b/g, "días"],
+  // ── Examen físico y estado, según los patrones del pase ──────────────────
+  // Estas salen de mirar los 25 pases: son las formas que realmente se usan.
+  // La idea no es traducir palabra por palabra sino que la frase se lea como
+  // una oración ("abdomen doloroso a la palpación profunda").
+  [/\bABD\b/gi, "abdomen"], [/\bABDI\b/gi, "abdomen"],
+  [/\bA\s+PALP\.?\s+PROFUNDA\b/gi, "a la palpación profunda"],
+  [/\bPALP\b\.?/gi, "palpación"],
+  [/\bMMII\b/gi, "miembros inferiores"], [/\bMMSS\b/gi, "miembros superiores"],
+  [/\bFII\b/gi, "fosa ilíaca izquierda"], [/\bFID\b/gi, "fosa ilíaca derecha"],
+  [/\bHD\b(?!E)/gi, "hipocondrio derecho"], [/\bHI\b/gi, "hipocondrio izquierdo"],
+  [/\bDER\b\.?/gi, "derecha"], [/\bIZQ\b\.?/gi, "izquierda"],
+  [/\bSNG\b/gi, "sonda nasogástrica"], [/\bSV\b/gi, "sonda vesical"],
+  [/\bTAP\b/gi, "tubo pleural"], [/\bVAC\b/gi, "sistema VAC"],
+  [/\bAT\b/gi, "aspirado traqueal"],
+  // "2 DJES" son dos drenajes, no "2 drenaje": el plural se respeta.
+  [/\b(\d+)\s+DJE?S\b/gi, "$1 drenajes"], [/\bDJES\b/gi, "drenajes"],
+  [/\bDJE\b/gi, "drenaje"], [/\bDJP\b/gi, "drenaje"], [/\bDREN\b/gi, "drenaje"],
+  // "ABDI RHA AUSENTES" es abdomen CON ruidos ausentes.
+  [/\bABDI?\s+(?=RHA|RUIDOS)/gi, "abdomen con "],
+  [/\bS\/\s*P\b/gi, "sin particularidades"],
+  [/\bAFEBRIL\b/gi, "afebril"], [/\bSUBFEBRIL\b/gi, "subfebril"],
+  [/\bESCARA\b/gi, "escara"],
+  // Antihipertensivos y demás que el pase abrevia. Confirmadas con Gonzalo.
+  [/\bDOXA\b/gi, "doxazosina"], [/\bAMLO\b/gi, "amlodipina"],
+  [/\bNXB\b/gi, "nada por boca"], [/\bNPO\b/gi, "nada por boca"],
+  // "HASAT RODILLAS" es "hasta las rodillas": un tipeo, no una sigla.
+  [/\bHASAT\b/gi, "hasta"],
+  // "Carvedilol 12.5/12" = 12,5 mg cada 12 h. El patrón dosis/intervalo es
+  // constante en el pase, así que se escribe como se lee en voz alta.
+  [/\b([A-Za-zÁÉÍÓÚÑáéíóúñ]{4,})\s+([\d.,]+)\s*\/\s*(4|6|8|12|24)\b(?!\s*\/)/g, "$1 $2 mg cada $3 h"],
+  [/\bC\/\s*(4|6|8|12|24)\s*(?:HS?)?\b/gi, "cada $1 h"],
+  // El balance del día al final del renglón, en palabras.
+  [/,\s*(\d{2,4})\s*-\s*(\d{2,4})\s*$/gm, ". Ingresos $1 ml, diuresis $2 ml"],
+  // ── Sacadas del contexto de los propios pases (barrido de las 25 camas) ──
+  // Antibióticos y microbiología: aparecen siempre dentro de listas de ATB o
+  // de cultivos, así que el contexto no deja lugar a dudas.
+  [/\bTIGE\b/gi, "tigeciclina"], [/\bCRO\b/gi, "ceftriaxona"],
+  [/\bCAZ\s*\/\s*AVI\b/gi, "ceftazidima-avibactam"], [/\bCEFTA\s+AVI\b/gi, "ceftazidima-avibactam"],
+  [/\bFEP\b/gi, "cefepime"], [/\bDAPTO\b/gi, "daptomicina"], [/\bMETRO\b/gi, "metronidazol"],
+  [/\bANIDULA\b/gi, "anidulafungina"], [/\bLEVO\b/gi, "levofloxacina"],
+  [/\bCGP\b/gi, "cocos gram positivos"], [/\bBGN\b/gi, "bacilos gram negativos"],
+  [/\bEVR\b/gi, "enterococo vancomicina resistente"],
+  [/\bTCD\b/gi, "toxina de Clostridioides difficile"],
+  // Estudios y antecedentes.
+  [/\bEFR\b/gi, "espirometría"], [/\bCRM\b/gi, "cirugía de revascularización miocárdica"],
+  [/\bDLP\b/gi, "dislipemia"], [/\bACO\b/gi, "anticoagulación"],
+  [/\bFQ\b/gi, "fisicoquímico"], [/\bDIFU\b/gi, "difusión"],
+  // "ASCITIS GII" es grado II; el recuento del líquido usa RTO y MONO.
+  [/\bG(I{1,3}|IV)\b/g, (m, r) => "grado " + r],
+  [/\bRTO\b/gi, "recuento"], [/\bMONO\b/gi, "mononucleares"],
+  [/\bRMN\b/gi, "resonancia"], [/\bRXTX\b/gi, "radiografía de tórax"],
+  [/\bITU\b/gi, "infección urinaria"], [/\bKPN\b/gi, "Klebsiella pneumoniae"],
+  [/\bFBC\b/gi, "fibrobroncoscopía"], [/\bHPB\b/gi, "hiperplasia prostática benigna"],
+  [/\bACM\b/gi, "arteria cerebral media"], [/\bDTC\b/gi, "doppler transcraneal"],
+  [/\bDM\b/gi, "diabetes mellitus"], [/\bVO\b/gi, "vía oral"],
+  // ── Ambiguas: se resuelven por contexto, nunca a ciegas ──────────────────
+  // NIR va siempre pegado a diabetes; DOB es daño de órgano blanco.
+  [/\bNIR\b/gi, "no insulinorrequiriente"], [/\bDOB\b/g, "daño de órgano blanco"],
+  [/\bRZO\b/gi, "realizó"],
+  // ISQX es siempre infección de sitio quirúrgico. ISQ a secas depende: con
+  // ACV o con un miembro es isquémico/isquemia; sólo se expande cuando el
+  // contexto lo dice, y si no queda como está.
+  [/\bISQX\b/gi, "infección de sitio quirúrgico"],
+  [/\bACV\s+ISQ\b/gi, "ACV isquémico"],
+  [/\bISQ\s+(MMII|MII|MSI|MSD|MID)\b/gi, "isquemia de $1"],
+  // AA con cirugía o laparotomía es abdomen agudo; con infrarrenal o aorta es
+  // aneurisma. Sin ninguna de las dos pistas, se deja sin tocar.
+  [/\bAA\s+(QX|LAP|PERFORATIVO|OBSTRUCTIVO)\b/gi, "abdomen agudo $1"],
+  [/\bAA\s+(INFRARENAL|INFRARRENAL|AORT[AI]CO|DE\s+AORTA)\b/gi, "aneurisma $1"],
   [/\bPEND\b/gi, "pendiente"], [/\bCIR\b/gi, "catéter peridural"], [/\bTFG\b/gi, "filtrado glomerular"],
 ];
+
+// ── Detector de abreviaturas que la app todavía no entiende ────────────────
+//
+// El pase suma jerga nueva todo el tiempo y hasta ahora la cazábamos de a una,
+// leyendo pases a mano. Esto la junta sola: una sigla que sobrevive a
+// paLimpiar() —queda en mayúscula, no está en ningún diccionario y no es un
+// laboratorio ni una unidad— es candidata a que alguien la explique.
+//
+// A propósito NO adivina el significado: sólo señala. Inventar una expansión
+// plausible en un pase de terapia es peor que dejar la sigla cruda.
+const PA_IGNORAR = new Set([
+  // Laboratorios y gases: se leen bien abreviados y son los que más aparecen.
+  "HB", "HTO", "HT", "GB", "PLAQ", "GLU", "UREA", "CREA", "CR", "NA", "K", "CL",
+  "CA", "MG", "P", "ALB", "PROT", "BILI", "BT", "FAL", "TGO", "TGP", "LDH", "TP",
+  "APTT", "RIN", "PMN", "LEUCOS", "TAG", "TG", "AMILASA", "PH", "PO2", "PCO2",
+  "HCO3", "EB", "SAT", "FIO2", "PAFI", "LAC",
+  // Cultivos y microbiología.
+  "HC", "HCX", "UC", "RC", "HMC", "MATQX", "ATB", "BAL", "MPX",
+  // Unidades y medidas.
+  "ML", "MG", "GR", "GRS", "MCG", "KG", "CM", "MM", "LTS", "L", "HS", "H", "UI", "UGR",
+  // Siglas de uso corriente que ya todos leen.
+  "UTI", "UCO", "RECU", "CM", "QX", "DX", "TC", "TAC", "RM", "RX", "ECO", "EEG",
+  "LCR", "GCS", "RASS", "SOFA", "APACHE", "PIC", "PAM", "TAM", "FC", "FR", "TA",
+  "OK", "SOS", "NEG", "POS", "OFF", "ON", "II", "III", "IV", "VI",
+  // Vía aérea, accesos y soportes: vocabulario diario del servicio.
+  "IOT", "ARM", "VNI", "CPAP", "VE", "EOT", "TQT", "TET", "SNG", "SV", "TAP",
+  "CVC", "VVC", "VVP", "PICC", "DVE", "DJE", "DJP", "COOK", "VAC", "HD", "HDF",
+  "PC", "PS", "VC", "VCV", "PCV", "VT", "PEEP", "PAFI", "FD", "YD", "FI", "YI",
+  // Patologías y antecedentes que se escriben siempre abreviados.
+  "HTA", "DBT", "EPOC", "ERC", "IC", "IAM", "ACV", "HSA", "TEP", "TVP", "FA",
+  "IRA", "IRC", "HIP", "TBQ", "OH", "SAHOS", "MOD", "SME", "CF", "FEY", "BGN",
+  "BGP", "SAMS", "SAMR", "KPC", "BLEE", "PBE", "HDA", "HDB",
+  // Soluciones, sueros y nutrición.
+  "SF", "RL", "DX", "NE", "NET", "NPT", "PHP", "AM", "PM",
+  // Servicios, procedimientos y varios de uso corriente.
+  "TTO", "REQ", "EAB", "PL", "TX", "EX", "PQ", "LIQ", "AMC", "MI", "AP", "EA",
+  "GOT", "BASE", "PR", "DOB", "HMD", "CTI", "CM", "GC", "TR",
+]);
+
+function paDesconocidas(txt) {
+  if (!txt) return [];
+  const out = new Set();
+  // Sólo sobre el texto YA limpiado: lo que queda en mayúscula ahí es lo que
+  // ningún diccionario supo tocar.
+  const limpio = paLimpiar(txt);
+  const re = /(?<![A-Za-zÁÉÍÓÚÜÑáéíóúüñ])[A-ZÁÉÍÓÚÜÑ]{2,10}(?![A-Za-zÁÉÍÓÚÜÑáéíóúüñ])/g;
+  let m;
+  while ((m = re.exec(limpio))) {
+    const w = m[0];
+    if (PA_IGNORAR.has(w) || PA_COMUNES.has(w)) continue;
+    if (/\d/.test(w)) continue;
+    out.add(w);
+  }
+  return [...out];
+}
 
 function paLimpiar(txt) {
   if (!txt) return txt;
@@ -6007,9 +6172,12 @@ function paLimpiar(txt) {
   if (letras.length && mays / letras.length >= 0.55) {
     // Solo palabras de 5+ letras o conectores comunes: las siglas cortas (QX,
     // TAP, HDE) son el vocabulario real del servicio y se respetan.
-    // {1,} y no {2,}: "Y" y "A" sueltas también son conectores y quedaban en
-    // mayúscula en medio de la frase ("abdomen Y pelvis").
-    t = t.replace(/\b[A-ZÁÉÍÓÚÑ]+\b/g, (w) => {
+    // Ojo con \b: JavaScript no considera letra a la "Á", así que /\b[A-ZÁ...]+\b/
+    // partía "ÓRDENES" en "Ó" + "RDENES" y sólo bajaba la segunda mitad, dejando
+    // "Órdenes" como si fuera nombre propio. Se delimita a mano con lookarounds
+    // sobre el conjunto completo de letras.
+    const L = "A-Za-zÁÉÍÓÚÜÑáéíóúüñ";
+    t = t.replace(new RegExp(`(?<![${L}])[A-ZÁÉÍÓÚÜÑ]+(?![${L}])`, "g"), (w) => {
       if (/\d/.test(w)) return w;
       const low = w.toLowerCase();
       if (PA_DROGAS_CORTAS[low]) return PA_DROGAS_CORTAS[low];
@@ -6022,6 +6190,13 @@ function paLimpiar(txt) {
     t = t.replace(/(→ )([A-ZÁÉÍÓÚÑ])(?=[a-záéíóúñ])/g, (m, a, b) => a + b.toLowerCase());
   }
   for (const [re, rep] of PA_EXPANDIR) t = t.replace(re, rep);
+  // Puntuación: el pase se escribe rápido y quedan ", ,", espacios antes de
+  // la coma y comas colgando al final del renglón.
+  t = t.replace(/([,;:])(?=[A-Za-zÁÉÍÓÚÑáéíóúñ])/g, "$1 ")  // "PIR,hemodinámicamente"
+       .replace(/\s+([,.;:])/g, "$1")
+       .replace(/([,;])\s*(?=[,;])/g, "")
+       .replace(/,\s*$/gm, "")
+       .replace(/\s{2,}/g, " ");
   // La capitalización va DESPUÉS de expandir las siglas: si no, "HDE. VE S/O2"
   // se expande a "hemodinámicamente estable. ventilando..." con la minúscula
   // ya cristalizada después del punto.
@@ -6134,7 +6309,11 @@ function paProcesar(raw, unidad) {
       vistos.add(k);
       inf.push({ droga, mg: +m[2], ml: +m[3], ritmo: +m[4],
         declarada: m[5] ? parseFloat(m[5].replace(",", ".")) : null,
-        campo: campo === "tto" ? null : campo });
+        // "campo" es sólo para el cartel de "escrita en tal lado"; para poder
+        // reescribir el renglón cuando se cambia el goteo hace falta saber en
+        // qué campo está de verdad y con qué números venía escrito.
+        campo: campo === "tto" ? null : campo,
+        campoReal: campo, original: `${m[2]}/${m[3]}/${m[4]}` });
     }
   }
   const interm = [];
@@ -6145,6 +6324,17 @@ function paProcesar(raw, unidad) {
       interm.push({ droga: paTitulo(mi[1]), mg: +mi[2], cada: +mi[3] });
   }
   const mp = todo.match(/PESO\s*(?:REAL\s*)?(?:DE\s*)?(\d{2,3})\s*KG/i);
+  // Balance del día escrito al final del renglón de estado: "…, 890-590" son
+  // 890 ml de ingresos y 590 ml de diuresis. Se acota fuerte a propósito —par
+  // al final del renglón, precedido por coma y sin "%"— porque el mismo patrón
+  // aparece como rango en "FEY 45-50%" o "TROPO 72 - 85", y leer una fracción
+  // de eyección como si fuera un balance sería un error feo.
+  let balDia = null;
+  for (const linea of (campos.req || "").split("\n")) {
+    const mb = linea.match(/,\s*(\d{2,4})\s*-\s*(\d{2,4})\s*$/);
+    if (mb) balDia = { ingresos: +mb[1], egresos: +mb[2] };
+  }
+
   const pend = (campos.pendiente || "")
     .split(/\n|\/\/|(?<=[a-zA-ZáéíóúÁÉÍÓÚ0-9])\s+\/\s+(?=[A-ZÁÉÍÓÚ])/)
     .map((x) => x.replace(/^[\s/]+|[\s/]+$/g, "")).filter(Boolean)
@@ -6157,7 +6347,13 @@ function paProcesar(raw, unidad) {
     unidad, cama: raw.bed, ...paNombre(raw.name),
     mi: paLimpiar(raw.mi || ""), campos: limpios,
     peso: mp ? +mp[1] : null, infusiones: inf, intermitentes: interm,
-    pendientes: pend, anotaciones: [], balance: { ingresos: [], egresos: [] },
+    pendientes: pend, anotaciones: [],
+    // Si el pase ya traía el balance del día, entra precargado en vez de
+    // obligar a copiarlo a mano.
+    balance: balDia
+      ? { ingresos: [{ que: "Aportes del día (del pase)", ml: balDia.ingresos, cuando: "" }],
+          egresos: [{ que: "Diuresis del día (del pase)", ml: balDia.egresos, cuando: "" }] }
+      : { ingresos: [], egresos: [] },
     sinCompletar: !req.length || /^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(ult),
     // Texto crudo del respirador tal como venía en el pase, para precargar el
     // pop-up de mecánica ventilatoria.
@@ -6218,7 +6414,7 @@ function PaseAppView({ user }) {
   const [enFoco, setEnFoco] = useState(null);
   // Todas las secciones arrancan colapsadas: en el celular, durante el pase,
   // lo primero que uno quiere ver es el paciente, no cuatro cajas abiertas.
-  const [plegado, setPlegado] = useState({ anot: true, pend: true, bal: true });
+  const [plegado, setPlegado] = useState({ anot: true, pend: true, bal: true, raras: true });
   const [tipoSel, setTipoSel] = useState("Intercurrencia");
   const [estado, setEstado] = useState("");
   // ARM por paciente (no uno solo para toda la unidad, que era el bug latente
@@ -6327,6 +6523,43 @@ function PaseAppView({ user }) {
     d[idx].ordenCampos = act;
   });
 
+  // Cambiar dilución o ritmo de una infusión. Se guarda en la copia propia y
+  // la dosis se recalcula sola: si en la guardia se sube el goteo, el número
+  // que se ve tiene que ser el de ahora, no el que quedó escrito en el Drive.
+  const cambiarInfusion = (k, campo, valor) => mutar((d) => {
+    const inf = d[idx].infusiones?.[k];
+    if (!inf) return;
+    inf[campo] = valor === "" ? "" : Number(valor);
+    // La dosis que venía anotada en el pase deja de aplicar apenas se toca el
+    // goteo: si no, el cartel de "no coincide" compara contra un valor viejo.
+    inf.declarada = null;
+    inf.tocada = true;
+
+    // Y se reescribe el renglón del pase, para que el texto y la dosis no digan
+    // cosas distintas.
+    //
+    // Se hace por líneas y reconstruyendo la línea entera, no con un replace
+    // sobre todo el texto: React puede correr este updater dos veces y un
+    // replace que se aplique dos veces deja el número viejo pegado al nuevo
+    // ("200/250/16200/250/32"). Reconstruir la línea es idempotente.
+    const c = inf.campoReal;
+    const texto = d[idx].campos?.[c];
+    if (c && texto && inf.mg !== "" && inf.ml !== "" && inf.ritmo !== "") {
+      const nuevo = `${inf.mg}/${inf.ml}/${inf.ritmo}`;
+      const tri = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/;
+      d[idx].campos[c] = texto.split("\n").map((linea) => {
+        if (!tri.test(linea)) return linea;
+        // ¿esta línea es la de esta droga? El nombre puede estar prolijado
+        // ("Ketamina") o crudo ("KETA"), así que se aceptan las dos formas.
+        const prim = (linea.trim().split(/\s+/)[0] || "").toUpperCase();
+        const esta = PA_INFUS[prim] === inf.droga ||
+          prim === inf.droga.toUpperCase() ||
+          (prim === "NA" && inf.droga === "Noradrenalina");
+        return esta ? linea.replace(tri, nuevo) : linea;
+      }).join("\n");
+    }
+  });
+
   // Mover un renglón dentro de una sección. El texto de cada campo es un bloque
   // de líneas; reordenar es mover la línea y volver a pegar.
   const moverLinea = (k, i, paso) => mutar((d) => {
@@ -6423,9 +6656,11 @@ function PaseAppView({ user }) {
           const pend = (x.pendientes || []).filter((y) => !y.listo).length;
           return (
             <button key={i} onClick={() => setISel(i)}
-              style={{ flex: "0 0 auto", fontFamily: "ui-monospace,monospace", fontSize: 13, fontWeight: 600, padding: "6px 11px", borderRadius: 4, border: "1.5px solid #E2E8F0", cursor: "pointer", background: i === idx ? "#0F5F66" : "#fff", color: i === idx ? "#fff" : "#64748B" }}>
+              style={{ flex: "0 0 auto", fontFamily: "ui-monospace,monospace", fontSize: 16, fontWeight: 700, padding: "7px 13px", borderRadius: 5, border: "1.5px solid #E2E8F0", cursor: "pointer", background: i === idx ? "#0F5F66" : "#fff", color: i === idx ? "#fff" : "#334155" }}>
               {x.cama}{pend ? " •" : ""}
-              <span style={{ display: "block", fontSize: 8.5, fontWeight: 500, opacity: 0.75 }}>{(x.nombre || "").split(" ").pop().slice(0, 8)}</span>
+              {/* El apellido entero: cortarlo a ocho letras hacía que dos
+                  pacientes distintos se vieran igual en la barra. */}
+              <span style={{ display: "block", fontSize: 11.5, fontWeight: 600, opacity: 0.85, fontFamily: "inherit" }}>{(x.nombre || "").split(" ").pop()}</span>
             </button>
           );
         })}
@@ -6436,6 +6671,35 @@ function PaseAppView({ user }) {
           Viendo la foto original del Drive, sin tus cambios. Destildá arriba para volver a tu versión.
         </div>
       )}
+
+      <Plegable k="anot" titulo="Anotaciones de este paciente durante la guardia" color="#8A4B00" n={(p.anotaciones || []).length}>
+        {editable && (
+          <>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>
+              {PA_TIPOS.map((t) => (
+                <button key={t} onClick={() => setTipoSel(t)}
+                  style={{ fontFamily: "ui-monospace,monospace", fontSize: 10.5, fontWeight: 600, padding: "5px 9px", borderRadius: 4, border: "1.5px solid #E9C48A", cursor: "pointer", background: t === tipoSel ? "#8A4B00" : "transparent", color: t === tipoSel ? "#fff" : "#8A4B00" }}>{t}</button>
+              ))}
+            </div>
+            <NuevaAnotacion onAdd={(txt) => mutar((d) => {
+              d[idx].anotaciones = d[idx].anotaciones || [];
+              d[idx].anotaciones.push({ hora: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }), tipo: tipoSel, texto: txt });
+            })} />
+          </>
+        )}
+        {(p.anotaciones || []).length === 0
+          ? <div style={{ fontSize: 13, color: "#64748B", fontStyle: "italic" }}>Todavía no anotaste nada de este paciente.</div>
+          : (p.anotaciones || []).map((x, k) => (
+            <div key={k} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "8px 0", borderTop: k ? "1px solid #F1F5F9" : "none" }}>
+              <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 11, color: "#8A4B00", paddingTop: 2 }}>{x.hora}</span>
+              <span style={{ flex: 1, fontSize: 14 }}>
+                <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 9, border: "1px solid #E9C48A", color: "#8A4B00", borderRadius: 3, padding: "1px 5px", marginRight: 6 }}>{x.tipo}</span>
+                {x.texto}
+              </span>
+              {editable && <span onClick={() => mutar((d) => { d[idx].anotaciones.splice(k, 1); })} style={{ cursor: "pointer", color: "#94A3B8" }}>×</span>}
+            </div>
+          ))}
+      </Plegable>
 
       <div style={caja}>
         <div style={{ padding: "12px 14px", borderBottom: "1px solid #E2E8F0" }}>
@@ -6452,8 +6716,16 @@ function PaseAppView({ user }) {
               Peso
               <input type="number" value={p.peso || ""} placeholder="—" disabled={!editable}
                 onChange={(e) => mutar((d) => { d[idx].peso = e.target.value ? +e.target.value : null; })}
-                style={{ width: 56, fontFamily: "ui-monospace,monospace", fontSize: 13, padding: "3px 5px", border: "1px solid #E2E8F0", borderRadius: 4 }} /> kg
+                style={{ width: 56, fontFamily: "ui-monospace,monospace", fontSize: 13, padding: "3px 5px", border: `1px solid ${p.peso ? "#E2E8F0" : "#FCA5A5"}`, borderRadius: 4 }} /> kg
             </span>
+            {/* Sin peso, todas las dosis se calculan sobre 70 kg supuestos. El
+                aviso va acá arriba, pegado al campo que lo resuelve, y no sólo
+                abajo con las dosis. */}
+            {!p.peso && (
+              <span style={{ fontSize: 11.5, fontWeight: 700, color: "#B91C1C", border: "1px dashed #FCA5A5", borderRadius: 4, padding: "3px 8px", display: "flex", alignItems: "center" }}>
+                ↖ Escribí el peso real o estimado
+              </span>
+            )}
             {p.sinCompletar && <span style={{ fontSize: 11.5, border: "1px dashed #FCA5A5", color: "#B91C1C", borderRadius: 4, padding: "3px 8px" }}>Último día sin completar</span>}
           </div>
         </div>
@@ -6505,7 +6777,7 @@ function PaseAppView({ user }) {
                   </div>
                 )}
               </div>
-              {k === "tto" && <DosisDe p={p} />}
+              {k === "tto" && <DosisDe p={p} onCambio={editable ? cambiarInfusion : null} />}
             </div>
           );
         })}
@@ -6517,10 +6789,19 @@ function PaseAppView({ user }) {
               <span style={{ ...ROT, fontWeight: 800, fontSize: 11.5, color: "#334155" }}>Tratamiento</span>
               <span style={{ marginLeft: "auto", fontSize: 11, color: "#94A3B8" }}>según lo escrito arriba</span>
             </div>
-            <DosisDe p={p} />
+            <DosisDe p={p} onCambio={editable ? cambiarInfusion : null} />
           </div>
         )}
       </div>
+
+      {/* ARM: casi nunca se usa, así que no ocupa lugar en la ficha. Botón que
+          abre un pop-up, con los settings del modo que corresponda. */}
+      <button onClick={() => setArmAbierto(true)} style={{ ...B, width: "100%", textAlign: "left", marginTop: 10, display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ color: "#64748B" }}>🫁</span> Ver ARM de este paciente
+        {(armDe(idx).modo || p.armTexto) && <span style={{ marginLeft: "auto", fontSize: 11, color: "#64748B" }}>
+          {PA_MODOS[armDe(idx).modo]?.rot || "según el pase"}
+        </span>}
+      </button>
 
       <Plegable k="bal" titulo="Balance" color="#1D4ED8" n={(p.balance?.ingresos?.length || 0) + (p.balance?.egresos?.length || 0)}>
         <div style={{ display: "grid", gap: 12 }}>
@@ -6555,48 +6836,16 @@ function PaseAppView({ user }) {
             </span>
           </div>
           <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.45 }}>
-            El balance lo cargás vos en la cama: no viene en el pase del Drive.
+            {(p.balance?.ingresos || []).some((x) => /del pase/.test(x.que || ""))
+              ? "Los renglones marcados \u0022del pase\u0022 salen del balance escrito al final del estado de hoy. El resto lo cargás vos en la cama."
+              : "El balance lo cargás vos en la cama: no viene en el pase del Drive."}
           </div>
         </div>
       </Plegable>
 
-      {/* ARM: casi nunca se usa, así que no ocupa lugar en la ficha. Botón que
-          abre un pop-up, con los settings del modo que corresponda. */}
-      <button onClick={() => setArmAbierto(true)} style={{ ...B, width: "100%", textAlign: "left", marginTop: 10, display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ color: "#64748B" }}>🫁</span> Ver ARM de este paciente
-        {(armDe(idx).modo || p.armTexto) && <span style={{ marginLeft: "auto", fontSize: 11, color: "#64748B" }}>
-          {PA_MODOS[armDe(idx).modo]?.rot || "según el pase"}
-        </span>}
-      </button>
 
-      <Plegable k="anot" titulo="Anotaciones durante la guardia" color="#8A4B00" n={(p.anotaciones || []).length}>
-        {editable && (
-          <>
-            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>
-              {PA_TIPOS.map((t) => (
-                <button key={t} onClick={() => setTipoSel(t)}
-                  style={{ fontFamily: "ui-monospace,monospace", fontSize: 10.5, fontWeight: 600, padding: "5px 9px", borderRadius: 4, border: "1.5px solid #E9C48A", cursor: "pointer", background: t === tipoSel ? "#8A4B00" : "transparent", color: t === tipoSel ? "#fff" : "#8A4B00" }}>{t}</button>
-              ))}
-            </div>
-            <NuevaAnotacion onAdd={(txt) => mutar((d) => {
-              d[idx].anotaciones = d[idx].anotaciones || [];
-              d[idx].anotaciones.push({ hora: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }), tipo: tipoSel, texto: txt });
-            })} />
-          </>
-        )}
-        {(p.anotaciones || []).length === 0
-          ? <div style={{ fontSize: 13, color: "#64748B", fontStyle: "italic" }}>Todavía no anotaste nada de este paciente.</div>
-          : (p.anotaciones || []).map((x, k) => (
-            <div key={k} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "8px 0", borderTop: k ? "1px solid #F1F5F9" : "none" }}>
-              <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 11, color: "#8A4B00", paddingTop: 2 }}>{x.hora}</span>
-              <span style={{ flex: 1, fontSize: 14 }}>
-                <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 9, border: "1px solid #E9C48A", color: "#8A4B00", borderRadius: 3, padding: "1px 5px", marginRight: 6 }}>{x.tipo}</span>
-                {x.texto}
-              </span>
-              {editable && <span onClick={() => mutar((d) => { d[idx].anotaciones.splice(k, 1); })} style={{ cursor: "pointer", color: "#94A3B8" }}>×</span>}
-            </div>
-          ))}
-      </Plegable>
+
+
 
       <Plegable k="pend" titulo="Pendientes" color="#0F5F66" n={(p.pendientes || []).filter((x) => !x.listo).length}>
         {(p.pendientes || []).length === 0
@@ -6615,6 +6864,29 @@ function PaseAppView({ user }) {
           d[idx].pendientes.push({ texto: txt, listo: false });
         })} />}
       </Plegable>
+
+      {/* Abreviaturas que la app no supo interpretar en ESTE paciente. No
+          adivina el significado: sólo las señala, porque inventar una
+          expansión plausible en un pase de terapia es peor que dejar la sigla
+          cruda. Sirve para que la jerga nueva aparezca sola en vez de tener
+          que ir a cazarla leyendo pases. */}
+      {(() => {
+        const raras = [...new Set(PA_ORDEN.flatMap((k) => paDesconocidas(p.campos?.[k])))];
+        if (!raras.length) return null;
+        return (
+          <Plegable k="raras" titulo="Abreviaturas sin interpretar" color="#94A3B8" n={raras.length}>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>
+              {raras.map((w) => (
+                <span key={w} style={{ fontFamily: "ui-monospace,monospace", fontSize: 12, border: "1px solid #E2E8F0", borderRadius: 4, padding: "3px 7px", color: "#475569" }}>{w}</span>
+              ))}
+            </div>
+            <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.45 }}>
+              Estas siglas quedaron sin expandir: la app las deja tal cual en vez de suponer qué significan.
+              Si alguna es de uso corriente, decímela y la agrego al diccionario.
+            </div>
+          </Plegable>
+        );
+      })()}
 
       <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.5, padding: "4px 2px" }}>
         <b>Versión alpha.</b> Tu copia se guarda en tu cuenta y nadie más la ve. Las anotaciones son temporales: cuando entra un pase nuevo, usá "Borrar mis anotaciones y sincronizar pase". Si algo no funciona o te falta algo, decímelo.
@@ -6712,61 +6984,75 @@ function ArmPopup({ p, v, set, cerrar }) {
   );
 }
 
-function DosisDe({ p }) {
+function DosisDe({ p, onCambio }) {
   const inf = p.infusiones || [], interm = p.intermitentes || [];
   if (!inf.length && !interm.length) return null;
-  const fila = { display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center", padding: "7px 0", borderTop: "1px solid #F1F5F9" };
+  const editable = typeof onCambio === "function";
+  const cel = { width: 58, fontFamily: "ui-monospace,monospace", fontSize: 13, padding: "3px 5px", border: "1.5px solid #E2E8F0", borderRadius: 4, textAlign: "right" };
   return (
     <div style={{ margin: "0 14px 12px", paddingTop: 10, borderTop: "1px dashed #E2E8F0" }}>
-      <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 9.5, letterSpacing: ".09em", textTransform: "uppercase", color: "#64748B", marginBottom: 7 }}>Dosis calculadas</div>
       {!p.peso && inf.length > 0 && (
         <div style={{ fontSize: 13, fontWeight: 700, color: "#B91C1C", marginBottom: 8 }}>Dosis en paciente de {PA_PESO_SUPUESTO} kg</div>
       )}
       {inf.map((x, k) => {
         const g = paDosis(x, p.peso);
-        const det = `${x.mg} ${g.u || "?"} / ${x.ml} ml · ${x.ritmo} ml/h · ${g.peso} kg`;
-        if (g.sinUnidad) return (
-          <div key={k} style={fila}>
-            <div><div style={{ fontWeight: 600, fontSize: 14 }}>{x.droga}</div><div style={{ fontSize: 11.5, color: "#64748B", fontFamily: "ui-monospace,monospace" }}>{det}</div></div>
-            <div style={{ color: "#B91C1C", fontSize: 11.5, textAlign: "right", maxWidth: 150 }}>sin unidad definida</div>
-          </div>
-        );
         const dec = x.declarada;
-        const dif = dec != null && Math.abs(g.kgh - dec) / Math.max(dec, 1e-9) > 0.10;
+        const dif = !g.sinUnidad && dec != null && Math.abs(g.kgh - dec) / Math.max(dec, 1e-9) > 0.10;
         const r = PA_RANGO[x.droga];
-        const fuera = r && (g.kgh < r[0] || g.kgh > r[1]);
+        const fuera = !g.sinUnidad && r && (g.kgh < r[0] || g.kgh > r[1]);
         return (
-          <div key={k}>
-            <div style={fila}>
-              <div><div style={{ fontWeight: 600, fontSize: 14 }}>{x.droga}</div><div style={{ fontSize: 11.5, color: "#64748B", fontFamily: "ui-monospace,monospace" }}>{det}</div></div>
-              <div style={{ fontFamily: "ui-monospace,monospace", fontWeight: 600, fontSize: 14.5, textAlign: "right", whiteSpace: "nowrap" }}>
-                {g.kgh.toFixed(3)} <em style={{ fontStyle: "normal", fontSize: 11, color: "#64748B" }}>{g.u}/kg/h</em><br />
-                {g.kgmin.toFixed(4)} <em style={{ fontStyle: "normal", fontSize: 11, color: "#64748B" }}>{g.u}/kg/min</em>
-              </div>
+          <div key={k} style={{ padding: "8px 0", borderTop: k ? "1px solid #F1F5F9" : "none" }}>
+            {/* La dosis va pegada al nombre de la droga: es el dato que se
+                busca, no tiene sentido mandarlo a una columna aparte. */}
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontWeight: 700, fontSize: 14.5 }}>{x.droga}</span>
+              {g.sinUnidad
+                ? <span style={{ color: "#B91C1C", fontSize: 12 }}>sin unidad definida</span>
+                : <span style={{ fontFamily: "ui-monospace,monospace", fontWeight: 700, fontSize: 15, color: fuera ? "#B91C1C" : "#0F172A" }}>
+                    {g.kgh.toFixed(3)} <em style={{ fontStyle: "normal", fontSize: 11, color: "#64748B" }}>{g.u}/kg/h</em>
+                    {PA_POR_MINUTO.has(x.droga) && (
+                      <span style={{ marginLeft: 9 }}>
+                        {(g.kgh * 1000 / 60).toFixed(3)} <em style={{ fontStyle: "normal", fontSize: 11, color: "#64748B" }}>mcg/kg/min</em>
+                      </span>
+                    )}
+                  </span>}
+            </div>
+            {/* Dilución y ritmo editables: si en la guardia se cambia el goteo,
+                la dosis se recalcula sola en vez de quedar mintiendo. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5, fontSize: 11.5, color: "#64748B", flexWrap: "wrap" }}>
+              {editable ? <input type="number" value={x.mg} onChange={(e) => onCambio(k, "mg", e.target.value)} style={cel} />
+                        : <b style={{ fontFamily: "ui-monospace,monospace" }}>{x.mg}</b>}
+              <span>{g.u || "?"} en</span>
+              {editable ? <input type="number" value={x.ml} onChange={(e) => onCambio(k, "ml", e.target.value)} style={cel} />
+                        : <b style={{ fontFamily: "ui-monospace,monospace" }}>{x.ml}</b>}
+              <span>ml a</span>
+              {editable ? <input type="number" value={x.ritmo} onChange={(e) => onCambio(k, "ritmo", e.target.value)} style={cel} />
+                        : <b style={{ fontFamily: "ui-monospace,monospace" }}>{x.ritmo}</b>}
+              <span>ml/h · peso {g.peso} kg</span>
             </div>
             {dec != null && (
-              <div style={{ fontSize: 11.5, marginTop: -3, marginBottom: 5, color: dif ? "#B91C1C" : "#64748B", fontWeight: dif ? 600 : 400 }}>
+              <div style={{ fontSize: 11.5, marginTop: 4, color: dif ? "#B91C1C" : "#64748B", fontWeight: dif ? 600 : 400 }}>
                 {dif ? "⚠ No coincide" : "✓ Coincide"} · el pase anota <b>{dec}</b>
               </div>
             )}
-            {fuera && <div style={{ fontSize: 11.5, marginTop: -3, marginBottom: 5, color: "#B91C1C" }}>⚠ Fuera del rango habitual ({r[0]}–{r[1]} {g.u}/kg/h). Revisá el ritmo o la dilución escritos.</div>}
-            {x.campo && <div style={{ fontSize: 11, color: "#94A3B8", marginTop: -3, marginBottom: 5 }}>Escrita en {PA_ROT[x.campo] || x.campo}, no en tratamiento.</div>}
+            {fuera && <div style={{ fontSize: 11.5, marginTop: 4, color: "#B91C1C" }}>⚠ Fuera del rango habitual ({r[0]}–{r[1]} {g.u}/kg/h). Revisá el ritmo o la dilución.</div>}
+            {x.campo && <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 4 }}>Escrita en {PA_ROT[x.campo] || x.campo}, no en tratamiento.</div>}
           </div>
         );
       })}
       {interm.map((x, k) => (
-        <div key={"i" + k} style={fila}>
-          <div><div style={{ fontWeight: 600, fontSize: 14 }}>{x.droga}</div><div style={{ fontSize: 11.5, color: "#64748B", fontFamily: "ui-monospace,monospace" }}>dosis intermitente</div></div>
-          <div style={{ fontFamily: "ui-monospace,monospace", fontWeight: 600, fontSize: 14.5 }}>{x.mg} mg c/{x.cada} h</div>
+        <div key={"i" + k} style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "7px 0", borderTop: "1px solid #F1F5F9" }}>
+          <span style={{ fontWeight: 700, fontSize: 14.5 }}>{x.droga}</span>
+          <span style={{ fontFamily: "ui-monospace,monospace", fontWeight: 700, fontSize: 14.5 }}>{x.mg} mg</span>
+          <span style={{ fontSize: 12, color: "#64748B" }}>cada {x.cada} h</span>
         </div>
       ))}
-      <div style={{ fontSize: 11.5, color: "#64748B", marginTop: 8, lineHeight: 1.45 }}>
-        Fórmula: dosis ÷ dilución × ritmo ÷ peso. <b>Verificá contra la bomba antes de usar.</b>
+      <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 8, lineHeight: 1.45 }}>
+        Dosis = concentración ÷ dilución × ritmo ÷ peso. <b>Verificá contra la bomba antes de usar.</b>
       </div>
     </div>
   );
 }
-
 function NuevaAnotacion({ onAdd }) {
   const [v, setV] = useState("");
   const enviar = () => { const t = v.trim(); if (!t) return; onAdd(t); setV(""); };
