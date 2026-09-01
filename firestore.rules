@@ -76,7 +76,25 @@ service cloud.firestore {
     //
     // Cronogramas, rotaciones, pases, votaciones, registro académico y demás.
     // Todo pide estar autorizado, tanto para leer como para escribir.
-    match /scheduler/{docId}            { allow read, write: if autorizado(); }
+    // La pantalla pública "¿Quién está hoy?" (/hoy) la usa el resto del
+    // hospital SIN iniciar sesión: enfermería, otros servicios, la guardia
+    // central. Necesita tres documentos y nada más:
+    //   · week-AAAA-MM-DD  → quién está de sala y de guardia ese día
+    //   · quien-esta-hoy   → la nota del día
+    //   · telefonos        → los internos y los invitados
+    // Se abren SOLO A LECTURA, y solo esos tres. No tienen datos de pacientes:
+    // son nombres de residentes y números internos del hospital. Todo el resto
+    // del scheduler —y todos los pases— siguen cerrados.
+    function docPublico(docId) {
+      return docId.matches('week-[0-9-]+') ||
+             docId == 'quien-esta-hoy' ||
+             docId == 'telefonos';
+    }
+
+    match /scheduler/{docId} {
+      allow read: if autorizado() || docPublico(docId);
+      allow write: if autorizado();
+    }
     match /chipa_votes/{docId}          { allow read, write: if autorizado(); }
     match /chipa_voters/{docId}         { allow read, write: if autorizado(); }
     match /articulos_semana/{docId}     { allow read, write: if autorizado(); }

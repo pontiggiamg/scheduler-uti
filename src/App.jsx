@@ -1974,8 +1974,9 @@ function paseArreglado(fields) {
     if (part.arm) f.accesos = [f.accesos, part.arm].filter(Boolean).join("\n");
     if (!f.accesos) delete f.accesos;
   }
+  const g = paReordenarClinicos(f);
   const out = {};
-  for (const [k, v] of Object.entries(f)) out[k] = k === "cultivos" ? paCultivos(v) : paLimpiar(v);
+  for (const [k, v] of Object.entries(g)) out[k] = k === "cultivos" ? paCultivos(v) : paLimpiar(v);
   return out;
 }
 
@@ -6208,6 +6209,111 @@ const PA_MUESTRAS = [
   [/^PC\b/i, () => "PC"], [/^MINIBAL\b/i, () => "Minibal"], [/^BAL\b/i, () => "BAL"],
 ];
 
+// ── Reordenar lo clínico según QUÉ es, no dónde lo escribieron ────────────
+//
+// En el Drive los cuatro campos de resultados —laboratorio, EAB, cultivos y
+// estudios— se usan como cajones sueltos: lo que se escribe primero cae donde
+// haya lugar. En la cama 1.3 del 31/8, el campo "cultivos" tenía adentro tres
+// EEG, una resonancia y el laboratorio completo; y el campo "estudios" tenía
+// los cultivos. Leído así, para saber si creció algo hay que barrer los cuatro
+// campos, que es justo lo que uno no quiere hacer a las tres de la mañana.
+//
+// Esto reparte cada renglón según lo que dice, no según dónde estaba. Un EEG
+// va a estudios aunque lo hayan escrito en cultivos; un hemocultivo va a
+// cultivos aunque esté en estudios; una tira de GB/HB/PLAQ va a laboratorio.
+//
+// Criterio conservador a propósito: lo que NO se puede clasificar con certeza
+// se queda donde estaba. Mover mal un dato es peor que dejarlo en un cajón
+// raro — al menos ahí el residente sabe buscarlo.
+const PA_ES_ESTUDIO = /\b(EEG|RNM|RMN|RESONANCIA|TAC|TC|TCTX|RX|RXTX|RADIOGRAF|ECO|ECOCARDIO|DOPPLER|ANGIO|DIFU|DIFUSI[ÓO]N|VEDA|ENDOSCOPIA|CENTELLO|PET|TOMOGRAF|ESPIROMETR|FIBROBRONCO|FBC|ANGIOTC|ANGIOTAC|DTC|ETE|ETT|ECODOPPLER|FIBRO\s*BRONCO|RM\b|MINIMENTAL|POLISOMNO)\b/i;
+const PA_ES_CULTIVO = /\b(HMC|HC|HX\d|HCX\d|HMCX\d|UC|RC|AT|MAT\s*\/?\s*QX|MATQX|MPX|TCD|COPRO|MINIBAL|BAL|HISOPADO|PUNTA|RETRO|MICOL[ÓO]GICO|BACTERIOL[ÓO]GICO|CRIPTOCOCO|GDH)\b/i;
+const PA_ES_GERMEN = /\b(SAMS|SAMR|SAMR?S|KPC|KPN|BGN|CGP|EVR|BLEE|E\.?\s*COLI|KLEBSIELLA|STREPTO|STAPH|S\.\s*EPIDERMIDIS|ENTEROCOCO|E\.?\s*FAECIUM|CANDIDA|SERRATIA|PSEUDOMONA|ACINETOBACTER|BACTEROIDES|ENTEROBACTER|CLOACAE|MET[AI]P?NEUMO|MTP|ANGINOSUS|CONSTELLATUS|PARAPSILOSIS|KRUSEI|GLABRATA|CAPITIS|LENTUS|MARCENSES|MICROCOCUSS?|OXYTOCA|PNEUMONIA[E]?)\b/i;
+// El fisicoquímico del líquido cefalorraquídeo: es el resultado de una punción,
+// no un cultivo ni una tira de sangre. Sin esta regla el mismo LCR cae en
+// laboratorio o en estudios según cuántos valores le hayan escrito ese día.
+const PA_ES_LCR_FQ = /\bLCR\b[\s\S]{0,40}?(TURBIO|L[ÍI]MPIDO|INCOLORO|LEUCOS?|GLUCORRAQUIA|PROTEINORRAQUIA|MONONUCLEAR|PMN)/i;
+// Una tira de laboratorio: tres o más analitos con su número.
+const PA_ANALITOS = /\b(GB|HB|HTO?|PLAQ|TP|APTT|RIN|NA|K|CL|UREA|CREA|CA|P|MG|GOT|TGO|TGP|FAL|BT|BILI|ALB|PROT|LDH|AMILASA|TAG|TG|GLU|LEUCOS|PMN|LAC)\s*[<>]?\s*\d/gi;
+// El EAB se escribe como una tira de barras que arranca con un pH: 7.40/34.5/…
+const PA_ES_EAB = /(^|\s)7[.,]\d{2}\s*\/\s*\d/;
+
+function paQueEs(txt) {
+  const t = (txt || "").trim();
+  if (!t) return null;
+  if (/^LABORATORIO\b/i.test(t)) return "labo";
+  if (PA_ES_EAB.test(t) || /^EAB\b/i.test(t)) return "eab";
+  // El orden importa: "25/08 HMC X2, UC, cultivos LCR: pendiente" tiene
+  // siglas de cultivo Y la palabra LCR; manda el cultivo.
+  if (PA_ES_CULTIVO.test(t) || PA_ES_GERMEN.test(t)) return "cultivos";
+  if (PA_ES_LCR_FQ.test(t)) return "estudios";
+  if (PA_ES_ESTUDIO.test(t)) return "estudios";
+  const analitos = (t.match(PA_ANALITOS) || []).length;
+  if (analitos >= 3) return "labo";
+  return null;   // no se sabe: se queda donde estaba
+}
+
+// Parte un campo en trozos con fecha, igual que los cultivos: una fecha nueva
+// arranca un dato nuevo, y el que viene sin fecha hereda la anterior.
+function paTrozos(txt) {
+  const FECHA = /((?:0?[1-9]|[12]\d|3[01])\/(?:0?[1-9]|1[0-2])(?:\/\d{2,4})?)/;
+  const out = [];
+  let ultima = "";
+  for (const bloque of (txt || "").split(/\s*\/\/\s*|\n/)) {
+    const re = new RegExp(FECHA.source + "(?=\\s)", "g");
+    const cortes = [];
+    let m;
+    while ((m = re.exec(bloque))) if (m.index > 0) cortes.push(m.index);
+    let ant = 0;
+    for (const c of [...cortes, bloque.length]) {
+      const t = bloque.slice(ant, c).trim();
+      ant = c;
+      if (!t) continue;
+      const mf = t.match(new RegExp("^" + FECHA.source));
+      if (mf) ultima = mf[1];
+      out.push({ fecha: mf ? mf[1] : ultima, texto: mf ? t.slice(mf[0].length).replace(/^\s*[:\-]?\s*/, "") : t });
+    }
+  }
+  return out;
+}
+
+function paReordenarClinicos(campos) {
+  const CAJONES = ["labo", "eab", "cultivos", "estudios"];
+  if (!CAJONES.some((k) => campos[k])) return campos;
+
+  const nuevos = { labo: [], eab: [], cultivos: [], estudios: [] };
+  let movidos = 0;
+
+  for (const origen of CAJONES) {
+    if (!campos[origen]) continue;
+    for (const tr of paTrozos(campos[origen])) {
+      const destino = paQueEs(tr.texto) || origen;
+      if (destino !== origen) movidos++;
+      // La etiqueta "LABORATORIO" sobra una vez que está en su propio campo.
+      const limpio = tr.texto.replace(/^LABORATORIO\s*[:\-]?\s*/i, "").replace(/^[\s,;:]+/, "").trim();
+      if (limpio) nuevos[destino].push((tr.fecha ? tr.fecha + " " : "") + limpio);
+    }
+  }
+
+  if (!movidos) return campos;   // ya estaba todo en su lugar
+  const salida = { ...campos };
+  for (const k of CAJONES) {
+    // El mismo dato suele estar escrito en dos campos ("25/08 HMC X2" aparece
+    // en cultivos y en estudios). Al juntarlos quedaría dos veces, así que se
+    // deja uno: se compara sin mayúsculas ni puntuación para que "HMC X2" y
+    // "HMCX2:" cuenten como el mismo renglón.
+    const vistos = new Set();
+    const unicos = nuevos[k].filter((linea) => {
+      const clave = linea.toUpperCase().replace(/[^A-Z0-9ÁÉÍÓÚÑ]/g, "");
+      if (vistos.has(clave)) return false;
+      vistos.add(clave);
+      return true;
+    });
+    const v = unicos.join("\n");
+    if (v) salida[k] = v; else delete salida[k];
+  }
+  return salida;
+}
+
 function paCultivos(txt) {
   if (!txt) return txt;
   // Una fecha de verdad: día 1-31 y mes 1-12. Sin esto, "RC 2/2" (dos frascos
@@ -6327,8 +6433,32 @@ function paCultivos(txt) {
     const cab = [f2, muestra].filter(Boolean).join(" ");
     // El marcador «» lo convierte a negrita el renderizador; en texto plano
     // queda como un par de comillas angulares y no molesta.
+    // Puntuación colgando al principio del cuerpo: queda cuando la muestra se
+    // separó de una lista ("HMC X2, UC, cultivos LCR: pendiente").
+    cuerpo = cuerpo.replace(/^[\s,;:]+/, "");
+    cuerpo = cuerpo.replace(/^[\s,;:]+/, "");
     return cab ? `«${cab}:» ${cuerpo}` : cuerpo;
-  }).join("\n");
+  }).reduce((acc, linea) => {
+    // Un renglón que quedó con encabezado y sin resultado ("«25/08 HMCx2:»")
+    // es una muestra que comparte el resultado con la siguiente: se juntan los
+    // dos encabezados en vez de dejar una línea huérfana.
+    const vacio = /^«[^»]*»\s*$/.test(linea);
+    if (vacio) { acc.pendiente = (acc.pendiente || "") + linea.replace(/^«|:»\s*$/g, "") + " y "; return acc; }
+    if (acc.pendiente) {
+      linea = linea.replace(/^«/, "«" + acc.pendiente.replace(/\s+y\s*$/, " y "));
+      acc.pendiente = "";
+    }
+    acc.lineas.push(linea);
+    return acc;
+  }, { lineas: [], pendiente: "" }).lineas
+    // "25/08 HMCx2 y 25/08 UC" → "25/08 HMCx2 y UC": la fecha repetida sobra.
+    .map((linea) => linea.replace(/^«([^»]*)»/, (m, cab) => {
+      const f = (cab.match(/^(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)/) || [])[1];
+      if (!f) return m;
+      const partes = cab.split(" y ").map((x, i) => (i > 0 && x.startsWith(f + " ") ? x.slice(f.length + 1) : x));
+      return "«" + partes.join(" y ") + "»";
+    }))
+    .join("\n");
 }
 
 function paLimpiar(txt) {
@@ -6459,6 +6589,10 @@ function paProcesar(raw, unidad) {
     if (part.imagenes) campos.imagenes = [campos.imagenes, part.imagenes].filter(Boolean).join("\n");
     if (!campos.accesos) delete campos.accesos;
   }
+
+  // Repartir laboratorio, EAB, cultivos y estudios según lo que dice cada
+  // renglón, no según en qué campo lo escribieron.
+  Object.assign(campos, paReordenarClinicos(campos));
 
   const todo = Object.values(campos).join(" ");
   const inf = [], vistos = new Set();
@@ -6613,6 +6747,7 @@ function PaseAppView({ user }) {
   const [arm, setArm] = useState({});
   const [armAbierto, setArmAbierto] = useState(false);
   const [ordenando, setOrdenando] = useState(null);
+  const [editando, setEditando] = useState(false);
   const undo = useRef([]);
   const guardarTimer = useRef(null);
 
@@ -6905,14 +7040,70 @@ function PaseAppView({ user }) {
 
       <div style={caja}>
         <div style={{ padding: "12px 14px", borderBottom: "1px solid #E2E8F0" }}>
-          <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: -0.2 }}>{p.nombre}</div>
-          <div style={{ fontSize: 12.5, color: "#64748B", marginTop: 3 }}>
-            {p.edad ? `${p.edad} años` : ""}{p.sexo ? ` · ${p.sexo}` : ""}
-          </div>
+          {/* Identificación editable. El pase del Drive escribe mal los nombres
+              a menudo ("MEONIZ GRACIELA, F, 73 AÑOS") y los pacientes cambian de
+              cama y de unidad durante la guardia, que es justo cuando esta
+              pantalla se usa. Editar acá no toca el Drive: queda en la copia
+              propia, como todo lo demás. */}
+          {editando ? (
+            <div style={{ display: "grid", gap: 7, marginBottom: 4 }}>
+              <input value={p.nombre || ""} placeholder="Nombre y apellido"
+                onChange={(e) => mutar((d) => { d[idx].nombre = e.target.value; })}
+                style={{ fontSize: 16, fontWeight: 700, padding: "6px 8px", border: "1.5px solid #CBD5E1", borderRadius: 5, fontFamily: "inherit" }} />
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                <label style={{ fontSize: 11.5, color: "#64748B", display: "flex", alignItems: "center", gap: 5 }}>
+                  Edad
+                  <input type="number" value={p.edad || ""} onChange={(e) => mutar((d) => { d[idx].edad = e.target.value ? +e.target.value : null; })}
+                    style={{ width: 62, fontFamily: "ui-monospace,monospace", fontSize: 13, padding: "4px 6px", border: "1.5px solid #CBD5E1", borderRadius: 4 }} />
+                </label>
+                <label style={{ fontSize: 11.5, color: "#64748B", display: "flex", alignItems: "center", gap: 5 }}>
+                  Sexo
+                  <select value={p.sexo || ""} onChange={(e) => mutar((d) => { d[idx].sexo = e.target.value || null; })}
+                    style={{ fontFamily: "inherit", fontSize: 13, padding: "4px 6px", border: "1.5px solid #CBD5E1", borderRadius: 4 }}>
+                    <option value="">—</option><option value="femenino">femenino</option><option value="masculino">masculino</option>
+                  </select>
+                </label>
+                <label style={{ fontSize: 11.5, color: "#64748B", display: "flex", alignItems: "center", gap: 5 }}>
+                  Cama
+                  <input value={p.cama || ""} onChange={(e) => mutar((d) => { d[idx].cama = e.target.value; })}
+                    style={{ width: 68, fontFamily: "ui-monospace,monospace", fontSize: 13, padding: "4px 6px", border: "1.5px solid #CBD5E1", borderRadius: 4 }} />
+                </label>
+                <label style={{ fontSize: 11.5, color: "#64748B", display: "flex", alignItems: "center", gap: 5 }}>
+                  Unidad
+                  {/* Al mover a otro sector, la vista lo sigue: si no, el
+                      paciente desaparece de la pestaña en la que estabas y
+                      parece que se perdió. */}
+                  <select value={p.unidad || ""} onChange={(e) => { const u = e.target.value; mutar((d) => { d[idx].unidad = u; }); setUSel(u); setISel(idx); }}
+                    style={{ fontFamily: "inherit", fontSize: 13, padding: "4px 6px", border: "1.5px solid #CBD5E1", borderRadius: 4 }}>
+                    {foto.unidades.map((u) => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div>
+                <button onClick={() => setEditando(false)} style={{ ...B, background: "#0F172A", color: "#fff", borderColor: "#0F172A" }}>Listo</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: -0.2 }}>{p.nombre}</div>
+                {editable && (
+                  <button onClick={() => setEditando(true)} title="Corregir nombre, edad, cama o unidad"
+                    style={{ background: "none", border: "none", color: "#64748B", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>editar ficha</button>
+                )}
+              </div>
+              <div style={{ fontSize: 12.5, color: "#64748B", marginTop: 3 }}>
+                {p.edad ? `${p.edad} años` : ""}{p.sexo ? ` · ${p.sexo}` : ""}
+              </div>
+            </>
+          )}
           <div style={{ fontSize: 12.5, color: "#64748B", marginTop: 5 }}>{p.mi}</div>
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 9 }}>
             <span style={{ fontSize: 11.5, border: "1px solid #E2E8F0", borderRadius: 4, padding: "3px 8px" }}>
               Cama <b style={{ fontFamily: "ui-monospace,monospace" }}>{p.cama}</b>
+              {p.unidad !== (foto.pacientes[idx] || {}).unidad && (
+                <b style={{ color: "#8A4B00", marginLeft: 5 }}>· movido a {p.unidad}</b>
+              )}
             </span>
             <span style={{ fontSize: 11.5, border: `1px ${p.peso ? "solid" : "dashed"} #E2E8F0`, borderRadius: 4, padding: "3px 8px", display: "flex", alignItems: "center", gap: 5 }}>
               Peso
@@ -7190,9 +7381,15 @@ function ArmPopup({ p, v, set, cerrar }) {
   );
 }
 
+// Dosis calculadas. SOLO infusiones endovenosas continuas: son las únicas
+// donde la dosis por kilo depende de la dilución y del ritmo, y por lo tanto
+// las únicas donde este cálculo agrega algo. Un comprimido cada 12 horas ya
+// dice todo lo que hay que saber en el renglón de tratamiento; ponerlo acá
+// abajo repetido solo hace ruido en la sección que uno mira para chequear una
+// bomba.
 function DosisDe({ p, onCambio }) {
-  const inf = p.infusiones || [], interm = p.intermitentes || [];
-  if (!inf.length && !interm.length) return null;
+  const inf = p.infusiones || [];
+  if (!inf.length) return null;
   const editable = typeof onCambio === "function";
   const cel = { width: 58, fontFamily: "ui-monospace,monospace", fontSize: 13, padding: "3px 5px", border: "1.5px solid #E2E8F0", borderRadius: 4, textAlign: "right" };
   return (
@@ -7246,13 +7443,6 @@ function DosisDe({ p, onCambio }) {
           </div>
         );
       })}
-      {interm.map((x, k) => (
-        <div key={"i" + k} style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "7px 0", borderTop: "1px solid #F1F5F9" }}>
-          <span style={{ fontWeight: 700, fontSize: 14.5 }}>{x.droga}</span>
-          <span style={{ fontFamily: "ui-monospace,monospace", fontWeight: 700, fontSize: 14.5 }}>{x.mg} mg</span>
-          <span style={{ fontSize: 12, color: "#64748B" }}>cada {x.cada} h</span>
-        </div>
-      ))}
       <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 8, lineHeight: 1.45 }}>
         Dosis = concentración ÷ dilución × ritmo ÷ peso. <b>Verificá contra la bomba antes de usar.</b>
       </div>
