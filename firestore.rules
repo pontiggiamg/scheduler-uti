@@ -1,0 +1,111 @@
+rules_version = '2';
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Reglas de acceso a Firestore — Scheduler UTI
+//
+//  Hasta acá todas las colecciones estaban en `allow read, write: if true`,
+//  que quiere decir: cualquiera en internet, sin siquiera iniciar sesión,
+//  podía leer y escribir TODA la base con solo conocer el ID del proyecto.
+//  La pantalla de "esperando autorización" es de la interfaz: frena a quien
+//  entra por la app, no a quien le habla a la base directamente. Con pases de
+//  pacientes reales adentro, eso no podía seguir así.
+//
+//  El modelo ahora es simple y tiene una sola idea: para tocar cualquier dato
+//  del servicio hay que (1) haber iniciado sesión con Google y (2) estar en la
+//  lista de autorizados. La lista es la misma que ya administrás desde la
+//  pestaña Accesos: la colección `usuarios_autorizados`, un documento por
+//  mail, con estado "aprobado" / "pendiente" / "rechazado".
+//
+//  IMPORTANTE al cambiar de jefatura: el admin está fijado por mail más abajo.
+//  Cuando la jefatura pase a otra persona, hay que cambiar ese mail acá y
+//  volver a publicar las reglas, además de cambiarlo en la app.
+// ══════════════════════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Ayudas ───────────────────────────────────────────────────────────
+    function logueado() {
+      return request.auth != null && request.auth.token.email != null;
+    }
+
+    function miMail() {
+      return request.auth.token.email.lower();
+    }
+
+    // El jefe de residentes. Puede todo, y además es el único que puede
+    // aprobar o rechazar solicitudes de acceso.
+    function esAdmin() {
+      return logueado() && miMail() == 'pontiggiamg@gmail.com';
+    }
+
+    // ¿Está en la lista y aprobado? Se lee el documento de la colección de
+    // autorizados que lleva su propio mail como id.
+    function autorizado() {
+      return logueado() && (
+        esAdmin() ||
+        (
+          exists(/databases/$(database)/documents/usuarios_autorizados/$(miMail())) &&
+          get(/databases/$(database)/documents/usuarios_autorizados/$(miMail())).data.estado == 'aprobado'
+        )
+      );
+    }
+
+    // ── Solicitudes de acceso ────────────────────────────────────────────
+    //
+    // Es la única colección que un usuario NO autorizado puede tocar, y con
+    // límites estrictos: solo su propio documento, solo para pedir acceso, y
+    // solo naciendo en estado "pendiente". Si no fuera así, alguien podría
+    // crearse a sí mismo un documento con estado "aprobado" y entrar solo:
+    // la puerta tendría la llave puesta del lado de afuera.
+    match /usuarios_autorizados/{email} {
+      // Cada uno puede leer su propio estado (la app lo escucha para
+      // desbloquearse sola cuando lo aprobás). El admin lee toda la lista.
+      allow read: if esAdmin() || (logueado() && email == miMail());
+
+      // Crear la solicitud: solo la propia, y solo como "pendiente".
+      allow create: if logueado()
+                    && email == miMail()
+                    && request.resource.data.estado == 'pendiente';
+
+      // Aprobar, rechazar o borrar: solo el admin. Nadie se autoaprueba.
+      allow update, delete: if esAdmin();
+    }
+
+    // ── Datos del servicio ───────────────────────────────────────────────
+    //
+    // Cronogramas, rotaciones, pases, votaciones, registro académico y demás.
+    // Todo pide estar autorizado, tanto para leer como para escribir.
+    match /scheduler/{docId}            { allow read, write: if autorizado(); }
+    match /chipa_votes/{docId}          { allow read, write: if autorizado(); }
+    match /chipa_voters/{docId}         { allow read, write: if autorizado(); }
+    match /articulos_semana/{docId}     { allow read, write: if autorizado(); }
+    match /registro_eventos/{docId}     { allow read, write: if autorizado(); }
+    match /procedimientos/{docId}       { allow read, write: if autorizado(); }
+    match /cobertura_sala/{docId}       { allow read, write: if autorizado(); }
+    match /registro_clases/{docId}      { allow read, write: if autorizado(); }
+
+    // ── Pase App: la copia privada de cada residente ─────────────────────
+    //
+    // Acá vive lo que cada uno anota durante su guardia. Es una libreta
+    // personal: nadie tiene por qué leer las notas de otro. El id del
+    // documento es "uid__fecha", así que se compara contra el uid de quien
+    // pide. El admin tampoco lee estas copias — no las necesita, y que no
+    // pueda es parte de que la gente escriba tranquila.
+    match /pase_guardia/{docId} {
+      allow read, write: if autorizado()
+                         && docId.split('__')[0] == request.auth.uid;
+    }
+
+    // ── Registro de accesos ──────────────────────────────────────────────
+    //
+    // Quién entró y cuándo. Cualquiera logueado puede dejar su propia marca
+    // (se escribe apenas entra, antes de estar aprobado), pero leer el
+    // registro es solo del admin: es información sobre las personas.
+    match /access_logs/{docId} {
+      allow create: if logueado();
+      allow read: if esAdmin();
+      allow update, delete: if esAdmin();
+    }
+  }
+}

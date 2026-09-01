@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from "rea
 import { db, auth, googleProvider } from "./firebase";
 import { doc, onSnapshot, setDoc, getDoc, deleteDoc, increment, arrayUnion, collection, getDocs, query, orderBy } from "firebase/firestore";
 import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
+import Lab, { isLabRoute } from "./Lab";
 
 /* ══════════════════ CONFIGURACIÓN ══════════════════ */
 
@@ -565,6 +566,8 @@ function normalizeAcademico(raw) {
 // (en vez de adentro de AuthenticatedApp) no rompe las reglas de hooks de
 // React.
 export default function Root() {
+  // Laboratorio de versiones: ruta oculta, no enlazada desde ninguna pestaña.
+  if (isLabRoute()) return <Lab />;
   if (isPublicRoute()) return <QuienEstaHoyView isAdmin={false} embedded={false} />;
   return <AuthenticatedApp />;
 }
@@ -1922,6 +1925,19 @@ const EditForm = ({ resident, place, exterior, onResChange, onPlaceChange, onExt
 
 /* ══════════════════ PASES VIEW ══════════════════ */
 
+// Un color por unidad. Tonos apagados, de informe: la idea es ubicarse de un
+// vistazo en qué sala se está mirando, no decorar. Cada uno tiene su versión
+// fuerte (para la pestaña activa y la barra lateral) y una muy clarita para
+// el fondo, que tiene que dejar leer el texto en negro sin esfuerzo.
+const PASE_COLOR = {
+  "UTI 1": { fuerte: "#1E3A5F", suave: "#EEF2F7" },
+  "UTI 2": { fuerte: "#3F5F3A", suave: "#EFF4EE" },
+  "UTI 3": { fuerte: "#6B4423", suave: "#F6F1EC" },
+  "RECU":  { fuerte: "#4A3B63", suave: "#F2F0F6" },
+  "UCO":   { fuerte: "#5A3A44", suave: "#F5F0F1" },
+};
+const colorUnidad = (u) => PASE_COLOR[(u || "").toUpperCase().replace(/\s+/g, " ")] || { fuerte: "#334155", suave: "#F1F5F9" };
+
 const PASE_FIELDS = [
   ["ap", "Antecedentes"],
   ["ea", "Enfermedad actual"],
@@ -1933,7 +1949,10 @@ const PASE_FIELDS = [
   ["estudios", "Complementarios"],
   ["accesos", "Accesos"],
   ["imagenes", "Imágenes"],
-  ["pendiente", "Pendientes"],
+  // Los pendientes NO se muestran acá: la pestaña Pases es la foto del estado
+  // de cada paciente, y los pendientes son tarea de guardia — viven en la Pase
+  // App, por paciente, donde se pueden tachar. Mostrarlos en los dos lados
+  // hace que uno no sepa cuál de las dos listas es la buena.
 ];
 
 // Los mismos arreglos que usa la Pase App, aplicados también acá: el recuadro
@@ -1956,7 +1975,7 @@ function paseArreglado(fields) {
     if (!f.accesos) delete f.accesos;
   }
   const out = {};
-  for (const [k, v] of Object.entries(f)) out[k] = k === "pendiente" ? v : paLimpiar(v);
+  for (const [k, v] of Object.entries(f)) out[k] = k === "cultivos" ? paCultivos(v) : paLimpiar(v);
   return out;
 }
 
@@ -2118,15 +2137,15 @@ function PasesView({ isAdmin }) {
               const n = data.units[u]?.length || 0;
               const on = u === activeUnit;
               return (
-                <button key={u} onClick={() => { setUnit(u); setOpen({}); }} style={{ flexShrink: 0, padding: "7px 14px", borderRadius: 999, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, background: on ? "#0F172A" : "#E2E8F0", color: on ? "#fff" : "#64748B", display: "flex", alignItems: "center", gap: 6 }}>
+                <button key={u} onClick={() => { setUnit(u); setOpen({}); }} style={{ flexShrink: 0, padding: "7px 14px", borderRadius: 5, border: `1.5px solid ${on ? colorUnidad(u).fuerte : "#E2E8F0"}`, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, background: on ? colorUnidad(u).fuerte : "#fff", color: on ? "#fff" : "#475569", display: "flex", alignItems: "center", gap: 6 }}>
                   {u}
-                  <span style={{ fontSize: 10, fontWeight: 800, background: on ? "rgba(255,255,255,.22)" : "#CBD5E1", color: on ? "#fff" : "#475569", padding: "1px 6px", borderRadius: 999 }}>{n}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, fontFamily: "ui-monospace,monospace", opacity: on ? 0.85 : 0.6 }}>{n}</span>
                 </button>
               );
             })}
           </div>
 
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por cama, nombre o diagnóstico…" className="no-print" style={{ width: "100%", padding: "9px 12px", borderRadius: 10, border: "1px solid #E2E8F0", fontSize: 12.5, fontFamily: "inherit", marginBottom: 10, outline: "none", boxSizing: "border-box", color: "#0F172A" }} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por cama, nombre o diagnóstico…" className="no-print" style={{ width: "100%", padding: "9px 12px", borderRadius: 5, border: "1px solid #E2E8F0", fontSize: 12.5, fontFamily: "inherit", marginBottom: 10, outline: "none", boxSizing: "border-box", color: "#0F172A" }} />
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {patients.length === 0 ? (
@@ -2136,13 +2155,13 @@ function PasesView({ isAdmin }) {
             ) : patients.map((p) => {
               const isOpen = !!open[p.bed];
               return (
-                <div key={p.bed} style={{ background: "#fff", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden", boxShadow: "0 1px 3px rgba(15,23,42,.04)" }}>
+                <div key={p.bed} style={{ background: "#fff", borderRadius: 6, border: "1px solid #E2E8F0", borderLeft: `4px solid ${colorUnidad(activeUnit).fuerte}`, overflow: "hidden" }}>
                   <div onClick={() => setOpen((o) => ({ ...o, [p.bed]: !o[p.bed] }))} style={{ padding: "11px 13px", cursor: "pointer", display: "flex", gap: 11, alignItems: "flex-start" }}>
-                    <div style={{ flexShrink: 0, minWidth: 40, textAlign: "center", background: "#0F172A", color: "#fff", borderRadius: 8, padding: "5px 7px", fontWeight: 800, fontSize: 13, lineHeight: 1.2 }}>{p.bed}</div>
+                    <div style={{ flexShrink: 0, minWidth: 42, textAlign: "center", background: colorUnidad(activeUnit).suave, color: colorUnidad(activeUnit).fuerte, border: `1px solid ${colorUnidad(activeUnit).fuerte}22`, borderRadius: 5, padding: "5px 7px", fontWeight: 800, fontSize: 14, fontFamily: "ui-monospace,monospace", lineHeight: 1.2 }}>{p.bed}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
-                        <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0F172A" }}>{p.name || "—"}</span>
-                        {p.age && <span style={{ fontSize: 11.5, color: "#64748B", fontWeight: 600 }}>{p.age} a</span>}
+                        <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0F172A" }}>{paNombre(p.name).nombre || "—"}</span>
+                        {p.age && <span style={{ fontSize: 11.5, color: "#64748B", fontWeight: 600 }}>{p.age} años</span>}
                       </div>
                       {p.flags?.length > 0 && (
                         <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
@@ -2151,8 +2170,8 @@ function PasesView({ isAdmin }) {
                           ))}
                         </div>
                       )}
-                      {p.mi && <div style={{ fontSize: 12, color: "#1D4ED8", fontWeight: 600, marginTop: 4, lineHeight: 1.35 }}>{p.mi}</div>}
-                      {p.status && <div style={{ fontSize: 11.5, color: "#475569", marginTop: 5, lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: isOpen ? "unset" : 2, WebkitBoxOrient: "vertical", overflow: isOpen ? "visible" : "hidden" }}>{p.status}</div>}
+                      {p.mi && <div style={{ fontSize: 12, color: colorUnidad(activeUnit).fuerte, fontWeight: 600, marginTop: 4, lineHeight: 1.35 }}>{paLimpiar(p.mi)}</div>}
+                      {p.status && <div style={{ fontSize: 11.5, color: "#475569", marginTop: 5, lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: isOpen ? "unset" : 2, WebkitBoxOrient: "vertical", overflow: isOpen ? "visible" : "hidden" }}>{paLimpiar(p.status)}</div>}
                     </div>
                     <div style={{ flexShrink: 0, color: "#64748B", fontSize: 12, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }}>▼</div>
                   </div>
@@ -2162,7 +2181,7 @@ function PasesView({ isAdmin }) {
                       {(() => { const ff = paseArreglado(p.fields); return PASE_FIELDS.filter(([k]) => ff[k]).map(([k, label]) => (
                         <div key={k} style={{ marginTop: 10 }}>
                           <div style={{ fontSize: 9.5, fontWeight: 800, color: "#64748B", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
-                          <div style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{ff[k]}</div>
+                          <div style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{conNegritas(ff[k], "p" + k)}</div>
                         </div>
                       )); })()}
                       <ResumenIAPaciente p={p} state={aiState[p.bed]} onGenerar={() => generarResumenIA(p)} />
@@ -6164,6 +6183,154 @@ function paDesconocidas(txt) {
   return [...out];
 }
 
+// ── Cultivos: un renglón por muestra ───────────────────────────────────────
+//
+// El campo viene como un párrafo corrido donde conviven fechas, muestras y
+// gérmenes, separados con lo que el residente tuvo a mano: "//", "/", ",", o
+// nada. Cuesta leerlo en el celular justo cuando importa, que es cuando hay
+// fiebre y hay que saber qué creció y de dónde.
+//
+// Se parte en un renglón por muestra, con la fecha adelante. Si dos muestras
+// vienen sin fecha entre medio, la segunda hereda la de la anterior: es la
+// convención del servicio (se sacaron el mismo día).
+//
+// Importante: la barra NO sirve como separador de muestras, porque también se
+// usa DENTRO de una ("MAT/QX", "HMC/RC/UC", "COPRO/TCD"). Se corta por fecha y
+// por "//", que son los cortes que no tienen ese doble uso.
+const PA_MUESTRAS = [
+  [/^HMC\s*X\s*(\d)/i, (m) => `HMCx${m[1]}`], [/^HMC\b/i, () => "HMC"],
+  [/^HC\s*X\s*(\d)/i, (m) => `HCx${m[1]}`],
+  [/^H\s*X\s*(\d)/i, (m) => `HCx${m[1]}`], [/^HC\b/i, () => "HC"],
+  [/^UC\b/i, () => "UC"], [/^RC\b/i, () => "RC"], [/^AT\b/i, () => "AT"],
+  [/^MAT\s*\/?\s*QX\b/i, () => "Mat Qx"], [/^MATQX\b/i, () => "Mat Qx"],
+  [/^LCR\b/i, () => "LCR"], [/^COPRO\b/i, () => "Copro"],
+  [/^MPX\b/i, () => "MPX"], [/^TCD\b/i, () => "TCD"],
+  [/^PC\b/i, () => "PC"], [/^MINIBAL\b/i, () => "Minibal"], [/^BAL\b/i, () => "BAL"],
+];
+
+function paCultivos(txt) {
+  if (!txt) return txt;
+  // Una fecha de verdad: día 1-31 y mes 1-12. Sin esto, "RC 2/2" (dos frascos
+  // de dos) se lee como fecha y parte la muestra al medio.
+  const FECHA = /((?:0?[1-9]|[12]\d|3[01])\/(?:0?[1-9]|1[0-2])(?:\/\d{2,4})?)/;
+  // Distinguir una fecha de un recuento de frascos ("RC 2/2", "HMC 6/7") es el
+  // punto delicado, porque "2/2" también es 2 de febrero. Cortar por fecha y
+  // después mirar qué había antes no sirve: para cuando se corta, la sigla ya
+  // quedó del otro lado. Así que primero se BLINDAN los recuentos —toda
+  // "SIGLA n/m" se reemplaza por un marcador— y recién después se corta por
+  // fecha. Al final se restauran.
+  const blindados = [];
+  // Sólo cuenta como recuento de frascos si el denominador es chico (≤9) y el
+  // numerador no lo supera: "RC 2/2" y "HMC 1/2" sí, "HMC 28/07" no —eso es
+  // una fecha, y convertirla en "28 de 07" arruina el renglón.
+  let t0 = txt.replace(/\b(HMC|HC|H|RC|UC|AT|HX\d|HCX\d|HMCX\d)\s+(\d{1,2})\s*\/\s*(\d)\b(?!\/|\d)/gi,
+    (m, sig, a, b) => {
+      if (+a > +b) return m;
+      blindados.push(`${sig} ${a} de ${b}`);
+      return `\u0001${blindados.length - 1}\u0001`;
+    });
+  const restaurar = (x) => x.replace(/\u0001(\d+)\u0001/g, (m, i) => blindados[+i]);
+
+  const trozos = [];
+  for (const bloque of t0.split(/\s*\/\/\s*/)) {
+    const re = new RegExp(FECHA.source + "(?=\\s)", "g");
+    let ult = 0, m;
+    while ((m = re.exec(bloque))) {
+      if (m.index === 0) continue;
+      const t = bloque.slice(ult, m.index).trim();
+      if (t) trozos.push(t);
+      ult = m.index;
+    }
+    const fin2 = bloque.slice(ult).trim();
+    if (fin2) trozos.push(fin2);
+  }
+
+  const out = [];
+  let ultimaFecha = "";
+  for (const trozo of trozos) {
+    const mf = trozo.match(new RegExp("^" + FECHA.source + "\\s*[:\\-]?\\s*"));
+    let resto = trozo, fecha = ultimaFecha;
+    if (mf) { fecha = mf[1]; ultimaFecha = fecha; resto = trozo.slice(mf[0].length); }
+
+    // Dentro del trozo puede haber más de una muestra separada por coma o
+    // barra, pero sólo si lo que sigue arranca con una sigla de muestra: así
+    // "MAT/QX" no se parte al medio.
+    // Sólo se parte si lo que sigue es una sigla de muestra conocida: un
+    // "Bacteroides+ S. Epidermidis" es UN resultado con dos gérmenes, no dos
+    // muestras, y partirlo por la coma lo rompería.
+    const SIG = "(?:HMC|HC|H|UC|RC|AT|MAT\\s*\\/?\\s*QX|MATQX|LCR|COPRO|MPX|TCD|PC|MINIBAL|BAL)";
+    const sub = restaurar(resto).split(new RegExp(`\\s*[,;]\\s*(?=${SIG}\\b)|\\s+\\/\\s*(?=${SIG}\\b)`, "i"));
+    for (const x of sub) {
+      const t = x.trim().replace(/^[\/,;\s]+|[\/,;\s]+$/g, "");
+      if (!t) continue;
+      out.push({ fecha, texto: t });
+    }
+  }
+
+  // Red de seguridad. Este campo lo escribe cada uno como puede, y hay pases
+  // —2.1 al 31/8— donde la cadena es tan enredada que cualquier regla la
+  // desarma mal. Si el resultado tiene renglones sin muestra ni germen, o
+  // encabezados que claramente no son fechas, se devuelve el texto original
+  // prolijado y nada más: peor que un párrafo denso es un párrafo denso mal
+  // partido, que hace perder un cultivo de vista.
+  // Se descarta el reordenado si aparece cualquiera de estas señales de que la
+  // cadena no se dejó partir bien: renglones sin contenido, o encabezados que
+  // no son fechas plausibles (un "6/7" suelto encabezando es un recuento que
+  // se coló, no un 6 de julio).
+  // "25/08 HMCx2, UC: pendiente" son dos muestras que comparten el resultado:
+  // la primera queda sin cuerpo. En vez de descartar todo el reordenado, se
+  // pega con la siguiente, que es lo que el pase quiere decir.
+  for (let i = out.length - 2; i >= 0; i--) {
+    const cuerpoVacio = !out[i].texto || !/[A-Za-zÁÉÍÓÚÑáéíóúñ]/.test(out[i].texto.replace(/^\s*[A-ZÁÉÍÓÚÑ]{1,6}X?\d?\s*[:,]?\s*/i, ""));
+    if (cuerpoVacio && out[i].fecha === out[i + 1].fecha) {
+      // Las dos muestras van juntas en el encabezado ("HMCx2 y UC: pendiente"),
+      // no una pegada al cuerpo de la otra con una coma suelta.
+      // Minúscula en la unión: "HMCx2 y UC: pendiente", no "…Y UC".
+      const izq = out[i].texto.replace(/[\s,;:]+$/, "");
+      const der = out[i + 1].texto.replace(/^[\s,;:yY]+\s*/, "");
+      out[i + 1].texto = izq + " y " + der;
+      out.splice(i, 1);
+    }
+  }
+
+  // Segunda pasada: si después de unir quedó alguno sin nada, se une con el
+  // siguiente aunque cambie la fecha (es la misma tanda de cultivos).
+  for (let i = out.length - 2; i >= 0; i--) {
+    if (!out[i].texto || !out[i].texto.trim()) {
+      out[i + 1].texto = out[i + 1].texto;
+      out.splice(i, 1);
+    }
+  }
+
+  const vacios = out.filter((x) => !x.texto || x.texto.replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ]/g, "").length < 3).length;
+  const raros = out.filter((x) => /^\d\/\d$/.test(x.fecha || "")).length;
+  if (vacios >= 1 || raros >= 1) return paLimpiar(restaurar(txt));
+
+  return out.map(({ fecha, texto }) => {
+    let t = texto;
+    // "½" y "1/2" y "2/2" son cuántos frascos crecieron.
+    t = t.replace(/½/g, "1 de 2").replace(/^\s*(\d)\s*\/\s*(\d)\b(?!\d)/, "$1 de $2");
+    // La sigla de muestra, escrita prolija, y dos puntos antes del germen.
+    let muestra = "";
+    for (const [re, fn] of PA_MUESTRAS) {
+      const m = t.match(re);
+      if (m) { muestra = fn(m); t = t.slice(m[0].length).replace(/^\s*[:\-]?\s*/, ""); break; }
+    }
+    // Si tras la sigla viene otra fecha ("Mat Qx 23/06: …"), ésa es la fecha de
+    // ESA muestra y pisa a la heredada.
+    let f2 = fecha;
+    const mi = t.match(new RegExp("^\\s*" + FECHA.source + "\\s*[:\\-]?\\s*"));
+    if (mi) { f2 = mi[1]; t = t.slice(mi[0].length); }
+    let cuerpo = paLimpiar(t).replace(/^[:\-\s]+/, "");
+    // La "y" que une dos muestras no arranca oración: minúscula.
+    cuerpo = cuerpo.replace(/^Y\s+/, "").replace(/\sY\s(?=[a-záéíóúñ])/g, " y ");
+    const cab = [f2, muestra].filter(Boolean).join(" ");
+    // El marcador «» lo convierte a negrita el renderizador; en texto plano
+    // queda como un par de comillas angulares y no molesta.
+    return cab ? `«${cab}:» ${cuerpo}` : cuerpo;
+  }).join("\n");
+}
+
 function paLimpiar(txt) {
   if (!txt) return txt;
   let t = txt.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
@@ -6342,7 +6509,10 @@ function paProcesar(raw, unidad) {
   const req = (campos.req || "").split("\n").map((x) => x.trim()).filter(Boolean);
   const ult = req.length ? req[req.length - 1] : "";
   const limpios = {};
-  for (const [k, v] of Object.entries(campos)) if (k !== "pendiente") limpios[k] = paLimpiar(v);
+  // Cultivos tienen su propio tratamiento: se reordenan en un renglón por
+  // muestra, con la fecha adelante.
+  for (const [k, v] of Object.entries(campos)) if (k !== "pendiente")
+    limpios[k] = k === "cultivos" ? paCultivos(v) : paLimpiar(v);
   return {
     unidad, cama: raw.bed, ...paNombre(raw.name),
     mi: paLimpiar(raw.mi || ""), campos: limpios,
@@ -6383,12 +6553,33 @@ function paDiff(a, b) {
   return out;
 }
 
+// Pone en negrita lo que va entre «» —el encabezado de cada cultivo, "fecha
+// muestra:"— y el "+" que separa dos gérmenes. El texto guardado sigue siendo
+// plano: los marcadores viven en el string y sólo se interpretan al mostrarlo,
+// así la edición libre y el diff de cambios siguen funcionando igual. Cuando
+// el campo está en foco se ve el texto crudo, como con el resaltado.
+function conNegritas(txt, key) {
+  if (!txt || (!txt.includes("«") && !txt.includes("+"))) return txt;
+  const out = [];
+  const re = /«([^»]*)»|(\s\+\s)/g;
+  let ult = 0, m, i = 0;
+  while ((m = re.exec(txt))) {
+    if (m.index > ult) out.push(<span key={`${key}t${i++}`}>{txt.slice(ult, m.index)}</span>);
+    out.push(m[1] !== undefined
+      ? <b key={`${key}b${i++}`}>{m[1]}</b>
+      : <b key={`${key}p${i++}`}> + </b>);
+    ult = m.index + m[0].length;
+  }
+  if (ult < txt.length) out.push(<span key={`${key}t${i++}`}>{txt.slice(ult)}</span>);
+  return <>{out}</>;
+}
+
 function TextoMarcado({ actual, original }) {
-  if (actual === original) return <>{actual}</>;
+  if (actual === original) return <>{conNegritas(actual, "n")}</>;
   return (
     <>
       {paDiff(original || "", actual || "").map((d, i) =>
-        d.t === "=" ? <span key={i}>{d.v}</span>
+        d.t === "=" ? <span key={i}>{conNegritas(d.v, "d" + i)}</span>
         : d.t === "+" ? <ins key={i} style={{ background: "#FFF6E5", color: "#8A4B00", fontWeight: 600, textDecoration: "none", borderRadius: 2, boxShadow: "inset 0 -2px 0 #E9C48A" }}>{d.v}</ins>
         : <del key={i} style={{ color: "#94A3B8", opacity: 0.7 }}>{d.v}</del>)}
     </>
@@ -6579,7 +6770,18 @@ function PaseAppView({ user }) {
   // campo que haya quedado, porque leer las dosis abajo de "Accesos" confunde.
   const hayTto = campos.includes("tto");
 
-  const editarCampo = (k, txt) => mutar((d) => { d[idx].campos[k] = txt; });
+  const editarCampo = (k, txt) => mutar((d) => {
+    // Reponer los marcadores de negrita en cultivos: se le sacan al usuario
+    // mientras edita y se vuelven a poner al guardar, mirando renglón por
+    // renglón si empieza con "fecha muestra:".
+    if (k === "cultivos" && !txt.includes("«")) {
+      txt = txt.split("\n").map((l) => {
+        const m = l.match(/^\s*(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?(?:\s+[A-Za-zÁÉÍÓÚÑ][\w.]*)?)\s*:\s*/);
+        return m ? `«${m[1]}:» ` + l.slice(m[0].length) : l;
+      }).join("\n");
+    }
+    d[idx].campos[k] = txt;
+  });
 
   // Settings de ARM del paciente que se está mirando. Si todavía no se tocó
   // nada, se precargan los que el propio pase trae escritos.
@@ -6773,7 +6975,11 @@ function PaseAppView({ user }) {
                     style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", outline: "none", background: enFoco === k ? "rgba(15,95,102,.06)" : "transparent", borderRadius: 3, minHeight: 20 }}>
                     {/* Mientras el campo tiene el foco se muestra texto plano: si le
                         metemos marcas mientras se escribe, el cursor salta al inicio. */}
-                    {verOriginal || enFoco === k ? txt : <TextoMarcado actual={txt} original={orig} />}
+                    {/* Al editar se ven los «» crudos, que confunden; se sacan.
+                        Al guardar se reponen si el renglón sigue teniendo la
+                        forma "fecha muestra: germen", así el formato sobrevive
+                        a una edición sin obligar a nadie a tipear símbolos. */}
+                    {verOriginal || enFoco === k ? txt.replace(/[«»]/g, "") : <TextoMarcado actual={txt} original={orig} />}
                   </div>
                 )}
               </div>
