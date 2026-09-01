@@ -136,6 +136,25 @@ function parsePase(raw, defaultUnit) {
       var t = (p.fields[k] || "").trim();
       if (t) fields[k] = t;
     });
+    // Rescate del recuadro de TRATAMIENTO pegado al de ENFERMEDAD ACTUAL.
+    // En el Doc son dos celdas de una tabla; al pasar a texto plano quedan
+    // una detrás de la otra y, como la de tratamiento casi nunca trae la
+    // etiqueta "TTO:", se venía leyendo como continuación de EA. La celda de
+    // tratamiento arranca siempre con el peso o el aporte nutricional.
+    // Sólo se aplica si no hay campo TTO propio. (Ver api/parse-pase.js.)
+    if (!fields.tto && fields.ea) {
+      var lsEa = fields.ea.split("\n");
+      var inicioTto = /^(PESO|PR)\b|^(NE|NPT|NTE|RL|SF|NXB)\s*\d/i;
+      var corte = -1;
+      for (var ci = 0; ci < lsEa.length; ci++) {
+        if (inicioTto.test(lsEa[ci].trim())) { corte = ci; break; }
+      }
+      if (corte > 0) {
+        fields.tto = lsEa.slice(corte).join("\n");
+        fields.ea = lsEa.slice(0, corte).join("\n");
+      }
+    }
+
     if (!fields.req && fields.ap) {
       var ls = fields.ap.split("\n");
       var first = -1;

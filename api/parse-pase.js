@@ -135,6 +135,33 @@ export function parsePase(raw, defaultUnit) {
       if (t) fields[k] = t;
     }
 
+    // Rescate del recuadro de TRATAMIENTO pegado al de ENFERMEDAD ACTUAL.
+    //
+    // En el Doc, EA y TTO son dos celdas de una tabla, una al lado de la otra.
+    // Al exportarlo a texto plano las celdas quedan una detrás de la otra, y
+    // como la celda de tratamiento casi nunca empieza con la etiqueta "TTO:",
+    // el parser la venía tomando como continuación de EA. Resultado: pacientes
+    // "sin tratamiento" que en realidad lo tenían, con la medicación escondida
+    // adentro de la enfermedad actual (1.1, 1.4, 3.2 y 3.7 el 31/8).
+    //
+    // La celda de tratamiento arranca siempre igual: el peso y/o el aporte
+    // nutricional (PESO 60 KG, PR 70 KG, RL 42 NE 100, NPT 84). Eso es lo que
+    // se busca, y sólo cuando NO hay campo TTO propio, así que un pase bien
+    // etiquetado nunca se toca.
+    //
+    // Importante para lo clínico: EA cuenta al paciente hasta que entra a la
+    // UTI. Lo que pasa después son requerimientos e intercurrencias. Por eso
+    // acá sólo se separa lo que es tratamiento; no se reinterpreta el resto.
+    if (!fields.tto && fields.ea) {
+      const ls = fields.ea.split("\n");
+      const inicioTto = /^(PESO|PR)\b|^(NE|NPT|NTE|RL|SF|NXB)\s*\d/i;
+      const corte = ls.findIndex((l) => inicioTto.test(l.trim()));
+      if (corte > 0) {
+        fields.tto = ls.slice(corte).join("\n");
+        fields.ea = ls.slice(0, corte).join("\n");
+      }
+    }
+
     // Fallback: si no hay encabezado REQUERIMIENTOS, las líneas fechadas
     // al final de AP son en realidad las intercurrencias.
     if (!fields.req && fields.ap) {

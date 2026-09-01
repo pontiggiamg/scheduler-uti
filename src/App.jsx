@@ -1923,17 +1923,42 @@ const EditForm = ({ resident, place, exterior, onResChange, onPlaceChange, onExt
 /* ══════════════════ PASES VIEW ══════════════════ */
 
 const PASE_FIELDS = [
-  ["req", "Requerimientos / Intercurrencias"],
-  ["ea", "Enfermedad actual"],
   ["ap", "Antecedentes"],
+  ["ea", "Enfermedad actual"],
+  ["req", "Requerimientos / Intercurrencias"],
   ["tto", "Tratamiento"],
-  ["accesos", "Accesos"],
-  ["cultivos", "Cultivos"],
-  ["estudios", "Complementarios"],
   ["labo", "Laboratorio"],
   ["eab", "EAB"],
+  ["cultivos", "Cultivos"],
+  ["estudios", "Complementarios"],
+  ["accesos", "Accesos"],
+  ["imagenes", "Imágenes"],
   ["pendiente", "Pendientes"],
 ];
+
+// Los mismos arreglos que usa la Pase App, aplicados también acá: el recuadro
+// de tratamiento que el Drive pega adentro de enfermedad actual, accesos e
+// imágenes separados, y la redacción prolijada. El pase del Drive se escribe
+// a las apuradas y en mayúsculas; que esté mal escrito ahí no quiere decir
+// que tenga que leerse mal acá.
+function paseArreglado(fields) {
+  const f = { ...(fields || {}) };
+  if (!f.tto && f.ea) {
+    const ls = f.ea.split("\n");
+    const corte = ls.findIndex((l) => /^(PESO|PR)\b|^(NE|NPT|NTE|RL|SF|NXB)\s*\d/i.test(l.trim()));
+    if (corte > 0) { f.tto = ls.slice(corte).join("\n"); f.ea = ls.slice(0, corte).join("\n"); }
+  }
+  if (f.accesos) {
+    const part = paPartirAccesos(f.accesos);
+    f.accesos = part.accesos;
+    if (part.imagenes) f.imagenes = [f.imagenes, part.imagenes].filter(Boolean).join("\n");
+    if (part.arm) f.accesos = [f.accesos, part.arm].filter(Boolean).join("\n");
+    if (!f.accesos) delete f.accesos;
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(f)) out[k] = k === "pendiente" ? v : paLimpiar(v);
+  return out;
+}
 
 function timeAgo(iso) {
   if (!iso) return "nunca";
@@ -2134,12 +2159,12 @@ function PasesView({ isAdmin }) {
 
                   {isOpen && (
                     <div style={{ borderTop: "1px solid #F1F5F9", padding: "4px 13px 12px" }}>
-                      {PASE_FIELDS.filter(([k]) => p.fields?.[k]).map(([k, label]) => (
+                      {(() => { const ff = paseArreglado(p.fields); return PASE_FIELDS.filter(([k]) => ff[k]).map(([k, label]) => (
                         <div key={k} style={{ marginTop: 10 }}>
                           <div style={{ fontSize: 9.5, fontWeight: 800, color: "#64748B", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
-                          <div style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{p.fields[k]}</div>
+                          <div style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{ff[k]}</div>
                         </div>
-                      ))}
+                      )); })()}
                       <ResumenIAPaciente p={p} state={aiState[p.bed]} onGenerar={() => generarResumenIA(p)} />
                     </div>
                   )}
@@ -5824,12 +5849,16 @@ const PASEAPP_COL = "pase_guardia";
 const PA_ROT = {
   ap: "Antecedentes", ea: "Enfermedad actual", req: "Requerimientos e intercurrencias",
   tto: "Tratamiento", labo: "Laboratorio", eab: "Estado ácido-base", cultivos: "Cultivos",
-  estudios: "Estudios", accesos: "Accesos e imágenes",
+  estudios: "Estudios", accesos: "Accesos", imagenes: "Imágenes",
 };
 // El orden en que se muestran los campos. Si el Drive trae un campo que no está
 // acá, no se ve: por eso EAB está en la lista aunque solo lo use parte del
 // plantel. Cualquier campo nuevo del Drive hay que agregarlo en los dos lados.
-const PA_ORDEN = ["ap", "ea", "req", "tto", "labo", "eab", "cultivos", "estudios", "accesos"];
+//
+// Accesos e Imágenes son dos cosas distintas: una vía central no es una TAC.
+// En el Drive vienen juntas en el mismo renglón, así que se separan al leer
+// (ver paPartirAccesos).
+const PA_ORDEN = ["ap", "ea", "req", "tto", "labo", "eab", "cultivos", "estudios", "accesos", "imagenes"];
 const PA_TIPOS = ["Medicación", "Intercurrencia", "Estudio", "Procedimiento", "Otro"];
 const PA_PESO_SUPUESTO = 70;
 
@@ -5905,10 +5934,51 @@ const PA_ACENTOS = {
   coleccion: "colección", colecciones: "colecciones", perforacion: "perforación",
   fistula: "fístula", neumonia: "neumonía", transfusion: "transfusión", funcion: "función",
   presion: "presión", hemodinamico: "hemodinámico", organico: "orgánico",
+  sintomas: "síntomas", subito: "súbito", subita: "súbita", hipoventilacion: "hipoventilación",
+  liquido: "líquido", tonico: "tónico", clonicas: "clónicas", clonico: "clónico",
+  analgesia: "analgesia", diuresis: "diuresis", peritonitis: "peritonitis",
+  quirurgico: "quirúrgico", quirurgica: "quirúrgica", anemia: "anemia",
+  hematico: "hemático", hematoma: "hematoma", craneo: "cráneo", torax: "tórax",
+  abdomen: "abdomen", cefalea: "cefalea", vomitos: "vómitos", disnea: "disnea",
+  astenia: "astenia", somnolencia: "somnolencia", fiebre: "fiebre",
+  colonizacion: "colonización", aislamiento: "aislamiento", desaturacion: "desaturación",
+  mecanica: "mecánica", ventilatoria: "ventilatoria", ultrasonido: "ultrasonido",
+  gastroenterologia: "gastroenterología", nefrologia: "nefrología", oncologico: "oncológico",
+  metastasis: "metástasis", diagnostico: "diagnóstico", pronostico: "pronóstico",
+  terapeutico: "terapéutico", farmacologico: "farmacológico", isquemico: "isquémico",
+  hemorragico: "hemorrágico", trombotico: "trombótico", embolico: "embólico",
+  respiratorio: "respiratorio", renal: "renal", hepatica: "hepática",
+  arteria: "arteria", venosa: "venosa", radiologia: "radiología", tomografia: "tomografía",
 };
-const PA_COMUNES = new Set(["SIN", "POR", "CON", "PARA", "DEL", "LOS", "LAS", "UNA",
-  "NO", "SI", "SE", "SU", "AL", "EN", "MAS", "ANTE", "TRAS", "SOBRE", "HOY", "DIA", "DIAS",
-  "FOCO", "DOLOR", "LEVE", "ALTA", "BAJA", "ESTA", "ESTE", "CADA", "TODO", "TODA"]);
+// Palabras que SÍ se bajan a minúscula aunque sean cortas. Sin esto, "TC DE
+// ABDOMEN Y PELVIS" queda como "TC DE abdomen Y pelvis": las siglas de 2-4
+// letras se respetan por defecto (QX, TAP, HDE son vocabulario real), y eso
+// mismo dejaba en mayúscula a los conectores. La regla no puede ser sólo el
+// largo, hay que nombrarlos.
+const PA_COMUNES = new Set(["SIN", "POR", "CON", "PARA", "DEL", "LOS", "LAS", "UNA", "UNO", "UNOS", "UNAS",
+  "NO", "SI", "SE", "SU", "SUS", "AL", "EN", "MAS", "ANTE", "TRAS", "SOBRE", "HOY", "DIA", "DIAS",
+  "FOCO", "DOLOR", "LEVE", "ALTA", "BAJA", "ESTA", "ESTE", "CADA", "TODO", "TODA",
+  "DE", "Y", "O", "A", "EL", "LA", "LO", "UN", "ES", "HA", "HAY", "QUE", "COMO", "DESDE",
+  "HASTA", "ENTRE", "DURANTE", "SEGUN", "SOLO", "YA", "MUY", "BIEN", "MAL", "CUATRO",
+  "TRES", "DOS", "CINCO", "SEIS", "NUEVA", "NUEVO", "MENOR", "MAYOR", "AMBOS", "AMBAS",
+  "ANTERIOR", "POSTERIOR", "DERECHA", "DERECHO", "IZQUIERDA", "IZQUIERDO", "BILATERAL",
+  // Palabras corrientes y unidades que quedaban gritando en el tratamiento:
+  // "PESO 60 KG", "FURO 20 DIA". No son siglas, son palabras cortas.
+  "PESO", "KG", "MG", "ML", "DIA", "DIAS", "NOCHE", "HS", "GR", "MCG", "AMP", "GOTAS",
+  "DIETA", "BLANDA", "AGUA", "LIBRE", "VIA", "ORAL", "TOTAL", "PARCIAL", "PLAN",
+  "ALTA", "PASE", "CAMA", "SALA", "TURNO", "CONTROL", "SEGUIR", "IGUAL", "MISMO",
+  "AYER", "MAÑANA", "TARDE", "SEMANA", "MES", "AÑO", "AÑOS", "VECES", "CADA"]);
+
+// Abreviaturas de fármacos que se escriben cortas pero son nombres, no siglas:
+// conviene verlas con inicial mayúscula y no en bloque. Se resuelven en
+// PA_ACENTOS con su forma prolija.
+const PA_DROGAS_CORTAS = {
+  furo: "Furosemida", mero: "Meropenem", vanco: "Vancomicina", ptz: "Piperacilina-tazobactam",
+  col: "Colistina", ams: "Ampicilina-sulbactam", dexa: "Dexametasona", lora: "Lorazepam",
+  leve: "Levetiracetam", dipi: "Dipirona", para: "Paracetamol", keta: "Ketamina",
+  nora: "Noradrenalina", biso: "Bisoprolol", diclo: "Diclofenac", hidro: "Hidrocortisona",
+  fluco: "Fluconazol", aciclo: "Aciclovir", claritro: "Claritromicina", anfo: "Anfotericina",
+};
 
 const PA_EXPANDIR = [
   [/\bHDE\b/gi, "hemodinámicamente estable"], [/\bVE\s+S\/\s*O2\b/gi, "ventilando espontáneo sin O₂"],
@@ -5920,6 +5990,12 @@ const PA_EXPANDIR = [
   [/\bRHA\b/gi, "ruidos hidroaéreos"], [/\bISQX\b/gi, "infección de sitio quirúrgico"],
   [/\bEPM\b/gi, "episodio psicomotriz"], [/\bVEDA\b/gi, "videoendoscopia digestiva alta"],
   [/\bVATS\b/gi, "cirugía toracoscópica videoasistida"], [/\bCBO\b/gi, "cerebro"],
+  // Unidades pegadas al número: "120MG" → "120 mg", "20ML" → "20 ml".
+  [/(\d)\s*MG\b/gi, "$1 mg"], [/(\d)\s*ML\b/gi, "$1 ml"], [/(\d)\s*KG\b/gi, "$1 kg"],
+  [/(\d)\s*MCG\b/gi, "$1 mcg"], [/(\d)\s*GR\b/gi, "$1 g"],
+  // "FURO 20 DIA" quiere decir 20 por día, no "20 día".
+  [/(\d)\s+D[IÍ]A\b/gi, "$1 por día"],
+  [/\bDIA\b/g, "día"], [/\bdia\b/g, "día"], [/\bDIAS\b/g, "días"], [/\bdias\b/g, "días"],
   [/\bPEND\b/gi, "pendiente"], [/\bCIR\b/gi, "catéter peridural"], [/\bTFG\b/gi, "filtrado glomerular"],
 ];
 
@@ -5931,21 +6007,117 @@ function paLimpiar(txt) {
   if (letras.length && mays / letras.length >= 0.55) {
     // Solo palabras de 5+ letras o conectores comunes: las siglas cortas (QX,
     // TAP, HDE) son el vocabulario real del servicio y se respetan.
-    t = t.replace(/\b[A-ZÁÉÍÓÚÑ]{2,}\b/g, (w) => {
+    // {1,} y no {2,}: "Y" y "A" sueltas también son conectores y quedaban en
+    // mayúscula en medio de la frase ("abdomen Y pelvis").
+    t = t.replace(/\b[A-ZÁÉÍÓÚÑ]+\b/g, (w) => {
       if (/\d/.test(w)) return w;
-      if (!PA_COMUNES.has(w) && w.length < 5) return w;
       const low = w.toLowerCase();
+      if (PA_DROGAS_CORTAS[low]) return PA_DROGAS_CORTAS[low];
+      if (!PA_COMUNES.has(w) && w.length < 5) return w;
       return PA_ACENTOS[low] || low;
     });
-    t = t.replace(/(^|\n|(?<=[.;] ))([a-záéíóúñ])/g, (m, a, b) => a + b.toUpperCase());
+    t = t.replace(/(^|\n|(?<=[.;:] )|(?<=→ ))([a-záéíóúñ])/g, (m, a, b) => a + b.toUpperCase());
+    // "Si síntomas → toraco" y no "Si sintomas → Toraco": después de flecha
+    // sigue la misma idea, así que se capitaliza sólo si arranca oración.
+    t = t.replace(/(→ )([A-ZÁÉÍÓÚÑ])(?=[a-záéíóúñ])/g, (m, a, b) => a + b.toLowerCase());
   }
   for (const [re, rep] of PA_EXPANDIR) t = t.replace(re, rep);
+  // La capitalización va DESPUÉS de expandir las siglas: si no, "HDE. VE S/O2"
+  // se expande a "hemodinámicamente estable. ventilando..." con la minúscula
+  // ya cristalizada después del punto.
+  t = t.replace(/(^|\n|(?<=[.;:] ))([a-záéíóúñ])/g, (m, a, b) => a + b.toUpperCase());
   return t;
+}
+
+// Marca de cuándo se relevó un ingreso o egreso. Día y hora, porque una
+// guardia cruza la medianoche y "14:20" solo sería ambiguo.
+function paAhora() {
+  const d = new Date();
+  const dd = String(d.getDate()).padStart(2, "0"), mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${dd}/${mm} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+// ── Mecánica ventilatoria ──────────────────────────────────────────────────
+//
+// Cada modo se programa con parámetros distintos, así que mostrar una lista
+// única de casillas obliga a adivinar cuáles corresponden. Se elige el modo y
+// se piden sólo los settings de ese modo. La presión meseta y la PEEP total
+// son medidas, no programadas: van aparte porque son las que hacen falta para
+// driving pressure y auto-PEEP, y sólo se obtienen haciendo una pausa.
+const PA_MODOS = {
+  pc: { rot: "Presión control", campos: [["pc", "PC sobre PEEP"], ["fr", "FR"], ["peep", "PEEP"], ["fio2", "FiO₂ %"], ["ti", "Ti (seg)"]] },
+  vc: { rot: "Volumen control", campos: [["vt", "Vt programado"], ["fr", "FR"], ["peep", "PEEP"], ["fio2", "FiO₂ %"], ["flujo", "Flujo"]] },
+  ps: { rot: "Presión soporte", campos: [["ps", "PS sobre PEEP"], ["peep", "PEEP"], ["fio2", "FiO₂ %"]] },
+};
+
+// Lee lo que el pase ya trae escrito: "PC 12/18/8/21 VT 350", "VENTILADOR:
+// PC 13/12/8/30 VT 335". El orden es presión sobre PEEP / FR / PEEP / FiO2,
+// y el VT que sigue es el volumen que sale, no uno programado. Es una
+// precarga para no tipear de nuevo, no una fuente de verdad: queda editable.
+function paLeerArm(txt) {
+  if (!txt) return null;
+  const t = txt.toUpperCase();
+  const m = t.match(/\b(PC|PCV|VC|VCV|PS|PSV)\s*(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)(?:\s*\/\s*(\d+))?/);
+  if (!m) return null;
+  const modo = /^P?S/.test(m[1]) ? "ps" : /^V/.test(m[1]) ? "vc" : "pc";
+  const vt = t.match(/\bVT\s*(\d{3,4})/);
+  const v = { modo };
+  if (modo === "vc") { v.vt = m[2]; v.fr = m[3]; v.peep = m[4]; if (m[5]) v.fio2 = m[5]; }
+  else if (modo === "ps") { v.ps = m[2]; v.peep = m[3]; v.fio2 = m[4]; }
+  else { v.pc = m[2]; v.fr = m[3]; v.peep = m[4]; if (m[5]) v.fio2 = m[5]; }
+  if (vt) v.vtMedido = vt[1];
+  return v;
+}
+
+// ── Separar accesos de imágenes y de ARM ───────────────────────────────────
+//
+// En el Drive las tres cosas caen en el mismo renglón de "ACCESOS", separadas
+// con "//" o con una etiqueta suelta. Pero un catéter, una tomografía y los
+// parámetros del respirador son datos distintos y se consultan en momentos
+// distintos, así que se parten acá. Lo que no se puede clasificar queda en
+// accesos, que es lo que más aparece: es mejor dejarlo donde estaba que
+// inventarle una categoría.
+function paPartirAccesos(txt) {
+  const out = { accesos: [], imagenes: [], arm: [] };
+  if (!txt) return { accesos: "", imagenes: "", arm: "" };
+  const esImagen = /^(IM[ÁA]GENES|TAC|TC|RX|RXTX|TCTX|ECO|ECOGRAF|RM|RMN|ANGIO|DOPPLER|RADIOGRAF)/i;
+  const esArm = /^(ARM|VNI|VENTILACI[ÓO]N|MODO)\b/i;
+  for (const trozo of txt.split(/\s*\/\/\s*|\n/)) {
+    const t = trozo.trim();
+    if (!t) continue;
+    if (esArm.test(t)) out.arm.push(t);
+    else if (esImagen.test(t.replace(/^\d{1,2}\/\d{1,2}\s*/, ""))) out.imagenes.push(t);
+    else out.accesos.push(t);
+  }
+  return { accesos: out.accesos.join("\n"), imagenes: out.imagenes.join("\n"), arm: out.arm.join("\n") };
 }
 
 // ── Parseo de infusiones y pendientes ──────────────────────────────────────
 function paProcesar(raw, unidad) {
-  const campos = raw.fields || {};
+  const campos = { ...(raw.fields || {}) };
+
+  // Red de seguridad del lado del cliente para el recuadro de TRATAMIENTO que
+  // el Drive pega adentro de ENFERMEDAD ACTUAL. El arreglo de fondo está en
+  // api/parse-pase.js, pero Firestore puede tener todavía un pase sincronizado
+  // con el parser viejo, y no quiero que la medicación quede escondida hasta
+  // el próximo sync. Si el pase ya viene bien partido, esto no hace nada.
+  if (!campos.tto && campos.ea) {
+    const lsEa = campos.ea.split("\n");
+    const corte = lsEa.findIndex((l) => /^(PESO|PR)\b|^(NE|NPT|NTE|RL|SF|NXB)\s*\d/i.test(l.trim()));
+    if (corte > 0) {
+      campos.tto = lsEa.slice(corte).join("\n");
+      campos.ea = lsEa.slice(0, corte).join("\n");
+    }
+  }
+
+  // Accesos, imágenes y ARM vienen amontonados en el mismo campo.
+  const part = paPartirAccesos(campos.accesos);
+  if (campos.accesos) {
+    campos.accesos = part.accesos;
+    if (part.imagenes) campos.imagenes = [campos.imagenes, part.imagenes].filter(Boolean).join("\n");
+    if (!campos.accesos) delete campos.accesos;
+  }
+
   const todo = Object.values(campos).join(" ");
   const inf = [], vistos = new Set();
   // Las infusiones no siempre están en TTO: la 1.1 las tiene en enfermedad
@@ -5987,6 +6159,9 @@ function paProcesar(raw, unidad) {
     peso: mp ? +mp[1] : null, infusiones: inf, intermitentes: interm,
     pendientes: pend, anotaciones: [], balance: { ingresos: [], egresos: [] },
     sinCompletar: !req.length || /^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(ult),
+    // Texto crudo del respirador tal como venía en el pase, para precargar el
+    // pop-up de mecánica ventilatoria.
+    armTexto: part.arm || "",
   };
 }
 
@@ -6041,10 +6216,16 @@ function PaseAppView({ user }) {
   const [iSel, setISel] = useState(0);
   const [verOriginal, setVerOriginal] = useState(false);
   const [enFoco, setEnFoco] = useState(null);
-  const [plegado, setPlegado] = useState({ arm: true, anot: true, pend: false, bal: true });
+  // Todas las secciones arrancan colapsadas: en el celular, durante el pase,
+  // lo primero que uno quiere ver es el paciente, no cuatro cajas abiertas.
+  const [plegado, setPlegado] = useState({ anot: true, pend: true, bal: true });
   const [tipoSel, setTipoSel] = useState("Intercurrencia");
   const [estado, setEstado] = useState("");
+  // ARM por paciente (no uno solo para toda la unidad, que era el bug latente
+  // del prototipo): clave = índice del paciente.
   const [arm, setArm] = useState({});
+  const [armAbierto, setArmAbierto] = useState(false);
+  const [ordenando, setOrdenando] = useState(null);
   const undo = useRef([]);
   const guardarTimer = useRef(null);
 
@@ -6130,7 +6311,31 @@ function PaseAppView({ user }) {
   const o = foto.pacientes[idx] || {};
   const p = verOriginal ? o : (mio[idx] || {});
   const editable = !verOriginal;
-  const campos = PA_ORDEN.filter((k) => p.campos && p.campos[k] !== undefined);
+  // Orden de las secciones. Por defecto el clínico (antecedentes, enfermedad
+  // actual, requerimientos, tratamiento...), pero cada uno puede subir o bajar
+  // las que mira primero. Queda guardado en la copia privada, así que el orden
+  // de uno no le cambia la pantalla a nadie.
+  const presentes = PA_ORDEN.filter((k) => p.campos && p.campos[k] !== undefined);
+  const guardado = (p.ordenCampos || []).filter((k) => presentes.includes(k));
+  const campos = [...guardado, ...presentes.filter((k) => !guardado.includes(k))];
+
+  const moverCampo = (k, paso) => mutar((d) => {
+    const act = [...campos];
+    const i = act.indexOf(k), j = i + paso;
+    if (i < 0 || j < 0 || j >= act.length) return;
+    [act[i], act[j]] = [act[j], act[i]];
+    d[idx].ordenCampos = act;
+  });
+
+  // Mover un renglón dentro de una sección. El texto de cada campo es un bloque
+  // de líneas; reordenar es mover la línea y volver a pegar.
+  const moverLinea = (k, i, paso) => mutar((d) => {
+    const ls = (d[idx].campos[k] || "").split("\n");
+    const j = i + paso;
+    if (j < 0 || j >= ls.length) return;
+    [ls[i], ls[j]] = [ls[j], ls[i]];
+    d[idx].campos[k] = ls.join("\n");
+  });
 
   // Dónde van las dosis calculadas. Lo natural es debajo de Tratamiento, pero
   // hay pacientes que no tienen campo TTO en el Drive y llevan las infusiones
@@ -6142,6 +6347,17 @@ function PaseAppView({ user }) {
   const hayTto = campos.includes("tto");
 
   const editarCampo = (k, txt) => mutar((d) => { d[idx].campos[k] = txt; });
+
+  // Settings de ARM del paciente que se está mirando. Si todavía no se tocó
+  // nada, se precargan los que el propio pase trae escritos.
+  const armDe = (i) => {
+    if (arm[i]) return arm[i];
+    const leido = paLeerArm((mio[i] || {}).armTexto);
+    return leido || {};
+  };
+  const setArmDe = (i, campo, valor) =>
+    setArm((s) => ({ ...s, [i]: { ...armDe(i), [campo]: valor } }));
+  const FLECHA = { fontFamily: "inherit", fontSize: 11, lineHeight: 1, padding: "3px 6px", borderRadius: 4, border: "1.5px solid #E2E8F0", background: "#fff", color: "#64748B", cursor: "pointer" };
   const B = { fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "7px 12px", borderRadius: 5, border: "1.5px solid #E2E8F0", background: "#fff", color: "#0F172A", cursor: "pointer" };
   const BP = { ...B, background: "#0F5F66", borderColor: "#0F5F66", color: "#fff" };
   const ROT = { fontFamily: "ui-monospace,monospace", fontSize: 10.5, fontWeight: 600, letterSpacing: ".09em", textTransform: "uppercase" };
@@ -6152,7 +6368,7 @@ function PaseAppView({ user }) {
       <div onClick={() => setPlegado((s) => ({ ...s, [k]: !s[k] }))}
         style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 14px", cursor: "pointer", userSelect: "none" }}>
         <span style={{ fontSize: 10, color: "#64748B", transform: plegado[k] ? "rotate(-90deg)" : "none", transition: "transform .15s" }}>▼</span>
-        <span style={{ ...ROT, color: color || "#64748B" }}>{titulo}</span>
+        <span style={{ ...ROT, fontWeight: 800, fontSize: 11.5, color: color || "#334155" }}>{titulo}</span>
         {n > 0 && <span style={{ background: color || "#64748B", color: "#fff", borderRadius: 9, padding: "0 6px", fontSize: 10, fontFamily: "ui-monospace,monospace" }}>{n}</span>}
       </div>
       {!plegado[k] && <div style={{ padding: "0 14px 13px" }}>{children}</div>}
@@ -6248,20 +6464,46 @@ function PaseAppView({ user }) {
           return (
             <div key={k} style={{ borderBottom: "1px solid #E2E8F0" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px" }}>
-                <span style={{ ...ROT, color: "#64748B" }}>{PA_ROT[k]}</span>
+                <span style={{ ...ROT, fontWeight: 800, fontSize: 11.5, color: "#334155" }}>{PA_ROT[k]}</span>
+                {editable && (
+                  <span style={{ display: "flex", gap: 2 }}>
+                    <button onClick={() => moverCampo(k, -1)} title="Subir esta sección" style={FLECHA}>↑</button>
+                    <button onClick={() => moverCampo(k, 1)} title="Bajar esta sección" style={FLECHA}>↓</button>
+                    {(txt || "").includes("\n") && (
+                      <button onClick={() => setOrdenando(ordenando === k ? null : k)}
+                        title="Reordenar los renglones de esta sección"
+                        style={{ ...FLECHA, background: ordenando === k ? "#0F172A" : "#fff", color: ordenando === k ? "#fff" : "#64748B" }}>⇅</button>
+                    )}
+                  </span>
+                )}
                 <span style={{ marginLeft: "auto", fontSize: 11, color: cambiado ? "#8A4B00" : "#94A3B8" }}>
-                  {cambiado ? "editado" : "tocá para editar"}
+                  {ordenando === k ? "moviendo renglones" : cambiado ? "editado" : "tocá para editar"}
                 </span>
               </div>
               <div style={{ padding: "0 14px 12px", fontSize: 14 }}>
-                <div contentEditable={editable} suppressContentEditableWarning
-                  onFocus={() => setEnFoco(k)}
-                  onBlur={(e) => { editarCampo(k, e.currentTarget.innerText); setEnFoco(null); }}
-                  style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", outline: "none", background: enFoco === k ? "rgba(15,95,102,.06)" : "transparent", borderRadius: 3, minHeight: 20 }}>
-                  {/* Mientras el campo tiene el foco se muestra texto plano: si le
-                      metemos marcas mientras se escribe, el cursor salta al inicio. */}
-                  {verOriginal || enFoco === k ? txt : <TextoMarcado actual={txt} original={orig} />}
-                </div>
+                {ordenando === k ? (
+                  /* Modo reordenar: cada renglón por separado, con sus flechas.
+                     Se separa de la edición porque un contenteditable con
+                     botones adentro se pelea con el cursor. */
+                  <div style={{ display: "grid", gap: 4 }}>
+                    {(txt || "").split("\n").map((l, li, arr) => (
+                      <div key={li} style={{ display: "flex", alignItems: "flex-start", gap: 6, background: "#F8FAFC", borderRadius: 4, padding: "5px 7px" }}>
+                        <span style={{ flex: 1, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{l}</span>
+                        <button onClick={() => moverLinea(k, li, -1)} disabled={li === 0} style={{ ...FLECHA, opacity: li === 0 ? 0.3 : 1 }}>↑</button>
+                        <button onClick={() => moverLinea(k, li, 1)} disabled={li === arr.length - 1} style={{ ...FLECHA, opacity: li === arr.length - 1 ? 0.3 : 1 }}>↓</button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div contentEditable={editable} suppressContentEditableWarning
+                    onFocus={() => setEnFoco(k)}
+                    onBlur={(e) => { editarCampo(k, e.currentTarget.innerText); setEnFoco(null); }}
+                    style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", outline: "none", background: enFoco === k ? "rgba(15,95,102,.06)" : "transparent", borderRadius: 3, minHeight: 20 }}>
+                    {/* Mientras el campo tiene el foco se muestra texto plano: si le
+                        metemos marcas mientras se escribe, el cursor salta al inicio. */}
+                    {verOriginal || enFoco === k ? txt : <TextoMarcado actual={txt} original={orig} />}
+                  </div>
+                )}
               </div>
               {k === "tto" && <DosisDe p={p} />}
             </div>
@@ -6272,7 +6514,7 @@ function PaseAppView({ user }) {
         {!hayTto && (
           <div style={{ borderBottom: "1px solid #E2E8F0" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px" }}>
-              <span style={{ ...ROT, color: "#64748B" }}>Tratamiento</span>
+              <span style={{ ...ROT, fontWeight: 800, fontSize: 11.5, color: "#334155" }}>Tratamiento</span>
               <span style={{ marginLeft: "auto", fontSize: 11, color: "#94A3B8" }}>según lo escrito arriba</span>
             </div>
             <DosisDe p={p} />
@@ -6290,14 +6532,19 @@ function PaseAppView({ user }) {
               </div>
               {(p.balance?.[campo] || []).map((x, k) => (
                 <div key={k} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0", borderTop: k ? "1px solid #F1F5F9" : "none" }}>
-                  <span style={{ flex: 1, fontSize: 13.5 }}>{x.que}</span>
+                  <span style={{ flex: 1, fontSize: 13.5 }}>
+                    {x.que}
+                    {/* Cuándo se relevó: un ingreso de las 18 y uno de las 3 de
+                        la mañana no se leen igual al hacer el balance. */}
+                    {x.cuando && <span style={{ color: "#94A3B8", fontFamily: "ui-monospace,monospace", fontSize: 11.5, marginLeft: 6 }}>{x.cuando}</span>}
+                  </span>
                   <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 13.5, fontWeight: 600 }}>{x.ml} ml</span>
                   {editable && <span onClick={() => mutar((d) => { d[idx].balance[campo].splice(k, 1); })} style={{ cursor: "pointer", color: "#94A3B8" }}>×</span>}
                 </div>
               ))}
               {editable && <FilaBalance onAdd={(que, ml) => mutar((d) => {
                 if (!d[idx].balance) d[idx].balance = { ingresos: [], egresos: [] };
-                d[idx].balance[campo].push({ que, ml });
+                d[idx].balance[campo].push({ que, ml, cuando: paAhora() });
               })} />}
             </div>
           ))}
@@ -6313,37 +6560,14 @@ function PaseAppView({ user }) {
         </div>
       </Plegable>
 
-      <Plegable k="arm" titulo="Mecánica ventilatoria">
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(112px,1fr))", gap: 9, marginBottom: 10 }}>
-          {[["pl", "Presión meseta"], ["pe", "PEEP programada"], ["pt", "PEEP total"], ["vt", "Volumen corriente"]].map(([k2, lab]) => (
-            <div key={k2}>
-              <label style={{ fontSize: 11, color: "#64748B", display: "block", marginBottom: 3 }}>{lab}</label>
-              <input type="number" value={arm[k2] ?? ""} onChange={(e) => setArm((s) => ({ ...s, [k2]: e.target.value }))}
-                style={{ width: "100%", fontFamily: "ui-monospace,monospace", fontSize: 14, padding: "6px 8px", border: "1.5px solid #E2E8F0", borderRadius: 5 }} />
-            </div>
-          ))}
-        </div>
-        {(() => {
-          const n = (v) => (v === "" || v == null || isNaN(+v) ? null : +v);
-          const pl = n(arm.pl), pe = n(arm.pe), pt = n(arm.pt), vt = n(arm.vt);
-          const peep = pt ?? pe;
-          const dp = pl != null && peep != null ? pl - peep : null;
-          return (
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", borderTop: "1px solid #E2E8F0", paddingTop: 10 }}>
-              {[["Driving pressure", dp != null ? dp.toFixed(1) : "—"],
-                ["Auto-PEEP", pt != null && pe != null ? (pt - pe).toFixed(1) : "—"],
-                ["Compliance", dp && vt ? (vt / dp).toFixed(1) : "—"]].map(([l, v]) => (
-                <div key={l} style={{ fontSize: 12, color: "#64748B" }}>{l}
-                  <b style={{ display: "block", fontFamily: "ui-monospace,monospace", fontSize: 19, color: "#0F172A" }}>{v}</b>
-                </div>
-              ))}
-            </div>
-          );
-        })()}
-        <div style={{ fontSize: 11.5, color: "#64748B", marginTop: 8, lineHeight: 1.45 }}>
-          Driving = meseta − PEEP total. Auto-PEEP = PEEP total − PEEP programada. Compliance = Vt / driving. No vienen en el pase: se cargan en la cama.
-        </div>
-      </Plegable>
+      {/* ARM: casi nunca se usa, así que no ocupa lugar en la ficha. Botón que
+          abre un pop-up, con los settings del modo que corresponda. */}
+      <button onClick={() => setArmAbierto(true)} style={{ ...B, width: "100%", textAlign: "left", marginTop: 10, display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ color: "#64748B" }}>🫁</span> Ver ARM de este paciente
+        {(armDe(idx).modo || p.armTexto) && <span style={{ marginLeft: "auto", fontSize: 11, color: "#64748B" }}>
+          {PA_MODOS[armDe(idx).modo]?.rot || "según el pase"}
+        </span>}
+      </button>
 
       <Plegable k="anot" titulo="Anotaciones durante la guardia" color="#8A4B00" n={(p.anotaciones || []).length}>
         {editable && (
@@ -6394,6 +6618,95 @@ function PaseAppView({ user }) {
 
       <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.5, padding: "4px 2px" }}>
         <b>Versión alpha.</b> Tu copia se guarda en tu cuenta y nadie más la ve. Las anotaciones son temporales: cuando entra un pase nuevo, usá "Borrar mis anotaciones y sincronizar pase". Si algo no funciona o te falta algo, decímelo.
+      </div>
+
+      {armAbierto && (
+        <ArmPopup p={p} v={armDe(idx)} set={(c, val) => setArmDe(idx, c, val)}
+          cerrar={() => setArmAbierto(false)} />
+      )}
+    </div>
+  );
+}
+
+/* ── Pop-up de mecánica ventilatoria ──────────────────────────────────────
+   Se elige el modo y se piden sólo los settings de ese modo. Meseta y PEEP
+   total van siempre, porque son medidas con pausa y son las que dan driving
+   pressure y auto-PEEP, que es para lo que uno abre esto. */
+function ArmPopup({ p, v, set, cerrar }) {
+  const modo = v.modo || "";
+  const campos = PA_MODOS[modo]?.campos || [];
+  const n = (x) => (x === "" || x == null || isNaN(+x) ? null : +x);
+  const pl = n(v.pmeseta), pt = n(v.peeptotal), pe = n(v.peep);
+  const vt = n(v.vtMedido) ?? n(v.vt);
+  const peep = pt ?? pe;
+  const dp = pl != null && peep != null ? pl - peep : null;
+  const inp = { width: "100%", fontFamily: "ui-monospace,monospace", fontSize: 15, padding: "7px 9px", border: "1.5px solid #E2E8F0", borderRadius: 5, boxSizing: "border-box" };
+  return (
+    <div onClick={cerrar} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 60 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 12, border: "1.5px solid #CBD5E1", maxWidth: 480, width: "100%", maxHeight: "88vh", overflowY: "auto", padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 4 }}>
+          <b style={{ fontSize: 16 }}>Mecánica ventilatoria</b>
+          <button onClick={cerrar} style={{ marginLeft: "auto", border: "none", background: "none", fontSize: 20, cursor: "pointer", color: "#64748B", lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ fontSize: 12.5, color: "#64748B", marginBottom: 12 }}>{p.nombre} · cama {p.cama}</div>
+
+        <label style={{ fontSize: 11.5, color: "#64748B", display: "block", marginBottom: 4 }}>Modo ventilatorio</label>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+          {Object.entries(PA_MODOS).map(([k, m]) => (
+            <button key={k} onClick={() => set("modo", k)}
+              style={{ fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "7px 12px", borderRadius: 6, cursor: "pointer",
+                border: modo === k ? "1.5px solid #0F172A" : "1.5px solid #E2E8F0",
+                background: modo === k ? "#0F172A" : "#fff", color: modo === k ? "#fff" : "#475569" }}>
+              {m.rot}
+            </button>
+          ))}
+        </div>
+
+        {!modo && <div style={{ fontSize: 13, color: "#64748B", padding: "10px 0" }}>Elegí el modo para cargar los parámetros.</div>}
+
+        {modo && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(108px,1fr))", gap: 9, marginBottom: 14 }}>
+            {campos.map(([k, rot]) => (
+              <div key={k}>
+                <label style={{ fontSize: 11, color: "#64748B", display: "block", marginBottom: 3 }}>{rot}</label>
+                <input type="number" value={v[k] ?? ""} onChange={(e) => set(k, e.target.value)} style={inp} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ borderTop: "1px solid #E2E8F0", paddingTop: 12 }}>
+          <div style={{ fontSize: 11.5, color: "#64748B", marginBottom: 7 }}>Medidas con pausa</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(108px,1fr))", gap: 9 }}>
+            {[["pmeseta", "Presión meseta"], ["peeptotal", "PEEP total"], ["vtMedido", "Vt exhalado"]].map(([k, rot]) => (
+              <div key={k}>
+                <label style={{ fontSize: 11, color: "#64748B", display: "block", marginBottom: 3 }}>{rot}</label>
+                <input type="number" value={v[k] ?? ""} onChange={(e) => set(k, e.target.value)} style={inp} />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", borderTop: "1px solid #E2E8F0", marginTop: 12, paddingTop: 12 }}>
+          {[["Driving pressure", dp != null ? dp.toFixed(1) : "—"],
+            ["Auto-PEEP", pt != null && pe != null ? (pt - pe).toFixed(1) : "—"],
+            ["Compliance", dp && vt ? (vt / dp).toFixed(1) : "—"],
+            ["Vt / kg", vt && p.peso ? (vt / p.peso).toFixed(1) : "—"]].map(([l, val]) => (
+            <div key={l} style={{ fontSize: 12, color: "#64748B" }}>{l}
+              <b style={{ display: "block", fontFamily: "ui-monospace,monospace", fontSize: 19, color: "#0F172A" }}>{val}</b>
+            </div>
+          ))}
+        </div>
+
+        {p.armTexto && (
+          <div style={{ fontSize: 11.5, color: "#64748B", marginTop: 12, paddingTop: 10, borderTop: "1px dashed #E2E8F0" }}>
+            En el pase dice: <span style={{ fontFamily: "ui-monospace,monospace", color: "#0F172A" }}>{p.armTexto}</span>
+          </div>
+        )}
+        <div style={{ fontSize: 11.5, color: "#64748B", marginTop: 10, lineHeight: 1.45 }}>
+          Driving = meseta − PEEP total. Auto-PEEP = PEEP total − PEEP programada. Compliance = Vt / driving.
+          {!p.peso && " El Vt/kg usa el peso, que este paciente no lo tiene cargado."}
+        </div>
       </div>
     </div>
   );
