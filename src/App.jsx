@@ -6748,6 +6748,7 @@ function PaseAppView({ user }) {
   const [armAbierto, setArmAbierto] = useState(false);
   const [ordenando, setOrdenando] = useState(null);
   const [editando, setEditando] = useState(false);
+  const [confirmandoEgreso, setConfirmandoEgreso] = useState(false);
   const undo = useRef([]);
   const guardarTimer = useRef(null);
 
@@ -6888,6 +6889,37 @@ function PaseAppView({ user }) {
 
   // Mover un renglón dentro de una sección. El texto de cada campo es un bloque
   // de líneas; reordenar es mover la línea y volver a pegar.
+  // Egreso: el paciente se fue y el pase del Drive todavía lo muestra. No se
+  // borra el renglón —la cama sigue existiendo y saber que quedó libre es
+  // justamente el dato útil a las tres de la mañana— sino que se le vacía
+  // todo: campos, dosis, pendientes, balance y anotaciones. Queda la cama con
+  // el cartel de vacía.
+  //
+  // Esto vive solo en tu copia. Cuando entre un pase nuevo del Drive con el
+  // paciente ya dado de alta, "borrar mis anotaciones y sincronizar" limpia
+  // todo y vuelve a arrancar de la foto.
+  const marcarEgreso = () => {
+    mutar((d) => {
+      const x = d[idx];
+      x.egresado = true;
+      x.nombre = "";
+      x.edad = null;
+      x.sexo = null;
+      x.mi = "";
+      x.peso = null;
+      x.campos = {};
+      x.infusiones = [];
+      x.intermitentes = [];
+      x.pendientes = [];
+      x.anotaciones = [];
+      x.balance = { ingresos: [], egresos: [] };
+      x.armTexto = "";
+      x.sinCompletar = false;
+    });
+    setConfirmandoEgreso(false);
+    setEditando(false);
+  };
+
   const moverLinea = (k, i, paso) => mutar((d) => {
     const ls = (d[idx].campos[k] || "").split("\n");
     const j = i + paso;
@@ -7038,6 +7070,25 @@ function PaseAppView({ user }) {
           ))}
       </Plegable>
 
+      {/* Cama libre: el paciente egresó y todavía no llegó el pase nuevo del
+          Drive. Se muestra la cama vacía en vez de sacarla de la lista, porque
+          saber que hay lugar es información útil durante la guardia. */}
+      {p.egresado ? (
+        <div style={{ ...caja, borderStyle: "dashed", background: "#F8FAFC", padding: "26px 18px", textAlign: "center" }}>
+          <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 20, fontWeight: 800, color: "#94A3B8" }}>{p.cama}</div>
+          <div style={{ fontSize: 14.5, fontWeight: 700, color: "#475569", marginTop: 7 }}>Cama libre</div>
+          <div style={{ fontSize: 12.5, color: "#64748B", marginTop: 5, lineHeight: 1.5, maxWidth: 420, margin: "5px auto 0" }}>
+            La sacaste vos durante la guardia. El pase del Drive todavía la muestra ocupada;
+            cuando entre un pase nuevo, con <b>“Borrar mis anotaciones y sincronizar pase”</b> vuelve
+            lo que diga el Drive.
+          </div>
+          {editable && (
+            <button onClick={() => mutar((d) => { d[idx] = JSON.parse(JSON.stringify(foto.pacientes[idx])); })}
+              style={{ ...B, marginTop: 13 }}>Traer de nuevo los datos del pase</button>
+          )}
+        </div>
+      ) : (
+      <>
       <div style={caja}>
         <div style={{ padding: "12px 14px", borderBottom: "1px solid #E2E8F0" }}>
           {/* Identificación editable. El pase del Drive escribe mal los nombres
@@ -7284,6 +7335,32 @@ function PaseAppView({ user }) {
           </Plegable>
         );
       })()}
+
+      {/* Sacar al paciente. Va al final, lejos de lo que se toca seguido, y
+          con confirmación: es la única acción de esta pantalla que hace
+          desaparecer datos de golpe. */}
+      {editable && (
+        confirmandoEgreso ? (
+          <div style={{ ...caja, borderColor: "#FCA5A5", background: "#FEF2F2", marginTop: 4 }}>
+            <div style={{ fontSize: 13.5, color: "#7F1D1D", lineHeight: 1.55 }}>
+              ¿Sacar a <b>{p.nombre || "este paciente"}</b> de la cama <b>{p.cama}</b>?
+              Se borran de tu copia los antecedentes, el tratamiento, las dosis, los pendientes,
+              el balance y tus anotaciones. La cama queda como libre.
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" }}>
+              <button onClick={marcarEgreso} style={{ ...B, background: "#B91C1C", borderColor: "#B91C1C", color: "#fff" }}>Sí, se fue</button>
+              <button onClick={() => setConfirmandoEgreso(false)} style={B}>Cancelar</button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setConfirmandoEgreso(true)}
+            style={{ ...B, color: "#B91C1C", borderColor: "#FCA5A5", marginTop: 4 }}>
+            El paciente se fue · liberar la cama {p.cama}
+          </button>
+        )
+      )}
+      </>
+      )}
 
       <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.5, padding: "4px 2px" }}>
         <b>Versión alpha.</b> Tu copia se guarda en tu cuenta y nadie más la ve. Las anotaciones son temporales: cuando entra un pase nuevo, usá "Borrar mis anotaciones y sincronizar pase". Si algo no funciona o te falta algo, decímelo.
