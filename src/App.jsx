@@ -7022,13 +7022,6 @@ function PaseAppView({ user }) {
   // por egreso se puede reusar sin preguntar nada.
   const ocupada = (x) => x && !x.egresado && (x.nombre || "").trim();
 
-  // Todas las camas del pase, para el selector de destino. Se ofrecen las de
-  // todas las unidades porque los traslados entre sectores son moneda
-  // corriente; la propia queda afuera, que mandarse a uno mismo no es nada.
-  const destinos = mio
-    .map((x, i) => ({ i, cama: x.cama, unidad: x.unidad, quien: ocupada(x) ? x.nombre : null }))
-    .filter((c) => c.i !== idx);
-
   // Paso 1: elegiste el destino. Si está libre se muda directo; si no, se
   // guarda el choque para que la pantalla pregunte qué hacer con el que está.
   const elegirDestino = (j) => {
@@ -7113,6 +7106,19 @@ function PaseAppView({ user }) {
   const o = foto.pacientes[idx] || {};
   const p = verOriginal ? o : (mio[idx] || {});
   const editable = !verOriginal;
+
+  // Todas las camas del pase, para el selector de destino de "Enviar a otra
+  // cama". Se ofrecen las de todas las unidades porque los traslados entre
+  // sectores son moneda corriente; la propia queda afuera, que mandarse a uno
+  // mismo no es nada.
+  //
+  // Va DESPUÉS del return de arriba a propósito: depende de `mio`, que arranca
+  // en null mientras carga, y de `idx`, que se calcula acá. Tenerlo antes hacía
+  // que la pestaña entera se cayera al abrirla —React desmonta el árbol y
+  // queda la pantalla de un solo color— antes siquiera de tocar nada.
+  const destinos = mio
+    .map((x, i) => ({ i, cama: x.cama, unidad: x.unidad, quien: ocupada(x) ? x.nombre : null }))
+    .filter((c) => c.i !== idx);
   // Orden de las secciones. Por defecto el clínico (antecedentes, enfermedad
   // actual, requerimientos, tratamiento...), pero cada uno puede subir o bajar
   // las que mira primero. Queda guardado en la copia privada, así que el orden
@@ -7551,7 +7557,7 @@ function PaseAppView({ user }) {
                       Mandarlo a otra cama
                     </button>
                     <button onClick={() => moverA(enviando.destino, "egreso", null)}
-                      style={{ ...B, color: "#B91C1C", borderColor: "#FCA5A5" }}>
+                      style={{ ...B, color: "#B91C1C", border: "1.5px solid #FCA5A5" }}>
                       Ese paciente se fue
                     </button>
                     <button onClick={() => setEnviando(null)} style={B}>Cancelar</button>
