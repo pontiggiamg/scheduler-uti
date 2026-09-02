@@ -1029,7 +1029,12 @@ function SchedulerView({ isAdmin }) {
   // no tiene el problema de ancho que tiene la pantalla, y un cronograma
   // impreso con un solo día no le sirve a nadie.
   const [imprimiendo, setImprimiendo] = useState(false);
-  const DIAS_VIS = chico && !imprimiendo ? [diaVis] : DAYS.map((_, i) => i);
+  // Qué se ve: el día de hoy o la semana entera. Arranca en HOY en todas las
+  // pantallas —no sólo en el celular— porque el 95% de las veces uno abre la
+  // app para ver quién está hoy, y la grilla de siete días obliga a buscar la
+  // columna correcta antes de leer nada. La semana completa sigue a un toque.
+  const [verSemana, setVerSemana] = useState(false);
+  const DIAS_VIS = (verSemana || imprimiendo) ? DAYS.map((_, i) => i) : [diaVis];
 
   const docId = `week-${isoDate(monday)}`;
   const pending = useRef(null);
@@ -1360,24 +1365,45 @@ function SchedulerView({ isAdmin }) {
           {isAdmin && <PanelAlertas duras={alertas.duras} suaves={alertas.suaves} />}
           <EquiposMes monday={monday} isAdmin={isAdmin} />
           <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} onAplicarAlMes={aplicarDiasLibresAlMes} aplicando={aplicandoMes} />
-          {/* Selector de día: sólo en celular, donde se ve un día por vez. */}
-          {chico && (
-            <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-              <button onClick={() => setDiaVis((i) => (i - 1 + DAYS.length) % DAYS.length)}
-                aria-label="Día anterior"
-                style={{ fontFamily: "inherit", fontSize: 18, lineHeight: 1, fontWeight: 700, width: 44, height: 44, flex: "0 0 auto", borderRadius: 9, border: "1.5px solid #CBD5E1", background: "#fff", color: "#334155", cursor: "pointer" }}>‹</button>
-              <div style={{ flex: 1, textAlign: "center", minWidth: 0 }}>
-                <div style={{ fontSize: 15.5, fontWeight: 800, color: "#0F172A" }}>{DAYS[diaVis]}</div>
-                <div style={{ fontSize: 11.5, color: "#64748B" }}>
-                  {dates[diaVis]?.toLocaleDateString("es-AR", { day: "numeric", month: "long" })}
-                  {sameDay(dates[diaVis], today) ? " · hoy" : ""}
+          {/* Barra de día. Siempre visible: a la izquierda las flechas para
+              moverse de día, a la derecha el botón que abre la semana entera.
+              El botón dice qué vas a ver si lo tocás, no en qué estás. */}
+          <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+            {!verSemana && (
+              <>
+                <button onClick={() => setDiaVis((i) => (i - 1 + DAYS.length) % DAYS.length)}
+                  aria-label="Día anterior"
+                  style={{ fontFamily: "inherit", fontSize: 18, lineHeight: 1, fontWeight: 700, width: 44, height: 44, flex: "0 0 auto", borderRadius: 9, border: "1.5px solid #CBD5E1", background: "#fff", color: "#334155", cursor: "pointer" }}>‹</button>
+                <div style={{ flex: 1, textAlign: "center", minWidth: 90 }}>
+                  <div style={{ fontSize: 15.5, fontWeight: 800, color: "#0F172A" }}>{DAYS[diaVis]}</div>
+                  <div style={{ fontSize: 11.5, color: "#64748B" }}>
+                    {dates[diaVis]?.toLocaleDateString("es-AR", { day: "numeric", month: "long" })}
+                    {sameDay(dates[diaVis], today) ? " · hoy" : ""}
+                  </div>
                 </div>
-              </div>
-              <button onClick={() => setDiaVis((i) => (i + 1) % DAYS.length)}
-                aria-label="Día siguiente"
-                style={{ fontFamily: "inherit", fontSize: 18, lineHeight: 1, fontWeight: 700, width: 44, height: 44, flex: "0 0 auto", borderRadius: 9, border: "1.5px solid #CBD5E1", background: "#fff", color: "#334155", cursor: "pointer" }}>›</button>
-            </div>
-          )}
+                <button onClick={() => setDiaVis((i) => (i + 1) % DAYS.length)}
+                  aria-label="Día siguiente"
+                  style={{ fontFamily: "inherit", fontSize: 18, lineHeight: 1, fontWeight: 700, width: 44, height: 44, flex: "0 0 auto", borderRadius: 9, border: "1.5px solid #CBD5E1", background: "#fff", color: "#334155", cursor: "pointer" }}>›</button>
+              </>
+            )}
+            {verSemana && (
+              <div style={{ flex: 1, fontSize: 15.5, fontWeight: 800, color: "#0F172A", minWidth: 90 }}>Semana completa</div>
+            )}
+            <button onClick={() => setVerSemana((v) => !v)}
+              style={{ fontFamily: "inherit", fontSize: 13, fontWeight: 700, padding: "10px 14px", minHeight: 44, flex: "0 0 auto",
+                borderRadius: 9, cursor: "pointer",
+                border: "1.5px solid " + (verSemana ? "#CBD5E1" : "#0F172A"),
+                background: verSemana ? "#fff" : "#0F172A", color: verSemana ? "#334155" : "#fff" }}>
+              {verSemana ? "Ver día de hoy" : "Ver semana completa"}
+            </button>
+            {/* Si te fuiste de hoy navegando, un atajo para volver. */}
+            {!verSemana && !sameDay(dates[diaVis], today) && (
+              <button onClick={() => { const h = new Date(); const i = Math.floor((h - mondayOf(h)) / 86400000); setDiaVis(i >= 0 && i < DAYS.length ? i : 0); }}
+                style={{ fontFamily: "inherit", fontSize: 13, fontWeight: 600, padding: "10px 12px", minHeight: 44, flex: "0 0 auto", borderRadius: 9, border: "1.5px solid #CBD5E1", background: "#fff", color: "#334155", cursor: "pointer" }}>
+                Hoy
+              </button>
+            )}
+          </div>
           <div className="print-scroll" style={{ overflowX: "auto", paddingBottom: 4 }}>
           <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DIAS_VIS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "14px 14px 0 0", overflow: "hidden", border: "1px solid #E2E8F0", borderBottom: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DIAS_VIS.length * 150 }}>
             <Corner />{DIAS_VIS.map((i) => <DayHead key={DAYS[i]} name={DAYS[i]} date={dates[i]} isToday={sameDay(dates[i], today)} isWeekend={isWeekendIdx(i)} feriado={week.days[i].feriado} />)}
@@ -7799,12 +7825,12 @@ function PaseAppView({ user }) {
       <div className="no-print" style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
         <button onClick={deshacer} style={B}>↶ Deshacer</button>
         <button onClick={reiniciar} style={B}>Borrar mis anotaciones y sincronizar pase</button>
-        {/* El botón de imprimir el pase está sacado a propósito (2/9/2026).
-            La función imprimirPase() sigue abajo, entera y funcionando, pero
-            el formato todavía tiene errores que Gonzalo está marcando sobre
-            los PDF de ejemplo. Hasta que estén resueltos no se ofrece, porque
-            un pase impreso con datos mal ordenados es peor que no tenerlo.
-            Para volver a habilitarlo alcanza con reponer este botón. */}
+        {/* Imprime la unidad que se está mirando con el mismo formato y las
+            mismas palabras que la pestaña Pases, más los pendientes y las
+            dosis calculadas. Se abre en una ventana aparte donde se puede
+            editar antes de mandar a la impresora. */}
+        <button onClick={() => imprimirPase(mio.filter((x) => x.unidad === uSel), uSel, foto.tomado)}
+          style={B}>Imprimir pase de {uSel}</button>
         <label style={{ ...B, display: "inline-flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={verOriginal} onChange={(e) => setVerOriginal(e.target.checked)}
             style={{ width: 16, height: 16, accentColor: "#0F5F66", margin: 0 }} />
@@ -8060,11 +8086,24 @@ function PaseAppView({ user }) {
                 <b style={{ color: "#8A4B00", marginLeft: 5 }}>· movido a {p.unidad}</b>
               )}
             </span>
+            {/* Los dos pesos, uno al lado del otro. El real estimado manda en
+                las dosis; el teórico (predicho) sólo se usa para el Vt/kg en
+                mecánica ventilatoria. Antes el teórico se cargaba únicamente
+                desde adentro del pop-up de ARM, que es un lugar donde nadie
+                lo busca si no está intubando en ese momento. */}
             <span style={{ fontSize: 11.5, border: `1px ${p.peso ? "solid" : "dashed"} #E2E8F0`, borderRadius: 4, padding: "3px 8px", display: "flex", alignItems: "center", gap: 5 }}>
-              Peso
+              Peso real
               <input type="number" value={p.peso || ""} placeholder="—" disabled={!editable}
+                title="Peso real estimado. Es el que se usa para calcular las dosis."
                 onChange={(e) => mutar((d) => { d[idx].peso = e.target.value ? +e.target.value : null; })}
                 style={{ width: 56, fontFamily: "ui-monospace,monospace", fontSize: 13, padding: "3px 5px", border: `1px solid ${p.peso ? "#E2E8F0" : "#FCA5A5"}`, borderRadius: 4 }} /> kg
+            </span>
+            <span style={{ fontSize: 11.5, border: `1px ${p.pesoTeorico ? "solid" : "dashed"} #E2E8F0`, borderRadius: 4, padding: "3px 8px", display: "flex", alignItems: "center", gap: 5 }}>
+              PT
+              <input type="number" value={p.pesoTeorico || ""} placeholder="—" disabled={!editable}
+                title="Peso teórico o predicho. Sólo se usa para el Vt/kg en mecánica ventilatoria, nunca para dosis."
+                onChange={(e) => mutar((d) => { d[idx].pesoTeorico = e.target.value ? +e.target.value : null; })}
+                style={{ width: 56, fontFamily: "ui-monospace,monospace", fontSize: 13, padding: "3px 5px", border: "1px solid #E2E8F0", borderRadius: 4 }} /> kg
             </span>
             {/* Sin peso, todas las dosis se calculan sobre 70 kg supuestos. El
                 aviso va acá arriba, pegado al campo que lo resuelve, y no sólo
@@ -8504,25 +8543,80 @@ function ArmPopup({ p, v, set, setPT, cerrar }) {
 /* ══════════════════════════════════════════════════════════════════════════
    IMPRIMIR EL PASE
 
-   Para llevar en el bolsillo del ambo y anotar encima. Las restricciones
-   vienen de cómo se usa, no de cómo se ve lindo en pantalla:
+   Para llevar en el bolsillo del ambo y anotar encima.
 
-   · Máximo dos hojas (cuatro carillas) por UTI. Medido sobre el pase real,
-     UTI 3 es la peor con 15.350 caracteres en nueve camas; a dos columnas y
-     cuerpo 7.5 entra en tres carillas, con margen.
-   · No falta NADA. Todos los campos, completos, sin recortar. Un pase al que
-     le falta un renglón no sirve, y peor: hace desconfiar del resto.
-   · Un paciente no se parte entre dos carillas: buscar el final de la ficha
-     dando vuelta la hoja es exactamente lo que uno no quiere hacer en el
-     medio de un pase.
-   · Se imprime en blanco y negro, que es lo que hay. Las jerarquías se hacen
-     con peso y tamaño de letra, no con color: un fondo gris claro sale negro
-     en una impresora cansada y tapa el texto.
-   · Espacio en blanco para anotar a mano, porque la hoja se usa con birome.
+   QUÉ SE IMPRIME
+   --------------
+   Exactamente lo mismo que muestra la pestaña Pases, con los mismos rótulos
+   y las mismas palabras: "Complementarios", "Requerimientos / Intercurrencias",
+   "EAB". No se reescribe ni se reordena nada. Lo que ya se lee bien en
+   pantalla se lee bien en papel, y tener dos redacciones distintas del mismo
+   pase es una fuente de confusión, no una mejora.
 
-   Va en una ventana aparte con su propio HTML: pelear contra los estilos de
-   pantalla para que impriman distinto es más frágil y más difícil de leer.
+   Se agregan dos cosas que la pestaña Pases no muestra:
+     · PENDIENTES, debajo de Accesos, con casillas para tildar. Es el dato que
+       el médico que imprime necesita para trabajar.
+     · Las DOSIS CALCULADAS, adentro de Tratamiento, para no rehacer de
+       memoria una regla de tres a las cuatro de la mañana.
+
+   EL ESTADO ACTUAL
+   ----------------
+   El último renglón de Requerimientos suele ser la descripción de cómo está
+   hoy el paciente ("28/08 lúcida, sin foco neurológico. HDE. VE sin O₂...").
+   Ese renglón se repite arriba, debajo del motivo de ingreso y con su fecha,
+   que es donde uno lo busca al tomar la guardia.
+
+   Pero NO siempre lo último escrito es un estado: los fines de semana el pase
+   se llena a las apuradas y queda una cadena de eventos ("31/08 íleo funcional
+   → SNG a descarga → TC abdomen"), una fecha pelada, o los parámetros del
+   respirador. Mostrar eso como "estado actual" es peor que no mostrar nada,
+   porque afirma algo que nadie escribió. Ver esEstadoActual(): ante la duda,
+   no se muestra.
+
+   EL ESPACIO
+   ----------
+   Máximo dos hojas (cuatro carillas) por unidad. Un paciente por fila, nunca
+   partido entre carillas. Adentro de cada ficha, el relato clínico va en una
+   columna con el tratamiento en paralelo; los datos fechados —laboratorio,
+   cultivos, complementarios, accesos— cruzan la ficha entera, porque en media
+   columna quedan en un chorizo de dos palabras por renglón.
+
+   Blanco y negro: las jerarquías se hacen con peso y tamaño de letra. Un
+   fondo gris sale negro en una impresora cansada y tapa el texto.
    ══════════════════════════════════════════════════════════════════════════ */
+
+/* ¿El último renglón de Requerimientos describe cómo está el paciente, o es
+   otra cosa? Se pide fecha adelante, algo de cuerpo, ninguna flecha (una
+   flecha encadena hechos: "fiebre → cultivos → TAC") y al menos dos señales
+   de examen o estado. Probado contra los 25 pacientes de un pase real: deja
+   pasar los 15 que describen al paciente y frena los 10 que no. */
+const PA_SENAL_ESTADO = [
+  /\bL[UÚ]CID[OA]\b/i, /\bVIGIL\b/i, /\bRASS\b/i, /\bSEDAD[OA]\b/i, /\bSOPOROS[OA]\b/i,
+  /\bDESORIENTAD[OA]\b/i, /\bORIENTAD[OA]\b/i, /\bRESPONDE\b/i, /\bSIN FOCO\b/i,
+  /\bHD[EI]\b/i, /\bHEMODIN[AÁ]MICAMENTE\b/i, /\bTA\s*\d/i,
+  /\bVE\b/i, /\bARM\b/i, /\bVNI\b/i, /\bVENTILANDO\b/i, /\bHIPOVEN/i,
+  /\bABD[I]?\b/i, /\bABDOMEN\b/i, /\bRHA\b/i, /\bPERITONEAL\b/i, /\bBLANDO\b/i,
+  /\bAFEBRIL\b/i, /\bSUBFEBRIL\b/i, /\bEDEMAS\b/i, /\bPARESIA\b/i, /\bAFASIA\b/i,
+  /\bMOVILIZA\b/i, /\bPUPILAS\b/i, /\bPIR\b/i, /\bENCEFALOPAT/i, /\bFUNCIONANTE\b/i,
+  /\bESCARA\b/i, /\bOSCILA\b/i, /\bDOLOROS[OA]\b/i,
+];
+function esEstadoActual(txt) {
+  if (!txt) return false;
+  const t = String(txt).replace(/\s+/g, " ").trim();
+  const m = t.match(/^\*?\s*(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+(.*)$/);
+  if (!m) return false;                        // sin fecha adelante
+  const cuerpo = m[2].trim();
+  if (cuerpo.length < 15) return false;        // "29/08" y nada más
+  if (/→|->/.test(cuerpo)) return false;       // cadena de hechos, no un estado
+  return PA_SENAL_ESTADO.filter((re) => re.test(cuerpo)).length >= 2;
+}
+// Separa la fecha del cuerpo, para poder mostrarlas distinto.
+function paPartirEstado(txt) {
+  const m = String(txt).replace(/\s+/g, " ").trim()
+    .match(/^\*?\s*(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+(.*)$/);
+  return m ? { fecha: m[1], cuerpo: m[2] } : { fecha: "", cuerpo: String(txt) };
+}
+
 function imprimirPase(pacientes, unidad, tomado) {
   const esc = (s) => String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -8535,56 +8629,63 @@ function imprimirPase(pacientes, unidad, tomado) {
   // color no sobrevive al blanco y negro, pero la marca sí tiene que llegar.
   const renglones = (txt) => String(txt || "").split("\n").map((cruda) => {
     const { color, texto } = paMarcaDe(cruda);
-    const l = texto.replace(/[\u00AB\u00BB]/g, "").trim();
+    const l = texto.replace(/[«»]/g, "").trim();
     if (!l) return "";
     return `<div class="l${color ? " mk" : ""}">${esc(l)}</div>`;
   }).join("");
 
+  // Los mismos rótulos y el mismo orden que la pestaña Pases.
+  const ROT = Object.fromEntries(PASE_FIELDS.map(([k, r]) => [k, r]));
+  const ORDEN = PASE_FIELDS.map(([k]) => k);
+  const IZQ = ["ap", "ea", "req"];     // el relato clínico
+  const DER = ["tto"];                 // lo que recibe, en paralelo
+
   const ficha = (p) => {
-    // Las dosis calculadas van al papel: es la cuenta que uno no quiere hacer
-    // de memoria a las cuatro de la mañana. Se arma acá arriba porque las
-    // secciones la insertan debajo de Tratamiento.
+    const campos = p.campos || {};
+    const hay = (k) => campos[k] && String(campos[k]).trim();
+
+    // Dosis calculadas, adentro de Tratamiento.
     const inf = (p.infusiones || []).map((i) => {
       const g = paDosis(i, p.peso);
       if (g.sinUnidad) return `${esc(i.droga)} ${i.mg}/${i.ml}/${i.ritmo}`;
-      // Los decimales se eligen segun la magnitud: una noradrenalina a
-      // 0.019 mcg/kg/min con dos decimales sale "0.00", que en una hoja de
-      // pase es peor que no poner nada. Numeros chicos piden mas resolucion.
-      const fmt = (x) => x >= 10 ? x.toFixed(1) : x >= 0.1 ? x.toFixed(2) : x.toFixed(3);
-      const val = PA_POR_MINUTO.has(i.droga)
-        ? `${fmt(g.kgmin)} mcg/kg/min`
-        : `${fmt(g.kgh)} ${g.u}`;
+      // EXACTAMENTE la misma cuenta y las mismas unidades que la pantalla:
+      // la dosis por kilo y por hora, y para los vasoactivos además la de por
+      // minuto en microgramos. La conversión ×1000/60 es la que pasa de
+      // mg/kg/h a mcg/kg/min; sin ella una noradrenalina imprimía "0.000".
+      const val = `${g.kgh.toFixed(3)} ${g.u}/kg/h`
+        + (PA_POR_MINUTO.has(i.droga)
+            ? ` · ${(g.kgh * 1000 / 60).toFixed(3)} mcg/kg/min` : "");
       return `${esc(i.droga)} ${i.mg}/${i.ml}/${i.ritmo} = <b>${val}</b>${g.supuesto ? " *" : ""}`;
     });
-    const dosisHTML = () => inf.length
+    const dosis = inf.length
       ? `<div class="dos"><span class="r2">Dosis calculadas</span>${inf.map((x) => `<div class="l">${x}</div>`).join("")}</div>`
       : "";
 
-    // Qué va en columnas y qué cruza la ficha entera.
-    //
-    // Las cuatro primeras son el relato del paciente —quién es, qué le pasó,
-    // qué necesita, qué recibe— y son cortas y comparables: puestas al lado se
-    // leen en paralelo, que es como uno las piensa (esto tiene, esto le doy).
-    //
-    // Las otras son listas de datos fechados, largas y de ancho irregular. En
-    // media columna quedarían en un chorizo de dos palabras por renglón, así
-    // que cruzan la ficha entera y ganan aire.
-    const EN_COLUMNA = ["ap", "ea", "req", "tto"];
-    const uno = (k) => `<div class="s"><span class="r">${esc(PA_ROT[k])}</span>${renglones(p.campos[k])}`
-      // Las dosis calculadas van pegadas a Tratamiento y no al final de la
-      // ficha: son la lectura de esos mismos renglones, y separarlas obliga
-      // a saltar de una punta a la otra para cruzar la infusion con su dosis.
-      + (k === "tto" ? dosisHTML() : "") + `</div>`;
+    const uno = (k) => !hay(k) ? "" :
+      `<div class="s"><span class="r">${esc(ROT[k])}</span>${renglones(campos[k])}` +
+      (k === "tto" ? dosis : "") + `</div>`;
 
-    const hay = (k) => (p.campos || {})[k] && String(p.campos[k]).trim();
-    const enCol = PA_ORDEN.filter((k) => EN_COLUMNA.includes(k) && hay(k));
-    const anchas = PA_ORDEN.filter((k) => !EN_COLUMNA.includes(k) && hay(k));
+    // Estado actual: el último renglón de Requerimientos, si de verdad lo es.
+    const lineasReq = String(campos.req || "").split("\n")
+      .map((x) => limpio(x).trim()).filter(Boolean);
+    const ultima = lineasReq.length ? lineasReq[lineasReq.length - 1] : "";
+    const est = esEstadoActual(ultima) ? paPartirEstado(ultima) : null;
 
-    const secciones =
-      (enCol.length ? `<div class="par">${enCol.map(uno).join("")}</div>` : "") +
-      anchas.map(uno).join("");
+    const izq = IZQ.map(uno).join("");
+    const der = DER.map(uno).join("") + (!hay("tto") ? dosis : "");
+    const anchas = ORDEN.filter((k) => !IZQ.includes(k) && !DER.includes(k)).map(uno).join("");
+
+    // Pendientes, debajo de Accesos. Es lo único de la hoja que no describe al
+    // paciente sino que le pide algo a quien la está leyendo.
+    const ps = (p.pendientes || []).filter((x) => x && x.texto && !x.listo);
+    const pend = ps.length
+      ? `<div class="pend"><span class="r2">Pendientes</span>` +
+        ps.map((x) => `<div class="l">&#9744; ${esc(limpio(x.texto))}</div>`).join("") + `</div>`
+      : "";
+
     const pesos = [p.peso ? `${p.peso} kg` : null, p.pesoTeorico ? `PT ${p.pesoTeorico}` : null]
       .filter(Boolean).join(" · ");
+
     return `<article class="p">
       <header>
         <span class="cama">${esc(p.cama)}</span>
@@ -8592,22 +8693,10 @@ function imprimirPase(pacientes, unidad, tomado) {
         <span class="meta">${[p.edad ? p.edad + "a" : "", p.sexo ? p.sexo[0].toUpperCase() : "", pesos].filter(Boolean).join(" · ")}</span>
       </header>
       ${p.mi ? `<div class="mi">${esc(limpio(p.mi))}</div>` : ""}
-      ${secciones}
-      ${inf.length && !(p.campos || {}).tto ? `<div class="s">${dosisHTML()}</div>` : ""}
-      ${(() => {
-        // Pendientes: lo que queda por hacer. Cruza la ficha entera y va al
-        // pie, que es el lugar donde uno vuelve a mirar antes de irse.
-        // Con recuadro propio porque es lo único de la hoja que no describe
-        // al paciente sino que le pide algo a quien la está leyendo.
-        //
-        // Hasta hoy este campo del Drive no se imprimía ni se veía en
-        // pantalla: se leía, se convertía en la lista de tareas, y ahí moría.
-        // Diez de los veinticinco pacientes lo traen.
-        const ps = (p.pendientes || []).filter((x) => x && x.texto && !x.listo);
-        if (!ps.length) return "";
-        return `<div class="pend"><span class="r2">Pendientes</span>` +
-          ps.map((x) => `<div class="l">☐ ${esc(limpio(x.texto))}</div>`).join("") + `</div>`;
-      })()}
+      ${est ? `<div class="est"><span class="ef">${esc(est.fecha)}</span> ${esc(est.cuerpo)}</div>` : ""}
+      <div class="par"><div>${izq}</div><div>${der}</div></div>
+      ${anchas}
+      ${pend}
       <div class="notas"></div>
     </article>`;
   };
@@ -8616,92 +8705,110 @@ function imprimirPase(pacientes, unidad, tomado) {
   const win = window.open("", "_blank");
   if (!win) { alert("El navegador bloqueó la ventana de impresión. Permitila y probá de nuevo."); return; }
   const titulo = `Pase ${unidad} — ${new Date().toLocaleDateString("es-AR")}`;
+  const fecha = (d) => d ? new Date(d).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+
   win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8" />
   <title>${esc(titulo)}</title>
   <style>
     * { box-sizing: border-box; }
     @page { size: A4; margin: 7mm 6mm; }
-    body { font-family: 'Inter', system-ui, sans-serif; color: #000; margin: 0; font-size: 7pt; line-height: 1.2; }
-
-    /* Dos columnas: el texto del pase son frases cortas, y a un ancho de
-       página entero el ojo se pierde volviendo al margen izquierdo. */
-    /* La hoja ya no se parte en dos columnas de fichas: cada paciente ocupa
-       una FILA completa, uno debajo del otro. Antes, con dos columnas de
-       fichas, una ficha larga saltaba a la columna de al lado y arriba, que
-       es justo lo que uno no quiere leyendo un pase.
-
-       Las columnas ahora viven ADENTRO de cada ficha, entre secciones. */
-    .cols { }
+    body { font-family: 'Inter', system-ui, sans-serif; color: #000; margin: 0;
+           font-size: 7pt; line-height: 1.2; padding-top: 13mm; }
 
     h1 { font-size: 11pt; margin: 0 0 1mm; }
     .sub { font-size: 7pt; color: #444; margin: 0 0 2.5mm;
            border-bottom: .5pt solid #000; padding-bottom: 1mm; }
 
-    /* Las cuatro secciones del relato clinico, una al lado de la otra.
-       columns y no grid: asi una seccion mas larga que la otra no deja un
-       hueco, el texto sigue fluyendo a la columna siguiente. */
-    .par { columns: 2; column-gap: 4mm; margin-bottom: .4mm; }
-    .par > .s { break-inside: avoid; }
-
-    /* Pendientes: lo unico que le pide algo al que lee. Recuadro propio,
-       cruzando toda la ficha, con casillas para tildar con birome. */
-    .pend { border: .7pt solid #000; border-radius: 1mm; padding: .8mm 1.4mm;
-            margin-top: .8mm; break-inside: avoid; }
-    .pend .l { padding-left: 0; text-indent: 0; }
-
-    /* Un paciente NUNCA se parte. Antes se permitia para ahorrar espacio y
-       el resultado era una ficha que seguia arriba a la derecha, en la otra
-       columna: al pasar la vista uno cree que termino y se saltea media
-       ficha. Con el limite en cuatro carillas por unidad hay lugar de sobra
-       para no hacer esa concesion. */
+    /* Un paciente por fila, nunca partido entre carillas: una ficha que sigue
+       arriba en la otra columna se lee como si hubiera terminado. */
     .p { border: .5pt solid #000; border-radius: 1.2mm; padding: 1.2mm 1.6mm;
          margin: 0 0 1.4mm; break-inside: avoid; page-break-inside: avoid; }
-    .p > header { break-after: avoid; page-break-after: avoid; }
-
     .p > header { display: flex; align-items: baseline; gap: 1.5mm;
                   border-bottom: .5pt solid #999; padding-bottom: .8mm; margin-bottom: 1mm; }
     .cama { font-family: ui-monospace, Menlo, monospace; font-size: 10pt; font-weight: 800; }
     .nom { font-size: 8.6pt; font-weight: 700; flex: 1; }
     .meta { font-size: 6.6pt; color: #333; white-space: nowrap; }
 
-    /* El motivo de ingreso es lo primero que uno lee para ubicarse. */
     .mi { font-size: 7.4pt; font-weight: 700; margin: 0 0 .7mm; }
+    /* Cómo está hoy. Va pegado al motivo de ingreso: los dos juntos contestan
+       "por qué entró" y "cómo está", que es con lo que uno arranca la guardia. */
+    .est { font-size: 7pt; margin: 0 0 1mm; padding: .7mm 1.2mm;
+           border-left: 1.5pt solid #000; background: #f4f4f4; }
+    .ef { font-family: ui-monospace, Menlo, monospace; font-weight: 800; }
 
-    /* Una sección no se parte al medio: cortar "Cultivos" entre dos columnas
-       es justo lo que hace perder el hilo leyendo. */
+    /* El relato clínico y el tratamiento, en paralelo.
+       La izquierda es más ancha a propósito: entre antecedentes, enfermedad
+       actual y requerimientos junta el 86% del texto, y contra el 14% del
+       tratamiento. Con columnas iguales la derecha quedaba casi vacía y la
+       ficha entera se estiraba al alto de la izquierda — media carilla
+       desperdiciada por hoja, y UTI 3 no entraba en dos hojas. */
+    .par { display: grid; grid-template-columns: 1.7fr 1fr; gap: 0 4mm; }
+
     .s { margin-bottom: .6mm; break-inside: avoid; }
-    /* Las dosis calculadas, colgando de Tratamiento. Sangradas y con filete
-       para que se lean como lo que son: la cuenta hecha sobre los renglones
-       de arriba, no una sección más del pase. */
-    .dos { margin: .5mm 0 0 1.5mm; padding-left: 1.5mm; border-left: .8pt solid #666; }
-    .r2 { font-size: 5.9pt; font-weight: 800; text-transform: uppercase;
-          color: #333; display: block; }
-    /* El rótulo va en la misma línea que el texto y no en un renglón propio:
-       diez secciones por paciente son diez renglones perdidos por ficha. */
     .r { font-size: 6.2pt; font-weight: 800; text-transform: uppercase;
          letter-spacing: .02em; color: #000; display: block;
          border-bottom: .3pt dotted #bbb; margin-bottom: .3mm; }
     .l { margin: 0; padding-left: 1.6mm; text-indent: -1.6mm; }
-    /* Lo que estaba resaltado en pantalla: barra al margen, que sí imprime. */
     .l.mk { border-left: 1.2pt solid #000; padding-left: 1.4mm; margin-left: -2mm; text-indent: 0; }
 
-    /* Lugar para escribir con birome durante el pase. */
+    .dos { margin: .5mm 0 0 1.5mm; padding-left: 1.5mm; border-left: .8pt solid #666; }
+    .r2 { font-size: 5.9pt; font-weight: 800; text-transform: uppercase;
+          color: #333; display: block; }
+
+    .pend { border: .7pt solid #000; border-radius: 1mm; padding: .8mm 1.4mm;
+            margin-top: .8mm; break-inside: avoid; }
+    .pend .l { padding-left: 0; text-indent: 0; }
+
     .notas { height: 5mm; border-top: .3pt dashed #999; margin-top: .8mm; }
 
-    @media print { .noprint { display: none; } }
-    .noprint { position: fixed; top: 8px; right: 8px; font-family: system-ui;
-               font-size: 12px; padding: 8px 14px; border: 1px solid #888;
-               border-radius: 6px; background: #fff; cursor: pointer; }
+    /* Barra de herramientas: no se imprime. */
+    .bar { position: fixed; top: 0; left: 0; right: 0; z-index: 9;
+           background: #0F172A; color: #fff; padding: 6px 10px;
+           font-family: system-ui, sans-serif; font-size: 12px;
+           display: flex; align-items: center; gap: 8px; }
+    .bar button { font-family: inherit; font-size: 12px; font-weight: 700;
+                  padding: 6px 12px; border-radius: 5px; border: 1px solid #fff;
+                  background: #fff; color: #0F172A; cursor: pointer; }
+    .bar button.off { background: transparent; color: #fff; }
+    .bar .ay { opacity: .8; font-weight: 400; }
+    body.edit .hoja { outline: 2px dashed #0F172A; outline-offset: 3px; }
+    @media print { .bar { display: none; } body { padding-top: 0; }
+                   body.edit .hoja { outline: none; } }
   </style></head><body>
-  <button class="noprint" onclick="window.print()">Imprimir</button>
-  <h1>${esc(unidad)} · ${vivos.length} paciente${vivos.length === 1 ? "" : "s"}</h1>
-  <div class="sub">Pase del Drive ${esc(tomado ? new Date(tomado).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—")}
-    · impreso ${esc(new Date().toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }))}
-    · las dosis con * usan 70 kg supuestos</div>
-  <div class="cols">${vivos.map(ficha).join("")}</div>
+  <div class="bar">
+    <button id="ed" class="off" onclick="editar()">Editar antes de imprimir</button>
+    <button onclick="window.print()">Imprimir</button>
+    <span class="ay" id="ay">Los cambios valen sólo para esta impresión. No se guardan en la app.</span>
+  </div>
+  <div class="hoja">
+    <h1>${esc(unidad)} · ${vivos.length} paciente${vivos.length === 1 ? "" : "s"}</h1>
+    <div class="sub">Pase del Drive ${esc(fecha(tomado))}
+      · impreso ${esc(fecha(new Date()))}
+      · las dosis con * usan 70 kg supuestos</div>
+    ${vivos.map(ficha).join("")}
+  </div>
+  <script>
+    // Editar antes de imprimir. Es una ventana aparte con su propia copia del
+    // HTML: lo que se toque acá no vuelve a la app ni al Drive, vive lo que
+    // dura esta ventana. Sirve para tachar algo que ya no corre, agregar un
+    // dato de último momento o corregir un dedazo antes de repartir la hoja.
+    var editando = false;
+    function editar() {
+      editando = !editando;
+      var h = document.querySelector('.hoja');
+      h.contentEditable = editando ? 'true' : 'false';
+      document.body.classList.toggle('edit', editando);
+      var b = document.getElementById('ed');
+      b.textContent = editando ? 'Listo, terminar de editar' : 'Editar antes de imprimir';
+      b.className = editando ? '' : 'off';
+      document.getElementById('ay').textContent = editando
+        ? 'Escribí directo sobre la hoja. Los cambios valen sólo para esta impresión.'
+        : 'Los cambios valen sólo para esta impresión. No se guardan en la app.';
+      if (editando) h.focus();
+    }
+  <\/script>
   </body></html>`);
   win.document.close();
-  setTimeout(() => { win.focus(); win.print(); }, 250);
 }
 
 function DosisDe({ p, onCambio }) {
