@@ -182,6 +182,27 @@ const COLOR = {
   R4: { bg: "#FFEDD5", bd: "#FDBA74", tx: "#9A3412", solid: "#F97316" },
 };
 
+/* ── Pantalla chica ────────────────────────────────────────────────────────
+   La app se usa sobre todo desde el celular, parado, con una mano y en
+   vertical. Este hook dice si estamos en esa situación para que cada pantalla
+   pueda cambiar de forma —no sólo achicarse— cuando el ancho no alcanza.
+
+   El corte en 640 px es el habitual: por debajo entra un celular en vertical;
+   por encima, uno apaisado, una tablet o la PC. Se escucha el resize porque
+   girar el teléfono no recarga la página. */
+const PA_CORTE_CEL = 640;
+function useChico(corte = PA_CORTE_CEL) {
+  const [chico, setChico] = useState(
+    typeof window !== "undefined" ? window.innerWidth < corte : false);
+  useEffect(() => {
+    const onResize = () => setChico(window.innerWidth < corte);
+    window.addEventListener("resize", onResize);
+    onResize();
+    return () => window.removeEventListener("resize", onResize);
+  }, [corte]);
+  return chico;
+}
+
 const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 // Índice (dentro de DAYS) a partir del cual el día es fin de semana. En sábado
 // y domingo no se arma la grilla de camas fija (UTI 1/2/3): esos días la
@@ -989,6 +1010,27 @@ function SchedulerView({ isAdmin }) {
   const [aplicandoMes, setAplicandoMes] = useState(false);
   const [equiposDoc, setEquiposDoc] = useState({});
 
+  /* En el celular la semana entera no entra: son 104 px de rótulo más siete
+     columnas de 150, o sea 1154 px contra los 375 de un teléfono. Antes se
+     resolvía con scroll horizontal, que obliga a arrastrar tres pantallas
+     para ver el viernes y hace imposible comparar dos días.
+
+     Abajo de 640 px se muestra UN día por vez, con flechas para moverse. La
+     grilla es la misma —mismas celdas, mismos chips, mismo código—: lo único
+     que cambia es cuántas columnas se dibujan. Arranca en el día de hoy, que
+     es el que uno quiere ver cuando abre la app en el pasillo. */
+  const chico = useChico();
+  const [diaVis, setDiaVis] = useState(() => {
+    const hoy = new Date();
+    const i = Math.floor((hoy - mondayOf(hoy)) / 86400000);
+    return i >= 0 && i < DAYS.length ? i : 0;
+  });
+  // Al imprimir manda la semana entera aunque estemos en el celular: el papel
+  // no tiene el problema de ancho que tiene la pantalla, y un cronograma
+  // impreso con un solo día no le sirve a nadie.
+  const [imprimiendo, setImprimiendo] = useState(false);
+  const DIAS_VIS = chico && !imprimiendo ? [diaVis] : DAYS.map((_, i) => i);
+
   const docId = `week-${isoDate(monday)}`;
   const pending = useRef(null);
   const timer = useRef(null);
@@ -1194,7 +1236,20 @@ function SchedulerView({ isAdmin }) {
   // verdad a la escala pedida, así que tanto el cálculo de página como lo
   // que se ve quedan consistentes.
   const printRef = useRef(null);
+  // En el celular la grilla muestra un día; para imprimir hacen falta los
+  // siete. Se enciende el flag, se espera un repintado —la medición de abajo
+  // lee el DOM de forma síncrona, así que tiene que encontrar ya la semana
+  // entera— y recién ahí se imprime.
   const handlePrint = () => {
+    if (chico && !imprimiendo) {
+      setImprimiendo(true);
+      setTimeout(() => { imprimirAhora(); setTimeout(() => setImprimiendo(false), 600); }, 60);
+      return;
+    }
+    imprimirAhora();
+  };
+
+  const imprimirAhora = () => {
     setMenuOpen(false);
 
     // El título de la pestaña lo cambiamos primero y antes que cualquier otra
@@ -1305,20 +1360,38 @@ function SchedulerView({ isAdmin }) {
           {isAdmin && <PanelAlertas duras={alertas.duras} suaves={alertas.suaves} />}
           <EquiposMes monday={monday} isAdmin={isAdmin} />
           <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} onAplicarAlMes={aplicarDiasLibresAlMes} aplicando={aplicandoMes} />
+          {/* Selector de día: sólo en celular, donde se ve un día por vez. */}
+          {chico && (
+            <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <button onClick={() => setDiaVis((i) => (i - 1 + DAYS.length) % DAYS.length)}
+                aria-label="Día anterior"
+                style={{ fontFamily: "inherit", fontSize: 18, lineHeight: 1, fontWeight: 700, width: 44, height: 44, flex: "0 0 auto", borderRadius: 9, border: "1.5px solid #CBD5E1", background: "#fff", color: "#334155", cursor: "pointer" }}>‹</button>
+              <div style={{ flex: 1, textAlign: "center", minWidth: 0 }}>
+                <div style={{ fontSize: 15.5, fontWeight: 800, color: "#0F172A" }}>{DAYS[diaVis]}</div>
+                <div style={{ fontSize: 11.5, color: "#64748B" }}>
+                  {dates[diaVis]?.toLocaleDateString("es-AR", { day: "numeric", month: "long" })}
+                  {sameDay(dates[diaVis], today) ? " · hoy" : ""}
+                </div>
+              </div>
+              <button onClick={() => setDiaVis((i) => (i + 1) % DAYS.length)}
+                aria-label="Día siguiente"
+                style={{ fontFamily: "inherit", fontSize: 18, lineHeight: 1, fontWeight: 700, width: 44, height: 44, flex: "0 0 auto", borderRadius: 9, border: "1.5px solid #CBD5E1", background: "#fff", color: "#334155", cursor: "pointer" }}>›</button>
+            </div>
+          )}
           <div className="print-scroll" style={{ overflowX: "auto", paddingBottom: 4 }}>
-          <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DAYS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "14px 14px 0 0", overflow: "hidden", border: "1px solid #E2E8F0", borderBottom: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DAYS.length * 150 }}>
-            <Corner />{DAYS.map((d, i) => <DayHead key={d} name={d} date={dates[i]} isToday={sameDay(dates[i], today)} isWeekend={isWeekendIdx(i)} feriado={week.days[i].feriado} />)}
+          <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DIAS_VIS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "14px 14px 0 0", overflow: "hidden", border: "1px solid #E2E8F0", borderBottom: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DIAS_VIS.length * 150 }}>
+            <Corner />{DIAS_VIS.map((i) => <DayHead key={DAYS[i]} name={DAYS[i]} date={dates[i]} isToday={sameDay(dates[i], today)} isWeekend={isWeekendIdx(i)} feriado={week.days[i].feriado} />)}
 
             {SLOTS.filter((s) => s.key !== "postguardia").map((slot, ri) => (
               <Fragment key={slot.key}>
                 <RowLabel label={slot.label} color={slot.accent} fondo={slot.rotulo} />
-                {DAYS.map((_, di) => (
+                {DIAS_VIS.map((di) => (
                   utiBloqueada(di) ? (
-                    <Cell key={di} tint={week.days[di].feriado ? "#FEF9E7" : "#F1F5F9"} lastCol={di === DAYS.length - 1}>
+                    <Cell key={di} tint={week.days[di].feriado ? "#FEF9E7" : "#F1F5F9"} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]}>
                       <div style={{ textAlign: "center", fontSize: 9.5, color: week.days[di].feriado ? "#B45309" : "#94A3B8", fontStyle: "italic", padding: "13px 2px", lineHeight: 1.3 }}>No aplica<br />{week.days[di].feriado ? "feriado" : "fin de semana"}</div>
                     </Cell>
                   ) : (
-                    <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DAYS.length - 1}>
+                    <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]}>
                       <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
                         {[...week.days[di][slot.key]].sort(porJerarquia).map((n) => (
                           <Chip key={n} name={n} selected={sel?.name === n} alerta={motivoDe(n, di)} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
@@ -1333,10 +1406,10 @@ function SchedulerView({ isAdmin }) {
             ))}
 
             <RowLabel label="De guardia" color={FILA_GUARDIA.accent} sub="se superpone" fondo={FILA_GUARDIA.rotulo} />
-            {DAYS.map((_, di) => {
+            {DIAS_VIS.map((di) => {
               const lista = week.days[di].deGuardia;
               return (
-                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (isAdmin) setGuardiaEdit(di); }} tint={FILA_GUARDIA.tint} pad={5} lastCol={di === DAYS.length - 1}>
+                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (isAdmin) setGuardiaEdit(di); }} tint={FILA_GUARDIA.tint} pad={5} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]}>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 3, minHeight: 40, alignContent: "flex-start", cursor: isAdmin ? "pointer" : "default" }}>
                     {lista.length === 0 ? (
                       <div className="no-print" style={{ fontSize: 10, color: "#FDA4AF", fontStyle: "italic", padding: "10px 4px", width: "100%", textAlign: "center" }}>{isAdmin ? "+ elegir guardia" : "—"}</div>
@@ -1350,8 +1423,8 @@ function SchedulerView({ isAdmin }) {
             {SLOTS.filter((s) => s.key === "postguardia").map((slot) => (
               <Fragment key={slot.key}>
                 <RowLabel label={slot.label} color={slot.accent} fondo={slot.rotulo} />
-                {DAYS.map((_, di) => (
-                  <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DAYS.length - 1}>
+                {DIAS_VIS.map((di) => (
+                  <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
                       {[...week.days[di][slot.key]].sort(porJerarquia).map((n) => (
                         <Chip key={n} name={n} selected={sel?.name === n} alerta={motivoDe(n, di)} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
@@ -1365,18 +1438,18 @@ function SchedulerView({ isAdmin }) {
             ))}
 
             <RowLabel label="Observaciones" color="#854D0E" sub="importante" />
-            {DAYS.map((_, di) => (
-              <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === DAYS.length - 1}>
+            {DIAS_VIS.map((di) => (
+              <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]}>
                 <textarea className="no-print" value={week.days[di].observaciones} onChange={(e) => editText(di, "observaciones", e.target.value)} placeholder="Supervisores, pases, avisos…" readOnly={!isAdmin} style={{ ...TEXTAREA, background: "#FEF9C3", borderColor: "#FDE047", color: "#713F12", fontWeight: 600, opacity: isAdmin ? 1 : 0.8, cursor: isAdmin ? "text" : "default" }} />
                 <div className="print-only-block" style={{ whiteSpace: "pre-wrap", fontSize: 11.5, lineHeight: 1.4, color: "#713F12", fontWeight: 600, padding: "6px 8px" }}>{week.days[di].observaciones || "—"}</div>
               </Cell>
             ))}
 
             <RowLabel label="Recordatorios" color="#B45309" sub="+ Académico" />
-            {DAYS.map((_, di) => {
+            {DIAS_VIS.map((di) => {
               const clases = academico.activities.filter((a) => a.date === isoDate(dates[di]));
               return (
-                <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === DAYS.length - 1}>
+                <Cell key={di} onClick={(e) => e.stopPropagation()} tint="#fff" pad={5} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]}>
                   {clases.length > 0 && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 4 }}>
                       {clases.map((a) => (
@@ -1400,12 +1473,12 @@ function SchedulerView({ isAdmin }) {
           eso son un segundo grid aparte, fuera de printRef. */}
       {!loading && (
         <div className="no-print" style={{ overflowX: "auto", paddingBottom: 4 }}>
-          <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DAYS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "0 0 14px 14px", overflow: "hidden", border: "1px solid #E2E8F0", borderTop: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DAYS.length * 150 }}>
+          <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DIAS_VIS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "0 0 14px 14px", overflow: "hidden", border: "1px solid #E2E8F0", borderTop: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DIAS_VIS.length * 150 }}>
             <RowLabel label="Disponibles" color="#16A34A" />
-            {DAYS.map((_, di) => {
+            {DIAS_VIS.map((di) => {
               const free = pool(di);
               return (
-                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === DAYS.length - 1}>
+                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 50 }}>
                     {active && <div style={{ fontSize: 10, color: "#16A34A", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>↩ liberar el {DAYS[di].toLowerCase()}</div>}
                     {free.length === 0 ? (!active && <div style={{ fontSize: 10.5, color: "#64748B", fontStyle: "italic", textAlign: "center", padding: 6 }}>todos asignados</div>) : free.map((n) => <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "pool" }); }} />)}
@@ -1415,10 +1488,10 @@ function SchedulerView({ isAdmin }) {
             })}
 
             <RowLabel label="No disponibles" color="#DC2626" sub="rotación · vacaciones" />
-            {DAYS.map((_, di) => {
+            {DIAS_VIS.map((di) => {
               const autos = autoNoDisponibles(di);
               return (
-                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === DAYS.length - 1} lastRow>
+                <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("unavailable", di); }} tint="#FEF2F2" ring={active ? "#F87171" : null} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]} lastRow>
                   <div style={{ display: "flex", flexDirection: "column", gap: 2, minHeight: 40 }}>
                     {week.days[di].unavailable.map((n) => <OutChip key={n} name={n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "unavailable" }); }} selected={sel?.name === n} />)}
                     {autos.map(({ name, motivo }) => <AutoOutChip key={name} name={name} motivo={motivo} />)}
@@ -3057,11 +3130,6 @@ function downloadCSV(filename, headers, rows) {
   URL.revokeObjectURL(url);
 }
 
-function fechaLarga(fecha) {
-  if (!fecha) return "—";
-  const [y, m, d] = fecha.split("-").map(Number);
-  return `${String(d).padStart(2, "0")} de ${(MONTHS[m - 1] || "").toLowerCase()} de ${y}`;
-}
 
 // Agrupa procedimientos por tipo (solo los tipos que el residente efectivamente
 // tiene cargados quedan visibles), en el orden de la lista maestra `procList`,
@@ -6951,14 +7019,63 @@ function conNegritas(txt, key) {
   return <>{out}</>;
 }
 
+/* ── Resaltado de renglones ────────────────────────────────────────────────
+   Marcar con amarillo o verde lo que uno quiere volver a mirar. La marca vive
+   dentro del propio texto, como un caracter invisible al principio del
+   renglón, para que viaje con el campo: se guarda, se sincroniza y sobrevive
+   a mover renglones sin ninguna estructura aparte que mantener en orden.
+
+   Se eligieron caracteres de control, que no aparecen nunca en un pase y no
+   se ven si por algún motivo se escapan a la pantalla. */
+const PA_MARCA = { "\u0011": "#FEF08A", "\u0012": "#BBF7D0" };   // amarillo, verde
+const PA_MARCA_ROT = { "\u0011": "Amarillo", "\u0012": "Verde" };
+const PA_MARCAS = Object.keys(PA_MARCA);
+
+// Separa el color de una linea de su texto.
+function paMarcaDe(linea) {
+  const c = (linea || "")[0];
+  return PA_MARCA[c] ? { color: c, texto: linea.slice(1) } : { color: null, texto: linea || "" };
+}
+// Pone, cambia o saca el color de una linea.
+function paMarcar(linea, color) {
+  const { texto } = paMarcaDe(linea);
+  return color ? color + texto : texto;
+}
+// Saca todas las marcas de un texto. Se usa al editar y al copiar.
+const paSinMarcas = (t) => (t || "").replace(/[\u0011\u0012]/g, "");
+
+/* Lo que escribiste va en naranja; lo que borraste, no se muestra.
+   Antes se mostraba tachado al lado, y en un renglón muy editado quedaban dos
+   versiones mezcladas del mismo texto: justo lo que uno no quiere leer a las
+   tres de la mañana. Para ver lo que decía el Drive está el botón de arriba,
+   que muestra el pase entero sin ninguna edición. */
 function TextoMarcado({ actual, original }) {
-  if (actual === original) return <>{conNegritas(actual, "n")}</>;
+  // El resaltado se pinta por renglón, así que se procesa línea por línea y
+  // el diff se hace sobre el texto sin marcas: si no, el caracter invisible
+  // contaría como una edición y todo el renglón saldría en naranja.
+  const lineas = (actual || "").split("\n");
+  const orig = (original || "").split("\n");
   return (
     <>
-      {paDiff(original || "", actual || "").map((d, i) =>
-        d.t === "=" ? <span key={i}>{conNegritas(d.v, "d" + i)}</span>
-        : d.t === "+" ? <ins key={i} style={{ background: "#FFF6E5", color: "#8A4B00", fontWeight: 600, textDecoration: "none", borderRadius: 2, boxShadow: "inset 0 -2px 0 #E9C48A" }}>{d.v}</ins>
-        : <del key={i} style={{ color: "#94A3B8", opacity: 0.7 }}>{d.v}</del>)}
+      {lineas.map((linea, li) => {
+        const { color, texto } = paMarcaDe(linea);
+        const previa = paSinMarcas(orig[li] ?? "");
+        const cuerpo = texto === previa
+          ? conNegritas(texto, `n${li}`)
+          : paDiff(previa, texto)
+              .filter((d) => d.t !== "-")
+              .map((d, i) =>
+                d.t === "=" ? <span key={i}>{conNegritas(d.v, `d${li}_${i}`)}</span>
+                : <ins key={i} style={{ background: "#FFF6E5", color: "#8A4B00", fontWeight: 600, textDecoration: "none", borderRadius: 2, boxShadow: "inset 0 -2px 0 #E9C48A" }}>{d.v}</ins>);
+        return (
+          <div key={li} style={color ? {
+            background: PA_MARCA[color], borderRadius: 3,
+            padding: "1px 4px", margin: "1px -4px",
+          } : undefined}>
+            {cuerpo}
+          </div>
+        );
+      })}
     </>
   );
 }
@@ -6990,6 +7107,8 @@ function PaseAppView({ user }) {
   const [arm, setArm] = useState({});
   const [armAbierto, setArmAbierto] = useState(false);
   const [ordenando, setOrdenando] = useState(null);
+  const [resaltando, setResaltando] = useState(null);  // campo en modo resaltar
+  const chico = useChico();
   const [editando, setEditando] = useState(false);
   const [confirmandoEgreso, setConfirmandoEgreso] = useState(false);
   const undo = useRef([]);
@@ -7360,6 +7479,15 @@ function PaseAppView({ user }) {
     setEditando(false);
   };
 
+  // Pintar o despintar un renglón. El color se guarda dentro del texto, así
+  // que viaja con el campo y no hay una estructura aparte que mantener.
+  const marcarLinea = (k, i, color) => mutar((d) => {
+    const ls = (d[idx].campos[k] || "").split("\n");
+    if (i < 0 || i >= ls.length) return;
+    ls[i] = paMarcar(ls[i], color);
+    d[idx].campos[k] = ls.join("\n");
+  });
+
   const moverLinea = (k, i, paso) => mutar((d) => {
     const ls = (d[idx].campos[k] || "").split("\n");
     const j = i + paso;
@@ -7391,6 +7519,15 @@ function PaseAppView({ user }) {
     // así el renglón agregado durante la guardia queda igual que los que
     // vinieron del Drive, sin tener que acordarse de poner el asterisco.
     if (k === "labo" || k === "eab" || k === "estudios") txt = paFormatoAsterisco(txt);
+    // Reponer los resaltados. Mientras se edita el campo se muestra sin
+    // marcas, así que lo que vuelve del contentEditable no las trae; se
+    // vuelven a poner por posición de renglón. Si agregaste o borraste
+    // renglones el resaltado puede correrse: es el precio de que el color
+    // viva dentro del texto, y se arregla volviendo a marcar.
+    const previas = (d[idx].campos[k] || "").split("\n").map((l) => paMarcaDe(l).color);
+    if (previas.some(Boolean)) {
+      txt = txt.split("\n").map((l, i) => (previas[i] ? paMarcar(l, previas[i]) : l)).join("\n");
+    }
     d[idx].campos[k] = txt;
   });
 
@@ -7403,7 +7540,13 @@ function PaseAppView({ user }) {
   };
   const setArmDe = (i, campo, valor) =>
     setArm((s) => ({ ...s, [i]: { ...armDe(i), [campo]: valor } }));
-  const FLECHA = { fontFamily: "inherit", fontSize: 11, lineHeight: 1, padding: "3px 6px", borderRadius: 4, border: "1.5px solid #E2E8F0", background: "#fff", color: "#64748B", cursor: "pointer" };
+  // En el celular los botones chicos se erran con el pulgar. 32 px de lado es
+  // el mínimo que se acierta parado en un pasillo; en pantalla grande el
+  // mouse no lo necesita y quedarían desproporcionados.
+  const FLECHA = { fontFamily: "inherit", fontSize: chico ? 14 : 11, lineHeight: 1,
+    padding: chico ? "0" : "3px 6px", width: chico ? 32 : undefined, height: chico ? 32 : undefined,
+    flex: chico ? "0 0 auto" : undefined,
+    borderRadius: 4, border: "1.5px solid #E2E8F0", background: "#fff", color: "#64748B", cursor: "pointer" };
   const B = { fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "7px 12px", borderRadius: 5, border: "1.5px solid #E2E8F0", background: "#fff", color: "#0F172A", cursor: "pointer" };
   const BP = { ...B, background: "#0F5F66", borderColor: "#0F5F66", color: "#fff" };
   const ROT = { fontFamily: "ui-monospace,monospace", fontSize: 10.5, fontWeight: 600, letterSpacing: ".09em", textTransform: "uppercase" };
@@ -7446,7 +7589,7 @@ function PaseAppView({ user }) {
         <label style={{ ...B, display: "inline-flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={verOriginal} onChange={(e) => setVerOriginal(e.target.checked)}
             style={{ width: 16, height: 16, accentColor: "#0F5F66", margin: 0 }} />
-          Ver versión sin editar
+          Ver original sin modificaciones
         </label>
       </div>
 
@@ -7825,14 +7968,22 @@ function PaseAppView({ user }) {
                     <button onClick={() => moverCampo(k, -1)} title="Subir esta sección" style={FLECHA}>↑</button>
                     <button onClick={() => moverCampo(k, 1)} title="Bajar esta sección" style={FLECHA}>↓</button>
                     {(txt || "").includes("\n") && (
-                      <button onClick={() => setOrdenando(ordenando === k ? null : k)}
+                      <button onClick={() => { setOrdenando(ordenando === k ? null : k); setResaltando(null); }}
                         title="Reordenar los renglones de esta sección"
                         style={{ ...FLECHA, background: ordenando === k ? "#0F172A" : "#fff", color: ordenando === k ? "#fff" : "#64748B" }}>⇅</button>
                     )}
+                    {/* Resaltar: se marca por renglón, con el dedo, sin tener
+                        que seleccionar texto —que en un celular es la peor
+                        interacción posible—. */}
+                    <button onClick={() => { setResaltando(resaltando === k ? null : k); setOrdenando(null); }}
+                      title="Resaltar renglones de esta sección"
+                      style={{ ...FLECHA, background: resaltando === k ? "#0F172A" : "#fff", color: resaltando === k ? "#fff" : "#64748B" }}>🖍</button>
                   </span>
                 )}
                 <span style={{ marginLeft: "auto", fontSize: 11, color: cambiado ? "#8A4B00" : "#94A3B8" }}>
-                  {ordenando === k ? "moviendo renglones" : cambiado ? "editado" : "tocá para editar"}
+                  {ordenando === k ? "moviendo renglones"
+                    : resaltando === k ? "tocá un renglón para resaltarlo"
+                    : cambiado ? "editado" : "tocá para editar"}
                 </span>
               </div>
               <div style={{ padding: "0 14px 12px", fontSize: 14 }}>
@@ -7841,13 +7992,36 @@ function PaseAppView({ user }) {
                      Se separa de la edición porque un contenteditable con
                      botones adentro se pelea con el cursor. */
                   <div style={{ display: "grid", gap: 4 }}>
-                    {(txt || "").split("\n").map((l, li, arr) => (
-                      <div key={li} style={{ display: "flex", alignItems: "flex-start", gap: 6, background: "#F8FAFC", borderRadius: 4, padding: "5px 7px" }}>
-                        <span style={{ flex: 1, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{l}</span>
-                        <button onClick={() => moverLinea(k, li, -1)} disabled={li === 0} style={{ ...FLECHA, opacity: li === 0 ? 0.3 : 1 }}>↑</button>
-                        <button onClick={() => moverLinea(k, li, 1)} disabled={li === arr.length - 1} style={{ ...FLECHA, opacity: li === arr.length - 1 ? 0.3 : 1 }}>↓</button>
-                      </div>
-                    ))}
+                    {(txt || "").split("\n").map((l, li, arr) => {
+                      const { color, texto } = paMarcaDe(l);
+                      return (
+                        <div key={li} style={{ display: "flex", alignItems: "flex-start", gap: 6, background: color ? PA_MARCA[color] : "#F8FAFC", borderRadius: 4, padding: "5px 7px" }}>
+                          <span style={{ flex: 1, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{texto}</span>
+                          <button onClick={() => moverLinea(k, li, -1)} disabled={li === 0} style={{ ...FLECHA, opacity: li === 0 ? 0.3 : 1 }}>↑</button>
+                          <button onClick={() => moverLinea(k, li, 1)} disabled={li === arr.length - 1} style={{ ...FLECHA, opacity: li === arr.length - 1 ? 0.3 : 1 }}>↓</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : resaltando === k ? (
+                  /* Modo resaltar: un renglón por fila y los colores al lado.
+                     Tocar el color que ya tiene se lo saca. */
+                  <div style={{ display: "grid", gap: 4 }}>
+                    {(txt || "").split("\n").map((l, li) => {
+                      const { color, texto } = paMarcaDe(l);
+                      return (
+                        <div key={li} style={{ display: "flex", alignItems: "flex-start", gap: 6, background: color ? PA_MARCA[color] : "#F8FAFC", borderRadius: 4, padding: "5px 7px" }}>
+                          <span style={{ flex: 1, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{texto}</span>
+                          {PA_MARCAS.map((c) => (
+                            <button key={c} onClick={() => marcarLinea(k, li, color === c ? null : c)}
+                              title={color === c ? "Sacar el resaltado" : PA_MARCA_ROT[c]}
+                              style={{ width: 26, height: 26, flex: "0 0 auto", borderRadius: 5, cursor: "pointer",
+                                background: PA_MARCA[c],
+                                border: color === c ? "2.5px solid #0F172A" : "1.5px solid #CBD5E1" }} />
+                          ))}
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div contentEditable={editable} suppressContentEditableWarning
@@ -7860,7 +8034,9 @@ function PaseAppView({ user }) {
                         Al guardar se reponen si el renglón sigue teniendo la
                         forma "fecha muestra: germen", así el formato sobrevive
                         a una edición sin obligar a nadie a tipear símbolos. */}
-                    {verOriginal || enFoco === k ? txt.replace(/[«»]/g, "") : <TextoMarcado actual={txt} original={orig} />}
+                    {verOriginal || enFoco === k
+                      ? paSinMarcas(txt).replace(/[«»]/g, "")
+                      : <TextoMarcado actual={txt} original={orig} />}
                   </div>
                 )}
               </div>
