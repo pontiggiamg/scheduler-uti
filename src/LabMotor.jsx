@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════
-   APUESTA 01 — EL MOTOR DE REGLAS (prototipo navegable)
+   MOTOR DE REGLAS — el proyecto elegido (2/9/2026)
 
    Hoy las reglas de la UTI viven adentro del código de App.jsx. Están bien
    escritas y comentadas, pero están cableadas: "el mínimo son 2 por sala",
@@ -98,7 +98,7 @@ const CONFIGS = {
 /* ── El motor ──────────────────────────────────────────────────────────────
    No sabe qué es una UTI. Recibe una configuración y una semana, y devuelve
    qué se está incumpliendo. Es la misma función para los dos servicios: esa
-   es toda la apuesta. */
+   es toda la idea. */
 
 function evaluar(cfg, semana) {
   const duras = [], suaves = [];
@@ -212,10 +212,10 @@ export default function LabMotor({ volver }) {
   return (
     <div style={{ minHeight: "100vh", background: "#F8FAFC", fontFamily: "'Inter', system-ui, sans-serif", color: "#0F172A", padding: "18px 16px 60px" }}>
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <button onClick={volver} style={{ background: "none", border: "none", color: "#64748B", fontSize: 12.5, cursor: "pointer", fontFamily: "inherit", padding: 0, marginBottom: 12 }}>← Volver a las cuatro apuestas</button>
+        <button onClick={volver} style={{ background: "none", border: "none", color: "#64748B", fontSize: 12.5, cursor: "pointer", fontFamily: "inherit", padding: 0, marginBottom: 12 }}>← Volver al banco de pruebas</button>
 
         <div style={{ background: cfg.color, color: "#fff", borderRadius: 10, padding: "18px 20px", marginBottom: 14 }}>
-          <div style={{ fontFamily: MONO, fontSize: 10, letterSpacing: ".14em", opacity: 0.65, marginBottom: 6 }}>APUESTA 01 · MOTOR DE REGLAS</div>
+          <div style={{ fontFamily: MONO, fontSize: 10, letterSpacing: ".14em", opacity: 0.65, marginBottom: 6 }}>BANCO DE PRUEBAS · MOTOR DE REGLAS</div>
           <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: -0.3 }}>La app no sabe de UTI. Sabe de residencias.</div>
           <div style={{ fontSize: 13, lineHeight: 1.55, opacity: 0.88, marginTop: 8, maxWidth: 660 }}>
             Cambiá de servicio con los botones de abajo. Es el <b>mismo motor</b> evaluando
@@ -314,7 +314,7 @@ export default function LabMotor({ volver }) {
         </div>
 
         <div style={{ ...caja, marginTop: 12, borderLeft: `4px solid ${cfg.color}` }}>
-          <div style={{ ...rot, marginBottom: 8, color: cfg.color }}>Lo que este prototipo NO resuelve</div>
+          <div style={{ ...rot, marginBottom: 8, color: cfg.color }}>Lo que todavía NO resuelve</div>
           <div style={{ fontSize: 13, lineHeight: 1.6, color: "#334155" }}>
             Las reglas de acá son de tipos fijos: mínimos, ideales, topes, cuántos por día.
             Con eso alcanza para la mayoría, pero no para todo. <b>"Dani postguardia va
@@ -323,7 +323,7 @@ export default function LabMotor({ volver }) {
             en esos casos las reglas no cuentan"</i> — un motor que no sepa aceptar una
             excepción acordada entre dos residentes va a estar peleado con el servicio.
             <br /><br />
-            Ese es el límite honesto de esta apuesta, y también su prueba de fuego: cuando
+            Ese es el límite honesto de esto, y también su prueba de fuego: cuando
             el JR de la UCO te pase sus reglas de verdad, el ejercicio es escribirlas acá.
             Las que entren confirman el modelo. Las que no entren dicen qué le falta al motor
             — y eso se averigua en una tarde, no en tres meses.
