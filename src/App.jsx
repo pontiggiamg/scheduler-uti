@@ -1976,7 +1976,14 @@ function paseArreglado(fields) {
   }
   const g = paReordenarClinicos(f);
   const out = {};
-  for (const [k, v] of Object.entries(g)) out[k] = k === "cultivos" ? paCultivos(v) : paLimpiar(v);
+  // Las tres secciones fechadas van con el formato *fecha estudio resultado.
+  // Es la misma regla que en Pase App: lo que se corrige en una pestaña vale
+  // para la otra, salvo las funcionalidades que sólo existen allá.
+  const CON_ASTERISCO = new Set(["labo", "eab", "cultivos", "estudios"]);
+  for (const [k, v] of Object.entries(g)) {
+    const limpio = k === "cultivos" ? paCultivos(v) : paLimpiar(v);
+    out[k] = CON_ASTERISCO.has(k) ? paFormatoAsterisco(limpio) : limpio;
+  }
   return out;
 }
 
@@ -5909,7 +5916,7 @@ const PA_RANGO = {
 const PA_INFUS = {
   FENTANILO: "Fentanilo", FNT: "Fentanilo", KETAMINA: "Ketamina", KETA: "Ketamina",
   MORFINA: "Morfina", NORADRENALINA: "Noradrenalina", NORA: "Noradrenalina",
-  MIDAZOLAM: "Midazolam", MIDA: "Midazolam", PROPOFOL: "Propofol",
+  MIDAZOLAM: "Midazolam", MIDA: "Midazolam", PROPOFOL: "Propofol", PROPO: "Propofol",
   // "DEXMEDETO 400/100/3" aparece así en la 1.4: el nombre entero casi nunca
   // se escribe completo, conviene tener las formas cortas.
   DEXMEDETOMIDINA: "Dexmedetomidina", DEXMEDETO: "Dexmedetomidina", DEXME: "Dexmedetomidina",
@@ -6002,7 +6009,10 @@ const PA_COMUNES = new Set(["SIN", "POR", "CON", "PARA", "DEL", "LOS", "LAS", "U
   "ANTERIOR", "POSTERIOR", "DERECHA", "DERECHO", "IZQUIERDA", "IZQUIERDO", "BILATERAL",
   // Palabras corrientes y unidades que quedaban gritando en el tratamiento:
   // "PESO 60 KG", "FURO 20 DIA". No son siglas, son palabras cortas.
-  "PESO", "KG", "MG", "ML", "DIA", "DIAS", "NOCHE", "HS", "GR", "MCG", "AMP", "GOTAS",
+  // "MG" no está acá a propósito: en laboratorio es el magnesio y debe quedar
+  // como sigla. Cuando es la unidad viene pegada a un número y la regla de
+  // unidades de PA_EXPANDIR ya la baja a "mg".
+  "PESO", "KG", "ML", "DIA", "DIAS", "NOCHE", "HS", "GR", "MCG", "AMP", "GOTAS",
   "DIETA", "BLANDA", "AGUA", "LIBRE", "VIA", "ORAL", "TOTAL", "PARCIAL", "PLAN",
   "ALTA", "PASE", "CAMA", "SALA", "TURNO", "CONTROL", "SEGUIR", "IGUAL", "MISMO",
   "AYER", "MAÑANA", "TARDE", "SEMANA", "MES", "AÑO", "AÑOS", "VECES", "CADA",
@@ -6027,7 +6037,12 @@ const PA_COMUNES = new Set(["SIN", "POR", "CON", "PARA", "DEL", "LOS", "LAS", "U
 const PA_DROGAS_CORTAS = {
   furo: "Furosemida", mero: "Meropenem", vanco: "Vancomicina", ptz: "Piperacilina-tazobactam",
   col: "Colistina", ams: "Ampicilina-sulbactam", dexa: "Dexametasona", lora: "Lorazepam",
-  leve: "Levetiracetam", dipi: "Dipirona", para: "Paracetamol", keta: "Ketamina",
+  // "leve" NO va acá: en los informes de imágenes "LEVE AUMENTO", "LEVE
+  // EDEMA" son el adjetivo castellano, y el diccionario, que mira palabra por
+  // palabra sin contexto, los convertía en "Levetiracetam". En un renglón de
+  // tratamiento eso es peligroso. Se resuelve en PA_EXPANDIR exigiendo que
+  // atrás venga una dosis, que es como se escribe la droga de verdad.
+  dipi: "Dipirona", para: "Paracetamol", keta: "Ketamina",
   nora: "Noradrenalina", biso: "Bisoprolol", diclo: "Diclofenac", hidro: "Hidrocortisona",
   fluco: "Fluconazol", aciclo: "Aciclovir", claritro: "Claritromicina", anfo: "Anfotericina",
 };
@@ -6047,12 +6062,21 @@ const PA_EXPANDIR = [
   [/\bTAP\b/gi, "tubo pleural"], [/\bNET\b/gi, "nutrición enteral total"],
   [/\bNPT\b/gi, "nutrición parenteral total"], [/\bNE\b/gi, "nutrición enteral"],
   [/\bDICLO\b/gi, "diclofenac"], [/\bBISO\b/gi, "bisoprolol"], [/\bPRECEDEX\b/gi, "dexmedetomidina"],
+  // LEVE es levetiracetam sólo si atrás viene una dosis ("LEVE 500 MG C/12",
+  // "LEVE 1 GR"). "LEVE AUMENTO", "LEVE EDEMA" y demás quedan como el
+  // adjetivo, que es lo que son en los informes de imágenes.
+  [/\bLEVE\s+(?=\d)/gi, "Levetiracetam "],
   [/\bRHA\s*\+/gi, "ruidos hidroaéreos presentes"],
   [/\bRHA\b/gi, "ruidos hidroaéreos"], [/\bISQX\b/gi, "infección de sitio quirúrgico"],
   [/\bEPM\b/gi, "episodio psicomotriz"], [/\bVEDA\b/gi, "videoendoscopia digestiva alta"],
   [/\bVATS\b/gi, "cirugía toracoscópica videoasistida"], [/\bCBO\b/gi, "cerebro"],
   // Unidades pegadas al número: "120MG" → "120 mg", "20ML" → "20 ml".
-  [/(\d)\s*MG\b/gi, "$1 mg"], [/(\d)\s*ML\b/gi, "$1 ml"], [/(\d)\s*KG\b/gi, "$1 kg"],
+  // "MG" pegado al número es miligramos ("1000MG"); separado y seguido de otro
+  // número es el magnesio del laboratorio ("PLQ 85 MG 1.8"), que se deja como
+  // sigla. Sin esta distinción el analito se convertía en unidad.
+  [/(\d)MG\b/gi, "$1 mg"],
+  [/(\d)\s+MG\b(?!\s*[\d.,])/gi, "$1 mg"],
+  [/(\d)\s*ML\b/gi, "$1 ml"], [/(\d)\s*KG\b/gi, "$1 kg"],
   [/(\d)\s*MCG\b/gi, "$1 mcg"], [/(\d)\s*GRS?\b/gi, "$1 g"],
   // "FURO 20 DIA" quiere decir 20 por día, no "20 día".
   [/(\d)\s+D[IÍ]A\b/gi, "$1 por día"],
@@ -6127,6 +6151,35 @@ const PA_EXPANDIR = [
   [/\bAA\s+(QX|LAP|PERFORATIVO|OBSTRUCTIVO)\b/gi, "abdomen agudo $1"],
   [/\bAA\s+(INFRARENAL|INFRARRENAL|AORT[AI]CO|DE\s+AORTA)\b/gi, "aneurisma $1"],
   [/\bPEND\b/gi, "pendiente"], [/\bCIR\b/gi, "catéter peridural"], [/\bTFG\b/gi, "filtrado glomerular"],
+  // ── Sumadas el 2/9/2026 ──────────────────────────────────────────────────
+  // Normalizaciones de laboratorio: el pase escribe la misma cosa de tres
+  // maneras según quién la anota. Se unifican a la forma que usa el servicio.
+  // Ojo: acá NO se expanden a la palabra completa, se corrige la sigla, que
+  // es como se lee mejor en una lista de valores.
+  [/\bHGB\b/g, "Hb"], [/\bHB\b/g, "Hb"], [/\bHEMOGLOBINA\b/gi, "Hb"],
+  [/\bPLT\b/g, "PLQ"], [/\bPLAQ\b/g, "PLQ"], [/\bPLAQUETAS\b/gi, "PLQ"],
+  // MG en laboratorio es magnesio y se deja MG. Pero "20MG" ya se convirtió
+  // en "20 mg" más arriba, así que lo que queda suelto es el analito.
+  // Términos de cirugía y abdomen confirmados con Gonzalo.
+  [/\bSOI\b/gi, "suboclusión intestinal"],
+  [/\bBHN\b/gi, "balance hídrico negativo"],
+  [/\bBHP\b/gi, "balance hídrico positivo"],
+  [/\bASAS\b/gi, "asas"],
+  // LAP es laparoscopía sola, o laparoscópico cuando adjetiva a la cirugía.
+  [/\b(COLECISTECTOM[IÍ]A|APENDICECTOM[IÍ]A|GASTRECTOM[IÍ]A|CIRUG[IÍ]A)\s+LAP\b/gi, "$1 laparoscópica"],
+  [/\bLAP\s+(EXPLORADORA|DIAGN[OÓ]STICA)\b/gi, "laparoscopía $1"],
+  [/\bLAP\b/gi, "laparoscopía"],
+  // ILEO depende del contexto: solo se toca cuando el propio renglón lo
+  // aclara. "ILEOCOLICO", "ILEOSTOMIA" y demás no se rompen porque el \b
+  // exige que la palabra termine ahí.
+  [/\b[IÍ]LEO\s+PARAL[IÍ]TICO\b/gi, "íleo paralítico"],
+  [/\bILEOSTOM[IÍ]A\b/gi, "ileostomía"],
+  // CTE es contraste cuando habla una tomografía; si no, se deja.
+  [/\b(TC|TAC|RMN|RESONANCIA|TOMOGRAF[IÍ]A)\s*(C\/|CON\s+|S\/|SIN\s+)?CTE\b/gi,
+    (m, est, prep) => `${est} ${prep ? prep.replace(/^C\/$/i, "con ").replace(/^S\/$/i, "sin ") : ""}contraste`.replace(/\s+/g, " ")],
+  [/\bC\/\s*CTE\b/gi, "con contraste"], [/\bS\/\s*CTE\b/gi, "sin contraste"],
+  // MM pegado a un número es milímetros; suelto puede ser otra cosa y no se toca.
+  [/(\d)\s*MM\b/g, "$1 mm"],
 ];
 
 // ── Detector de abreviaturas que la app todavía no entiende ────────────────
@@ -6312,6 +6365,62 @@ function paReordenarClinicos(campos) {
     if (v) salida[k] = v; else delete salida[k];
   }
   return salida;
+}
+
+/* ── Formato de laboratorios, estudios y cultivos ─────────────────────────
+   Regla que fijó Gonzalo el 2/9/2026: cada renglón de estas tres secciones se
+   escribe *fecha estudio resultado. El asterisco adelante y la fecha después,
+   siempre en ese orden.
+
+   Lo que llega del Drive tiene todas las variantes: la fecha adelante sin
+   asterisco, el asterisco pegado a la fecha, la fecha con dos puntos, o el
+   asterisco puesto a mitad del renglón. Esto las lleva a todas a la misma
+   forma, sin inventar una fecha donde no la hay: un renglón sin fecha se deja
+   como está, porque poner la de hoy sería afirmar algo que nadie escribió. */
+function paFormatoAsterisco(txt) {
+  if (!txt) return txt;
+  const FECHA = /(?:0?[1-9]|[12]\d|3[01])\/(?:0?[1-9]|1[0-2])(?:\/\d{2,4})?/;
+  const salida = [];
+  for (const linea of txt.split("\n")) {
+    let l = linea.trim();
+    if (!l) { salida.push(l); continue; }
+    // Los cultivos ya salen de paCultivos con su propio encabezado «fecha:».
+    // Ese formato es el que se acordó para esa sección y no se pisa acá.
+    if (l.startsWith("«")) { salida.push(l); continue; }
+    // Se sacan los asteriscos que haya en cualquier lado y se vuelve a poner
+    // uno solo adelante, para no acumular "**" al pasar dos veces.
+    l = l.replace(/\*+/g, " ").replace(/\s*\/\/\s*/g, " ").replace(/\s{2,}/g, " ").trim();
+
+    // Un estudio por renglón. En el Drive tres tomografías de tres días
+    // distintas suelen venir pegadas en un párrafo: la fecha de la segunda
+    // queda enterrada a mitad de la oración y no se ve al pasar la vista.
+    // Se corta en cada fecha que arranca un estudio nuevo.
+    //
+    // Sólo cortan las fechas que están al principio de una oración — después
+    // de un punto, o al empezar el renglón. Una fecha en el medio de una
+    // frase ("previo del 24/8") es parte del texto, no un estudio nuevo, y
+    // cortar ahí partiría la oración al medio.
+    const re = new RegExp("(?:(?<=[.;])\\s+|^)(" + FECHA.source + ")(?=[\\s:,\\-])", "g");
+    const cortes = [];
+    let m;
+    while ((m = re.exec(l))) cortes.push(m.index + m[0].length - m[1].length);
+    const trozos = [];
+    for (let i = 0; i < cortes.length; i++) {
+      if (i === 0 && cortes[0] > 0) trozos.push(l.slice(0, cortes[0]));
+      trozos.push(l.slice(cortes[i], cortes[i + 1] ?? l.length));
+    }
+    if (!trozos.length) trozos.push(l);
+
+    for (const tr of trozos) {
+      const t = tr.trim().replace(/[.;,\s]+$/, (x) => (x.includes(".") ? "." : ""));
+      if (!t) continue;
+      const mf = t.match(new RegExp("^(" + FECHA.source + ")\\s*[:\\-]?\\s*([\\s\\S]*)$"));
+      if (!mf) { salida.push(t); continue; }  // sin fecha adelante: no se toca
+      const resto = mf[2].trim();
+      salida.push(resto ? `*${mf[1]} ${resto}` : `*${mf[1]}`);
+    }
+  }
+  return salida.join("\n");
 }
 
 function paCultivos(txt) {
@@ -6617,6 +6726,28 @@ function paProcesar(raw, unidad) {
         campoReal: campo, original: `${m[2]}/${m[3]}/${m[4]}` });
     }
   }
+  // Propofol al 2%: se escribe distinto que el resto de las infusiones. No es
+  // "droga mg/ml/ritmo" sino "PROPO 2% 8" = propofol al 2% pasando a 8 ml/h.
+  // El 2% quiere decir 2 g en 100 ml, o sea 20 mg/ml, y con eso la dosis por
+  // kilo sale igual que en las demás. También se acepta al 1% (10 mg/ml).
+  for (const [campo, txt] of Object.entries(campos)) {
+    const reP = /\bPROPO(?:FOL)?\s*(1|2)\s*%\s*(?:A\s*)?([\d.,]+)\s*(?:ML\/?H)?/gi;
+    let mp2;
+    while ((mp2 = reP.exec(txt || ""))) {
+      const mgMl = +mp2[1] * 10;              // 1% = 10 mg/ml, 2% = 20 mg/ml
+      const ritmo = parseFloat(mp2[2].replace(",", "."));
+      if (!isFinite(ritmo)) continue;
+      const k = `Propofol|${mgMl}|1|${ritmo}`;
+      if (vistos.has(k)) continue;
+      vistos.add(k);
+      // Se guarda como "mgMl mg en 1 ml" para que la fórmula de siempre
+      // (concentración ÷ dilución × ritmo ÷ peso) dé el resultado correcto.
+      inf.push({ droga: "Propofol", mg: mgMl, ml: 1, ritmo, declarada: null,
+        campo: campo === "tto" ? null : campo, campoReal: campo,
+        original: `${mp2[1]}% ${mp2[2]}`, porcentaje: +mp2[1] });
+    }
+  }
+
   const interm = [];
   const reI = /\b([A-ZÁÉÍÓÚÑ]{3,15})\s+(\d+)\s*\/\s*(\d+)\b(?!\s*\/)/g;
   let mi;
@@ -6624,7 +6755,15 @@ function paProcesar(raw, unidad) {
     if (PA_FARMACOS.has(mi[1]) && [4, 6, 8, 12, 24].includes(+mi[3]))
       interm.push({ droga: paTitulo(mi[1]), mg: +mi[2], cada: +mi[3] });
   }
-  const mp = todo.match(/PESO\s*(?:REAL\s*)?(?:DE\s*)?(\d{2,3})\s*KG/i);
+  // Peso real estimado: es el que se usa para calcular las dosis. Cualquier
+  // peso escrito sin aclaración ("PESO 70 KG", o incluso "70 KG" suelto) se
+  // interpreta como real estimado — así lo definió Gonzalo el 2/9/2026.
+  const mp = todo.match(/PESO\s*(?:REAL\s*)?(?:ESTIMADO\s*)?(?:DE\s*)?(\d{2,3})\s*KG/i)
+          || todo.match(/(?<![A-ZÁÉÍÓÚÑ])PR\s*(\d{2,3})\s*KG/i);
+  // Peso teórico (PT), también llamado predicho. NO se usa para las dosis:
+  // sirve sólo para la mecánica ventilatoria, donde el volumen corriente se
+  // calcula por kilo de peso predicho y no por el peso real del paciente.
+  const mpt = todo.match(/(?<![A-ZÁÉÍÓÚÑ])PT\s*:?\s*(\d{2,3})\s*KG/i);
   // Balance del día escrito al final del renglón de estado: "…, 890-590" son
   // 890 ml de ingresos y 590 ml de diuresis. Se acota fuerte a propósito —par
   // al final del renglón, precedido por coma y sin "%"— porque el mismo patrón
@@ -6645,12 +6784,17 @@ function paProcesar(raw, unidad) {
   const limpios = {};
   // Cultivos tienen su propio tratamiento: se reordenan en un renglón por
   // muestra, con la fecha adelante.
-  for (const [k, v] of Object.entries(campos)) if (k !== "pendiente")
-    limpios[k] = k === "cultivos" ? paCultivos(v) : paLimpiar(v);
+  const CON_ASTERISCO = new Set(["labo", "eab", "cultivos", "estudios"]);
+  for (const [k, v] of Object.entries(campos)) if (k !== "pendiente") {
+    const limpio = k === "cultivos" ? paCultivos(v) : paLimpiar(v);
+    // *fecha estudio resultado, en las tres secciones fechadas.
+    limpios[k] = CON_ASTERISCO.has(k) ? paFormatoAsterisco(limpio) : limpio;
+  }
   return {
     unidad, cama: raw.bed, ...paNombre(raw.name),
     mi: paLimpiar(raw.mi || ""), campos: limpios,
-    peso: mp ? +mp[1] : null, infusiones: inf, intermitentes: interm,
+    peso: mp ? +mp[1] : null, pesoTeorico: mpt ? +mpt[1] : null,
+    infusiones: inf, intermitentes: interm,
     pendientes: pend, anotaciones: [],
     // Si el pase ya traía el balance del día, entra precargado en vez de
     // obligar a copiarlo a mano.
@@ -6693,14 +6837,19 @@ function paDiff(a, b) {
 // así la edición libre y el diff de cambios siguen funcionando igual. Cuando
 // el campo está en foco se ve el texto crudo, como con el resaltado.
 function conNegritas(txt, key) {
-  if (!txt || (!txt.includes("«") && !txt.includes("+"))) return txt;
+  // El asterisco de "*25/8 TAC ..." también entra: la fecha va en negrita, que
+  // es para lo que se puso el formato. El asterisco queda porque es la marca
+  // que usa el servicio y se escribe igual acá y en el Drive.
+  if (!txt || (!txt.includes("«") && !txt.includes("+") && !txt.includes("*"))) return txt;
   const out = [];
-  const re = /«([^»]*)»|(\s\+\s)/g;
+  const re = /«([^»]*)»|(\s\+\s)|(?:^|(?<=\n))(\*\s?(?:0?[1-9]|[12]\d|3[01])\/(?:0?[1-9]|1[0-2])(?:\/\d{2,4})?)/g;
   let ult = 0, m, i = 0;
   while ((m = re.exec(txt))) {
     if (m.index > ult) out.push(<span key={`${key}t${i++}`}>{txt.slice(ult, m.index)}</span>);
     out.push(m[1] !== undefined
       ? <b key={`${key}b${i++}`}>{m[1]}</b>
+      : m[3] !== undefined
+      ? <b key={`${key}f${i++}`}>{m[3]}</b>
       : <b key={`${key}p${i++}`}> + </b>);
     ult = m.index + m[0].length;
   }
@@ -6812,6 +6961,40 @@ function PaseAppView({ user }) {
       return next;
     });
   };
+  // ── Agregar una cama ────────────────────────────────────────────────────
+  //
+  // El pase del Drive es una foto de un momento: si entra alguien después,
+  // no hay dónde escribirlo. Esto agrega una cama a la copia privada, en la
+  // unidad que se está mirando.
+  //
+  // Se permite a propósito repetir el número de cama. Pasa de verdad: un
+  // paciente que se va y otro que entra a la misma cama en la misma guardia,
+  // o una cama que se desdobla. Bloquearlo sería resolver un problema que el
+  // servicio no tiene, y crear uno que sí.
+  //
+  // Dos formas de crearla, según lo que se necesite: vacía, para un ingreso
+  // nuevo; o copia del paciente que se está viendo, para cuando lo que se
+  // quiere es una segunda versión de la misma ficha (por ejemplo, dejar el
+  // pase de la mañana y arrancar el de la tarde sin volver a tipear todo).
+  const agregarCama = (copiar) => {
+    const base = copiar
+      ? JSON.parse(JSON.stringify(mio[idx] || {}))
+      : {
+          nombre: "", edad: null, sexo: null, mi: "", peso: null, pesoTeorico: null,
+          campos: {}, anotaciones: [], infusiones: [], arm: {}, ordenCampos: [],
+        };
+    base.cama = String((mio[idx] || {}).cama || "");
+    base.unidad = uSel;
+    base.egresado = false;
+    base.sinCompletar = false;
+    base.agregada = true;               // marca: no vino del Drive
+    if (copiar) base.nombre = (base.nombre || "") + " (copia)";
+    mutar((d) => { d.splice(idx + 1, 0, base); });
+    setISel(idx + 1);
+    setEditando(true);                  // se abre la ficha para completarla
+    setEstado(copiar ? "Cama agregada como copia" : "Cama agregada");
+  };
+
   const deshacer = () => {
     if (!undo.current.length) { setEstado("Nada para deshacer"); return; }
     const prev = JSON.parse(undo.current.pop());
@@ -6907,6 +7090,7 @@ function PaseAppView({ user }) {
       x.sexo = null;
       x.mi = "";
       x.peso = null;
+      x.pesoTeorico = null;
       x.campos = {};
       x.infusiones = [];
       x.intermitentes = [];
@@ -6947,6 +7131,10 @@ function PaseAppView({ user }) {
         return m ? `«${m[1]}:» ` + l.slice(m[0].length) : l;
       }).join("\n");
     }
+    // Lo que se escribe a mano también se acomoda al formato *fecha ... :
+    // así el renglón agregado durante la guardia queda igual que los que
+    // vinieron del Drive, sin tener que acordarse de poner el asterisco.
+    if (k === "labo" || k === "eab" || k === "estudios") txt = paFormatoAsterisco(txt);
     d[idx].campos[k] = txt;
   });
 
@@ -7009,11 +7197,13 @@ function PaseAppView({ user }) {
       <div className="no-print" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 9 }}>
         {foto.unidades.map((u) => {
           const g = mio.filter((x) => x.unidad === u);
-          const pend = g.reduce((s, x) => s + (x.pendientes || []).filter((y) => !y.listo).length, 0);
           return (
             <button key={u} onClick={() => { setUSel(u); setISel(mio.findIndex((x) => x.unidad === u)); }}
               style={{ ...B, fontSize: 13, fontWeight: 700, ...(u === uSel ? { background: "#0F172A", borderColor: "#0F172A", color: "#fff" } : {}) }}>
-              {u} <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 10, opacity: 0.7 }}>{g.length}{pend ? ` · ${pend} pend` : ""}</span>
+              {/* Solo la cantidad de camas. El contador de pendientes por unidad
+                  no servía para decidir nada: los pendientes son de cada
+                  paciente y se ven en su ficha. */}
+              {u} <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 10, opacity: 0.7 }}>{g.length}</span>
             </button>
           );
         })}
@@ -7148,8 +7338,42 @@ function PaseAppView({ user }) {
               </div>
             </>
           )}
-          <div style={{ fontSize: 12.5, color: "#64748B", marginTop: 5 }}>{p.mi}</div>
-          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 9 }}>
+          {/* Motivo de ingreso: es lo primero que uno lee para ubicarse en el
+              paciente, así que va destacado y con la fecha separada del texto
+              en vez de perdida adelante en gris chico. */}
+          {p.mi && (() => {
+            const m = (p.mi || "").match(/^\s*(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*[:\-]?\s*/);
+            const fecha = m ? m[1] : "";
+            const texto = m ? p.mi.slice(m[0].length) : p.mi;
+            return (
+              <div style={{ display: "flex", gap: 11, alignItems: "baseline", marginTop: 9, padding: "11px 13px", background: "#F8FAFC", borderLeft: "4px solid #94A3B8", borderRadius: 5 }}>
+                {fecha && (
+                  <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 16, fontWeight: 800, color: "#334155", whiteSpace: "nowrap" }}>{fecha}</span>
+                )}
+                <span style={{ fontSize: 17.5, fontWeight: 800, color: "#0F172A", lineHeight: 1.4, letterSpacing: -0.2 }}>{texto}</span>
+              </div>
+            );
+          })()}
+          {/* Sacar al paciente: arriba, junto a los datos de la cama, que es
+              donde uno mira cuando alguien se va. Con confirmación, porque es
+              la única acción de esta pantalla que borra datos de golpe. */}
+          {editable && (
+            confirmandoEgreso ? (
+              <div style={{ marginTop: 10, padding: "11px 13px", borderRadius: 6, border: "1px solid #FCA5A5", background: "#FEF2F2" }}>
+                <div style={{ fontSize: 13.5, color: "#7F1D1D", lineHeight: 1.55 }}>
+                  ¿Sacar a <b>{p.nombre || "este paciente"}</b> de la cama <b>{p.cama}</b>?
+                  Se borran de tu copia los antecedentes, el tratamiento, las dosis, los pendientes,
+                  el balance y tus anotaciones. La cama queda como libre.
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                  <button onClick={marcarEgreso} style={{ ...B, background: "#B91C1C", borderColor: "#B91C1C", color: "#fff" }}>Sí, se fue</button>
+                  <button onClick={() => setConfirmandoEgreso(false)} style={B}>Cancelar</button>
+                </div>
+              </div>
+            ) : null
+          )}
+
+          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 9, alignItems: "center" }}>
             <span style={{ fontSize: 11.5, border: "1px solid #E2E8F0", borderRadius: 4, padding: "3px 8px" }}>
               Cama <b style={{ fontFamily: "ui-monospace,monospace" }}>{p.cama}</b>
               {p.unidad !== (foto.pacientes[idx] || {}).unidad && (
@@ -7171,6 +7395,27 @@ function PaseAppView({ user }) {
               </span>
             )}
             {p.sinCompletar && <span style={{ fontSize: 11.5, border: "1px dashed #FCA5A5", color: "#B91C1C", borderRadius: 4, padding: "3px 8px" }}>Último día sin completar</span>}
+            {/* Agregar cama: se puede repetir el número, y se elige si nace
+                vacía o como copia de la ficha que se está mirando. */}
+            {editable && !confirmandoEgreso && (
+              <span style={{ marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <button onClick={() => agregarCama(false)}
+                  title="Sumar una cama a esta unidad, vacía. Se puede repetir el número de cama."
+                  style={{ fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "#334155", background: "#fff", border: "1px solid #CBD5E1", borderRadius: 4, padding: "4px 10px", cursor: "pointer" }}>
+                  + Agregar cama
+                </button>
+                <button onClick={() => agregarCama(true)}
+                  title="Sumar una cama copiando esta ficha entera"
+                  style={{ fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "#334155", background: "#fff", border: "1px solid #CBD5E1", borderRadius: 4, padding: "4px 10px", cursor: "pointer" }}>
+                  + Copia de esta
+                </button>
+                <button onClick={() => setConfirmandoEgreso(true)}
+                  title="El paciente egresó y el pase del Drive todavía lo muestra"
+                  style={{ fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "#B91C1C", background: "#fff", border: "1px solid #FCA5A5", borderRadius: 4, padding: "4px 10px", cursor: "pointer" }}>
+                  El paciente se fue
+                </button>
+              </span>
+            )}
           </div>
         </div>
 
@@ -7336,29 +7581,6 @@ function PaseAppView({ user }) {
         );
       })()}
 
-      {/* Sacar al paciente. Va al final, lejos de lo que se toca seguido, y
-          con confirmación: es la única acción de esta pantalla que hace
-          desaparecer datos de golpe. */}
-      {editable && (
-        confirmandoEgreso ? (
-          <div style={{ ...caja, borderColor: "#FCA5A5", background: "#FEF2F2", marginTop: 4 }}>
-            <div style={{ fontSize: 13.5, color: "#7F1D1D", lineHeight: 1.55 }}>
-              ¿Sacar a <b>{p.nombre || "este paciente"}</b> de la cama <b>{p.cama}</b>?
-              Se borran de tu copia los antecedentes, el tratamiento, las dosis, los pendientes,
-              el balance y tus anotaciones. La cama queda como libre.
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" }}>
-              <button onClick={marcarEgreso} style={{ ...B, background: "#B91C1C", borderColor: "#B91C1C", color: "#fff" }}>Sí, se fue</button>
-              <button onClick={() => setConfirmandoEgreso(false)} style={B}>Cancelar</button>
-            </div>
-          </div>
-        ) : (
-          <button onClick={() => setConfirmandoEgreso(true)}
-            style={{ ...B, color: "#B91C1C", borderColor: "#FCA5A5", marginTop: 4 }}>
-            El paciente se fue · liberar la cama {p.cama}
-          </button>
-        )
-      )}
       </>
       )}
 
@@ -7368,6 +7590,7 @@ function PaseAppView({ user }) {
 
       {armAbierto && (
         <ArmPopup p={p} v={armDe(idx)} set={(c, val) => setArmDe(idx, c, val)}
+          setPT={(val) => mutar((d) => { d[idx].pesoTeorico = val; })}
           cerrar={() => setArmAbierto(false)} />
       )}
     </div>
@@ -7378,8 +7601,13 @@ function PaseAppView({ user }) {
    Se elige el modo y se piden sólo los settings de ese modo. Meseta y PEEP
    total van siempre, porque son medidas con pausa y son las que dan driving
    pressure y auto-PEEP, que es para lo que uno abre esto. */
-function ArmPopup({ p, v, set, cerrar }) {
+function ArmPopup({ p, v, set, setPT, cerrar }) {
   const modo = v.modo || "";
+  // Peso para el Vt: el teórico manda. Regla de Gonzalo del 2/9/2026: el PT
+  // se usa acá y en ningún otro lado — las dosis de drogas siguen yendo por
+  // peso real.
+  const pesoVt = p.pesoTeorico || p.peso || null;
+  const conPT = !!p.pesoTeorico;
   const campos = PA_MODOS[modo]?.campos || [];
   const n = (x) => (x === "" || x == null || isNaN(+x) ? null : +x);
   const pl = n(v.pmeseta), pt = n(v.peeptotal), pe = n(v.peep);
@@ -7395,6 +7623,22 @@ function ArmPopup({ p, v, set, cerrar }) {
           <button onClick={cerrar} style={{ marginLeft: "auto", border: "none", background: "none", fontSize: 20, cursor: "pointer", color: "#64748B", lineHeight: 1 }}>×</button>
         </div>
         <div style={{ fontSize: 12.5, color: "#64748B", marginBottom: 12 }}>{p.nombre} · cama {p.cama}</div>
+
+        {/* El peso predicho vive acá y no en la ficha, porque acá es el único
+            lugar donde se usa. Si el pase lo trae escrito como "PT 60 KG"
+            viene cargado solo; si no, se escribe una vez y queda. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 6, padding: "9px 11px", marginBottom: 14 }}>
+          <span style={{ fontSize: 11.5, color: "#64748B" }}>Peso teórico (PT)</span>
+          <input type="number" value={p.pesoTeorico || ""} placeholder="—"
+            onChange={(e) => setPT && setPT(e.target.value ? +e.target.value : null)}
+            style={{ width: 62, fontFamily: "ui-monospace,monospace", fontSize: 14, padding: "4px 6px", border: `1px solid ${conPT ? "#E2E8F0" : "#FCA5A5"}`, borderRadius: 4 }} />
+          <span style={{ fontSize: 11.5, color: "#64748B" }}>kg</span>
+          <span style={{ fontSize: 11.5, color: conPT ? "#64748B" : "#B91C1C", marginLeft: "auto" }}>
+            {conPT ? "El Vt/kg se calcula con este peso." :
+             p.peso ? `Sin PT cargado: el Vt/kg usa el peso real (${p.peso} kg) y queda subestimado.` :
+             "Sin PT ni peso: no se puede calcular el Vt/kg."}
+          </span>
+        </div>
 
         <label style={{ fontSize: 11.5, color: "#64748B", display: "block", marginBottom: 4 }}>Modo ventilatorio</label>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
@@ -7437,7 +7681,11 @@ function ArmPopup({ p, v, set, cerrar }) {
           {[["Driving pressure", dp != null ? dp.toFixed(1) : "—"],
             ["Auto-PEEP", pt != null && pe != null ? (pt - pe).toFixed(1) : "—"],
             ["Compliance", dp && vt ? (vt / dp).toFixed(1) : "—"],
-            ["Vt / kg", vt && p.peso ? (vt / p.peso).toFixed(1) : "—"]].map(([l, val]) => (
+            // El Vt se programa por kilo de peso PREDICHO, no del real: los
+            // pulmones no engordan. Si el pase trae PT se usa ese; si no, se
+            // cae al peso real y se avisa abajo, porque en un obeso la
+            // diferencia entre los dos puede ser de varios ml/kg.
+            ["Vt / kg", vt && pesoVt ? (vt / pesoVt).toFixed(1) : "—"]].map(([l, val]) => (
             <div key={l} style={{ fontSize: 12, color: "#64748B" }}>{l}
               <b style={{ display: "block", fontFamily: "ui-monospace,monospace", fontSize: 19, color: "#0F172A" }}>{val}</b>
             </div>
@@ -7451,7 +7699,7 @@ function ArmPopup({ p, v, set, cerrar }) {
         )}
         <div style={{ fontSize: 11.5, color: "#64748B", marginTop: 10, lineHeight: 1.45 }}>
           Driving = meseta − PEEP total. Auto-PEEP = PEEP total − PEEP programada. Compliance = Vt / driving.
-          {!p.peso && " El Vt/kg usa el peso, que este paciente no lo tiene cargado."}
+          {" El Vt/kg va por peso teórico (predicho), no por el real."}
         </div>
       </div>
     </div>
