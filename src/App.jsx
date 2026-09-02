@@ -32,6 +32,9 @@ const TAB_META = {
   academico: { icon: "📚", label: "Calendario Académico" },
   articulo: { icon: "📄", label: "Artículo de la semana" },
   registro: { icon: "📋", label: "Registro" },
+  // Relevamiento diario para la base de investigación del servicio. La ve y
+  // la completa cualquiera que entra: cuantas más manos, menos tarda.
+  redcap: { icon: "🧪", label: "Ayudanos con el RedCap" },
   hoy: { icon: "📱", label: "¿Quién está hoy?" },
   accesos: { icon: "🔐", label: "Accesos", soloAdmin: true },
   impresiones: { icon: "🖨️", label: "Ver cronogramas, guardias e Imprimir" },
@@ -803,6 +806,7 @@ function AuthenticatedApp() {
       {tab === "academico" && <AcademicoView isAdmin={isAdmin} />}
       {tab === "articulo" && <ArticuloSemanaView isAdmin={isAdmin} />}
       {tab === "registro" && <RegistroView isAdmin={isAdmin} user={user} />}
+      {tab === "redcap" && <RedcapView user={user} />}
       {tab === "hoy" && <QuienEstaHoyView isAdmin={isAdmin} embedded />}
       {tab === "accesos" && isAdmin && <AccesosView user={user} />}
       {tab === "impresiones" && <ImpresionesView user={user} isAdmin={isAdmin} />}
@@ -4580,6 +4584,245 @@ function HojaPreview({ html }) {
         ? <iframe title="vista previa" srcDoc={hojaAjustada(html, false)} sandbox="allow-scripts" scrolling="no"
             style={{ width: ANCHO, height: alto, border: "none", transform: `scale(${k})`, transformOrigin: "top left", display: "block" }} />
         : <div style={{ padding: 26, fontSize: 12.5, color: "#64748B" }}>Cargando el cronograma…</div>}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   AYUDANOS CON EL REDCAP
+
+   Ocho preguntas de sí o no por paciente, para alimentar una base de datos de
+   investigación. La idea es que relevar la UTI entera sea cuestión de minutos
+   y lo pueda hacer cualquiera que pase por la app, no una tarea que espera a
+   que alguien se siente con una planilla.
+
+   POR QUÉ UN REGISTRO POR DÍA
+   ---------------------------
+   Un paciente que hoy está intubado mañana puede no estarlo, y eso —cuándo
+   cambió— es justamente el dato que un RedCap quiere. Si hubiera un solo
+   registro por paciente, la respuesta de mañana pisaría la de hoy y quedaría
+   una foto sin historia. Cada día tiene su propio documento y arranca vacío.
+
+   El id es `AAAA-MM-DD__unidad__cama`, así que el día, el sector y la cama ya
+   están en la clave: se puede traer un día entero de una y no hace falta
+   inventar un identificador de paciente que el Drive no da.
+
+   QUIÉN Y CUÁNDO
+   --------------
+   Cada respuesta guarda quién la marcó y a qué hora. No es control sobre la
+   gente: es que si un dato llama la atención al analizarlo, se sepa a quién
+   preguntarle. Gana la última respuesta, sin bloqueos ni avisos.
+
+   Se guarda apenas se toca el botón, sin "guardar" que apretar: en una
+   guardia, un formulario que se pierde porque nadie confirmó es un formulario
+   que no se completa nunca.
+   ══════════════════════════════════════════════════════════════════════════ */
+const REDCAP_COL = "redcap_diario";
+const REDCAP_PREGUNTAS = [
+  ["analgesicos", "Uso de analgésicos"],
+  ["sedantes", "Uso de sedantes"],
+  ["relajantes", "Uso de relajantes musculares"],
+  ["monitoreo", "Tiene monitoreo hemodinámico"],
+  ["vasoactivos", "Se encuentra con vasoactivos"],
+  ["iot", "Está IOT"],
+  ["sondaVesical", "Tiene sonda vesical"],
+  ["avc", "Tiene acceso venoso central"],
+];
+
+function RedcapView({ user }) {
+  const [foto, setFoto] = useState(null);      // el pase del Drive
+  const [dia, setDia] = useState(() => isoDate(new Date()));
+  const [reg, setReg] = useState({});          // { "unidad__cama": {campo: bool, _quien, _cuando} }
+  const [cargando, setCargando] = useState(true);
+  const [uSel, setUSel] = useState(null);
+  const [estado, setEstado] = useState("");
+  const chico = useChico();
+
+  // El pase del Drive: la lista de camas ocupadas sale de ahí, igual que en
+  // las otras pestañas. Así no hay que mantener un padrón aparte.
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "scheduler", "pases-latest"), (snap) => {
+      if (!snap.exists()) { setCargando(false); return; }
+      const d = snap.data();
+      const unidades = d.unitOrder?.length ? d.unitOrder : Object.keys(d.units || {});
+      const pacientes = unidades.flatMap((u) =>
+        (d.units?.[u] || []).map((p) => {
+          const n = paNombre(p.name || "");
+          return { unidad: u, cama: p.bed, nombre: n.nombre, edad: n.edad };
+        }));
+      setFoto({ unidades, pacientes, tomado: d.updatedAt });
+      setUSel((cur) => cur || unidades[0] || null);
+      setCargando(false);
+    }, () => setCargando(false));
+    return unsub;
+  }, []);
+
+  // Lo ya marcado ese día. Un documento por día con todas las camas adentro:
+  // son 25 respuestas cortas, entran de sobra en un documento y se leen de una
+  // sola vez en lugar de 25 lecturas sueltas.
+  useEffect(() => {
+    if (!dia) return;
+    const unsub = onSnapshot(doc(db, REDCAP_COL, dia), (snap) => {
+      setReg(snap.exists() ? (snap.data().camas || {}) : {});
+    }, (e) => console.error("redcap", e));
+    return unsub;
+  }, [dia]);
+
+  const clave = (p) => `${p.unidad}__${p.cama}`;
+
+  const marcar = async (p, campo, valor) => {
+    const k = clave(p);
+    const previo = reg[k] || {};
+    // Volver a tocar la misma respuesta la borra: es la forma de deshacer un
+    // dedazo sin tener que agregar un botón de "limpiar".
+    const nuevo = { ...previo };
+    if (nuevo[campo] === valor) delete nuevo[campo];
+    else nuevo[campo] = valor;
+    nuevo._quien = user?.displayName || user?.email || "—";
+    nuevo._cuando = new Date().toISOString();
+    nuevo._nombre = p.nombre || "";
+    setReg((r) => ({ ...r, [k]: nuevo }));       // que se vea ya, sin esperar la red
+    try {
+      await setDoc(doc(db, REDCAP_COL, dia), {
+        fecha: dia,
+        camas: { ...reg, [k]: nuevo },
+        actualizado: new Date().toISOString(),
+      }, { merge: true });
+      setEstado("Guardado " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }));
+    } catch (e) {
+      console.error("guardar redcap", e);
+      setEstado("No se pudo guardar");
+    }
+  };
+
+  // Para bajar y cargar en el RedCap. Sin esto los datos quedan encerrados en
+  // la app, que es el problema que esta pestaña vino a resolver.
+  const exportar = () => {
+    const cols = ["fecha", "unidad", "cama", "paciente", ...REDCAP_PREGUNTAS.map(([k]) => k), "completado_por", "completado_el"];
+    const filas = [cols.join(",")];
+    for (const p of (foto?.pacientes || [])) {
+      const r = reg[clave(p)] || {};
+      const val = (x) => x === true ? "1" : x === false ? "0" : "";
+      const txt = (x) => `"${String(x == null ? "" : x).replace(/"/g, '""')}"`;
+      filas.push([
+        dia, txt(p.unidad), txt(p.cama), txt(p.nombre),
+        ...REDCAP_PREGUNTAS.map(([k]) => val(r[k])),
+        txt(r._quien || ""), txt(r._cuando || ""),
+      ].join(","));
+    }
+    // BOM adelante para que Excel en Windows respete los acentos.
+    const blob = new Blob(["﻿" + filas.join("\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `redcap-uti-${dia}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+
+  if (cargando) return <Skeleton />;
+  if (!foto) return (
+    <div style={{ padding: 20, fontSize: 13.5, color: "#64748B" }}>
+      Todavía no hay ningún pase cargado. Entrá una vez a la pestaña Pases para que se sincronice.
+    </div>
+  );
+
+  const B = { fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "7px 12px", borderRadius: 5, border: "1.5px solid #E2E8F0", background: "#fff", color: "#0F172A", cursor: "pointer" };
+  const delDia = foto.pacientes.filter((p) => p.unidad === uSel);
+  // Cuántas camas de la unidad tienen las ocho respuestas.
+  const completas = delDia.filter((p) => {
+    const r = reg[clave(p)] || {};
+    return REDCAP_PREGUNTAS.every(([k]) => typeof r[k] === "boolean");
+  }).length;
+  const hoy = isoDate(new Date());
+
+  return (
+    <div style={{ maxWidth: 900, margin: "0 auto" }}>
+      <div style={{ background: "#0F172A", color: "#fff", borderRadius: 10, padding: "16px 18px", marginBottom: 14 }}>
+        <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: -0.3 }}>Ayudanos con el RedCap</div>
+        <div style={{ fontSize: 13, lineHeight: 1.55, opacity: 0.85, marginTop: 6 }}>
+          Ocho preguntas por paciente, sí o no. Lo puede completar cualquiera y se guarda solo.
+          Cada día se releva aparte, así queda registrado cuándo cambió cada cosa.
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <label style={{ fontSize: 12.5, color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
+          Día
+          <input type="date" value={dia} max={hoy} onChange={(e) => setDia(e.target.value)}
+            style={{ fontFamily: "inherit", fontSize: 13, padding: "6px 8px", border: "1.5px solid #CBD5E1", borderRadius: 5 }} />
+        </label>
+        {dia !== hoy && (
+          <button onClick={() => setDia(hoy)} style={B}>Volver a hoy</button>
+        )}
+        <button onClick={exportar} style={B}>Bajar CSV de este día</button>
+        {estado && <span style={{ fontSize: 11.5, color: "#64748B", marginLeft: "auto" }}>{estado}</span>}
+      </div>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {foto.unidades.map((u) => {
+          const n = foto.pacientes.filter((p) => p.unidad === u).length;
+          return (
+            <button key={u} onClick={() => setUSel(u)}
+              style={{ ...B, fontWeight: 700, ...(u === uSel ? { background: "#0F172A", borderColor: "#0F172A", color: "#fff" } : {}) }}>
+              {u} <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 10, opacity: 0.7 }}>{n}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 12.5, color: "#475569", marginBottom: 10 }}>
+        {uSel}: <b>{completas}</b> de <b>{delDia.length}</b> camas completas
+        {dia !== hoy && <span style={{ color: "#8A4B00", marginLeft: 8 }}>· estás viendo el {dia.split("-").reverse().join("/")}</span>}
+      </div>
+
+      {delDia.map((p) => {
+        const k = clave(p);
+        const r = reg[k] || {};
+        const listo = REDCAP_PREGUNTAS.every(([kk]) => typeof r[kk] === "boolean");
+        return (
+          <div key={k} style={{ background: "#fff", border: `1.5px solid ${listo ? "#86EFAC" : "#E2E8F0"}`, borderRadius: 8, padding: "12px 14px", marginBottom: 9 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap", marginBottom: 9 }}>
+              <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 16, fontWeight: 800 }}>{p.cama}</span>
+              <span style={{ fontSize: 14.5, fontWeight: 700 }}>{p.nombre || "—"}</span>
+              {p.edad && <span style={{ fontSize: 11.5, color: "#64748B" }}>{p.edad} años</span>}
+              {listo && <span style={{ fontSize: 11, fontWeight: 700, color: "#166534", background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 999, padding: "2px 9px" }}>completo</span>}
+            </div>
+
+            {REDCAP_PREGUNTAS.map(([campo, rot]) => (
+              <div key={campo} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", flexWrap: "wrap",
+                borderTop: "1px solid #F1F5F9" }}>
+                <span style={{ flex: 1, fontSize: 13, color: "#334155", minWidth: 165 }}>{rot}</span>
+                {[["Sí", true], ["No", false]].map(([txt, val]) => {
+                  const activo = r[campo] === val;
+                  return (
+                    <button key={txt} onClick={() => marcar(p, campo, val)}
+                      title={activo ? "Tocá de nuevo para desmarcar" : ""}
+                      style={{ fontFamily: "inherit", fontSize: 13, fontWeight: 700,
+                        minWidth: chico ? 62 : 54, minHeight: 38, borderRadius: 6, cursor: "pointer",
+                        border: `1.5px solid ${activo ? (val ? "#166534" : "#B91C1C") : "#CBD5E1"}`,
+                        background: activo ? (val ? "#166534" : "#B91C1C") : "#fff",
+                        color: activo ? "#fff" : "#475569" }}>
+                      {txt}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+
+            {r._quien && (
+              <div style={{ fontSize: 11, color: "#64748B", marginTop: 8, paddingTop: 7, borderTop: "1px dashed #E2E8F0" }}>
+                Última marca de <b>{r._quien}</b>
+                {r._cuando && " · " + new Date(r._cuando).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.55, padding: "6px 2px 30px" }}>
+        Se guarda solo, sin botón de confirmar. Tocá de nuevo una respuesta para desmarcarla.
+        Las camas salen del último pase del Drive ({foto.tomado ? timeAgo(foto.tomado) : "sin fecha"}).
+      </div>
     </div>
   );
 }
