@@ -11,7 +11,11 @@ const ADMIN_EMAIL = "pontiggiamg@gmail.com";
 // Pestañas de nivel superior de la app. El orden por defecto se usa si todavía
 // no hay nada guardado en Firestore (scheduler/ui-config); el admin puede
 // reordenarlas arrastrando y ese orden se guarda ahí, compartido para todos.
-const DEFAULT_TAB_ORDER = ["scheduler", "rotaciones", "pases", "paseapp", "chipa", "academico", "articulo", "registro", "hoy", "accesos", "impresiones"];
+// DEFAULT_TAB_ORDER se arma solo a partir de TAB_META, más abajo. Antes era
+// una lista escrita a mano y pasó lo que tenía que pasar: al agregar la
+// pestaña del RedCap quedó fuera de esta lista y no se dibujaba, aunque
+// estuviera declarada y ruteada. Dos listas que hay que mantener iguales a
+// mano son una lista de más.
 // La pestaña se llamaba "borradores" y pasó a llamarse "impresiones": lo que
 // sale de ahí es definitivo salvo que se lo marque expresamente como borrador.
 // El orden de pestañas guardado en Firestore puede tener todavía el nombre
@@ -39,6 +43,10 @@ const TAB_META = {
   accesos: { icon: "🔐", label: "Accesos", soloAdmin: true },
   impresiones: { icon: "🖨️", label: "Ver cronogramas, guardias e Imprimir" },
 };
+
+// El orden por defecto es el orden en que están escritas arriba. Una pestaña
+// nueva aparece sola con sólo agregarla a TAB_META.
+const DEFAULT_TAB_ORDER = Object.keys(TAB_META);
 
 // Ruta pública sin login para compartir a otros servicios del hospital: entra
 // directo a "¿Quién está en la UTI hoy?" (hasta Postguardia inclusive), sin
