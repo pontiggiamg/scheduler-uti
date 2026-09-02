@@ -2047,6 +2047,16 @@ function paseArreglado(fields) {
     if (part.arm) f.accesos = [f.accesos, part.arm].filter(Boolean).join("\n");
     if (!f.accesos) delete f.accesos;
   }
+  // El peso y la dieta salen del arranque de TRATAMIENTO: el peso ya se
+  // muestra en la ficha y la dieta pertenece a Requerimientos.
+  if (f.tto) {
+    const pt = paPartirTto(f.tto);
+    if (pt.tto !== f.tto) {
+      f.tto = pt.tto;
+      if (pt.dieta) f.req = [pt.dieta, f.req].filter(Boolean).join("\n");
+      if (!f.tto) delete f.tto;
+    }
+  }
   const g = paReordenarClinicos(f);
   const out = {};
   // Las tres secciones fechadas van con el formato *fecha estudio resultado.
@@ -2054,7 +2064,10 @@ function paseArreglado(fields) {
   // para la otra, salvo las funcionalidades que sólo existen allá.
   const CON_ASTERISCO = new Set(["labo", "eab", "cultivos", "estudios"]);
   for (const [k, v] of Object.entries(g)) {
-    const limpio = k === "cultivos" ? paCultivos(v) : paLimpiar(v);
+    // Cultivos pasa por paLimpiar ANTES de agruparse: si no, las siglas de
+    // esa sección se quedaban crudas —"HMC X2" seguía siendo "HMC X2" en vez
+    // de "HCx2"— porque paCultivos sólo reordena y nunca normaliza.
+    const limpio = k === "cultivos" ? paCultivos(paLimpiar(v)) : paLimpiar(v);
     out[k] = CON_ASTERISCO.has(k) ? paFormatoAsterisco(limpio) : limpio;
   }
   return out;
@@ -5994,7 +6007,17 @@ const PA_FARMACOS = new Set(["BISO", "LACOSAMIDA", "ZOLPIDEM", "HIDRO", "MESTINO
   "PREGABALINA", "MEPREDNISONA", "ARIPIPRAZOL", "VALPROICO", "OLANZAPINA", "QUETIAPINA",
   "METADONA", "SANDOSTATIN", "PARACETAMOL", "TRAMADOL", "NIMODIPINA", "METOCLOPRAMIDA",
   "ONDANSETRON", "MORFINA", "BUPRENORFINA", "DEXAMETASONA", "HALOPERIDOL", "LORAZEPAM",
-  "ENOXAPARINA", "LEVETIRACETAM", "FENITOINA"]);
+  "ENOXAPARINA", "LEVETIRACETAM", "FENITOINA",
+  // Sumados el 2/9/2026 al arreglar el patrón dosis/intervalo: son los que
+  // aparecen en el pase con "droga dosis/horas" y no encajaban en ningún
+  // sufijo conocido.
+  "CARVEDILOL", "FUROSEMIDA", "ESPIRONOLACTONA", "DIGOXINA", "LEVOTIROXINA",
+  "PREDNISONA", "HIDROCORTISONA", "INSULINA", "CLONAZEPAM", "MIDAZOLAM",
+  "AMIODARONA", "ATORVASTATINA", "ROSUVASTATINA", "CLOPIDOGREL", "ASPIRINA",
+  "OMEPRAZOL", "PANTOPRAZOL", "DIPIRONA", "KETOROLAC", "GABAPENTINA",
+  "SERTRALINA", "TRAZODONA", "RISPERIDONA", "BACLOFENO", "ALOPURINOL",
+  "TAMSULOSINA", "DOXAZOSINA", "AMLODIPINA", "ENALAPRIL", "LOSARTAN",
+  "ATENOLOL", "BISOPROLOL", "NEBIVOLOL", "HIDRALAZINA", "NITROGLICERINA"]);
 
 // ── Nombres ────────────────────────────────────────────────────────────────
 // El pase mezcla dos convenciones de sexo: F/H (femenino/hombre) y M
@@ -6114,6 +6137,8 @@ function paNombre(raw) {
 
 // Acentos que el pase escribe en mayúscula sin tilde y se pierden al bajar.
 const PA_ACENTOS = {
+  paralitico: "paralítico", paralitica: "paralítica", colectomia: "colectomía",
+  debito: "débito",
   lucido: "lúcido", lucida: "lúcida", distension: "distensión", serohematico: "serohemático",
   cateter: "catéter", via: "vía", vias: "vías", dias: "días", ultima: "última", ultimo: "último",
   septico: "séptico", septica: "séptica", hipotension: "hipotensión", infeccion: "infección",
@@ -6156,7 +6181,15 @@ const PA_ACENTOS = {
 const PA_COMUNES = new Set(["SIN", "POR", "CON", "PARA", "DEL", "LOS", "LAS", "UNA", "UNO", "UNOS", "UNAS",
   "NO", "SI", "SE", "SU", "SUS", "AL", "EN", "MAS", "ANTE", "TRAS", "SOBRE", "HOY", "DIA", "DIAS",
   "FOCO", "DOLOR", "LEVE", "ALTA", "BAJA", "ESTA", "ESTE", "CADA", "TODO", "TODA",
-  "DE", "Y", "O", "A", "EL", "LA", "LO", "UN", "ES", "HA", "HAY", "QUE", "COMO", "DESDE",
+  // "E" es la conjunción delante de palabra que empieza con i: "colectomía
+  // derecha ampliada E ILEOSTOMÍA" es "…ampliada e ileostomía". Sin ella acá,
+  // la letra suelta se tomaba por sigla y quedaba en mayúscula en medio de la
+  // frase. Lo mismo "U" delante de o- ("doce U ocho").
+  "DE", "Y", "E", "O", "U", "A", "EL", "LA", "LO", "UN", "ES", "HA", "HAY", "QUE", "COMO", "DESDE",
+  // Palabras castellanas cortas que aparecen seguido en los informes y que,
+  // por tener menos de cinco letras, quedaban gritando en mayúscula.
+  "ALTO", "ALTA", "BAJO", "PASA", "PASO", "VAN", "VA", "SON", "ERA", "FUE", "TUVO",
+  "MISMO", "MISMA", "OTRO", "OTRA", "OTROS", "OTRAS", "ANTES", "LUEGO", "FUGA",
   "HASTA", "ENTRE", "DURANTE", "SEGUN", "SOLO", "YA", "MUY", "BIEN", "MAL", "CUATRO",
   "TRES", "DOS", "CINCO", "SEIS", "NUEVA", "NUEVO", "MENOR", "MAYOR", "AMBOS", "AMBAS",
   "ANTERIOR", "POSTERIOR", "DERECHA", "DERECHO", "IZQUIERDA", "IZQUIERDO", "BILATERAL",
@@ -6188,8 +6221,11 @@ const PA_COMUNES = new Set(["SIN", "POR", "CON", "PARA", "DEL", "LOS", "LAS", "U
 // conviene verlas con inicial mayúscula y no en bloque. Se resuelven en
 // PA_ACENTOS con su forma prolija.
 const PA_DROGAS_CORTAS = {
-  furo: "Furosemida", mero: "Meropenem", vanco: "Vancomicina", ptz: "Piperacilina-tazobactam",
-  col: "Colistina", ams: "Ampicilina-sulbactam", dexa: "Dexametasona", lora: "Lorazepam",
+  // Los ANTIBIÓTICOS ya no están acá: van siempre en mayúscula y abreviados
+  // (MERO, VANCO, PTZ...), y de eso se ocupa PA_EXPANDIR. Si siguieran en
+  // esta tabla se los expandiría a nombre largo en minúscula y las dos reglas
+  // se pelearían. Acá quedan sólo las drogas que sí se escriben con nombre.
+  furo: "Furosemida", dexa: "Dexametasona", lora: "Lorazepam",
   // "leve" NO va acá: en los informes de imágenes "LEVE AUMENTO", "LEVE
   // EDEMA" son el adjetivo castellano, y el diccionario, que mira palabra por
   // palabra sin contexto, los convertía en "Levetiracetam". En un renglón de
@@ -6197,7 +6233,6 @@ const PA_DROGAS_CORTAS = {
   // atrás venga una dosis, que es como se escribe la droga de verdad.
   dipi: "Dipirona", para: "Paracetamol", keta: "Ketamina",
   nora: "Noradrenalina", biso: "Bisoprolol", diclo: "Diclofenac", hidro: "Hidrocortisona",
-  fluco: "Fluconazol", aciclo: "Aciclovir", claritro: "Claritromicina", anfo: "Anfotericina",
 };
 
 const PA_EXPANDIR = [
@@ -6222,7 +6257,9 @@ const PA_EXPANDIR = [
   [/\bRHA\s*\+/gi, "ruidos hidroaéreos presentes"],
   [/\bRHA\b/gi, "ruidos hidroaéreos"], [/\bISQX\b/gi, "infección de sitio quirúrgico"],
   [/\bEPM\b/gi, "episodio psicomotriz"], [/\bVEDA\b/gi, "videoendoscopia digestiva alta"],
-  [/\bVATS\b/gi, "cirugía toracoscópica videoasistida"], [/\bCBO\b/gi, "cerebro"],
+  [/\bVATS\b/gi, "cirugía toracoscópica videoasistida"],
+  // "CBO" y el tipeo "CBRO" son los dos cerebro; "RESO" es resonancia.
+  [/\bCBRO\b/gi, "cerebro"], [/\bCBO\b/gi, "cerebro"], [/\bRESO\b/gi, "resonancia"],
   // Unidades pegadas al número: "120MG" → "120 mg", "20ML" → "20 ml".
   // "MG" pegado al número es miligramos ("1000MG"); separado y seguido de otro
   // número es el magnesio del laboratorio ("PLQ 85 MG 1.8"), que se deja como
@@ -6263,17 +6300,84 @@ const PA_EXPANDIR = [
   [/\bHASAT\b/gi, "hasta"],
   // "Carvedilol 12.5/12" = 12,5 mg cada 12 h. El patrón dosis/intervalo es
   // constante en el pase, así que se escribe como se lee en voz alta.
-  [/\b([A-Za-zÁÉÍÓÚÑáéíóúñ]{4,})\s+([\d.,]+)\s*\/\s*(4|6|8|12|24)\b(?!\s*\/)/g, "$1 $2 mg cada $3 h"],
+  // "Carvedilol 12.5/12" = 12,5 mg cada 12 h. PERO sólo si la palabra de
+  // adelante es un fármaco de verdad: sin esa condición, "TAC TX/abdomen
+  // 22/8" —que es una fecha— salía como "abdomen 22 mg cada 8 h", o sea una
+  // dosis inventada dentro de un informe de imágenes. Es el peor tipo de
+  // error que puede cometer esta app, así que la lista manda y lo que no está
+  // en ella se deja como vino.
+  // "Carvedilol 12.5/12" = 12,5 mg cada 12 h. Distinguir esto de una fecha es
+  // delicado y se equivocó en las dos direcciones antes de quedar así:
+  //
+  //   · Sin pedir que sea un fármaco, "TAC TX/abdomen 22/8" salía como
+  //     "abdomen 22 mg cada 8 h": una dosis inventada dentro de un informe de
+  //     imágenes, que es el peor error posible acá.
+  //   · Pidiendo sólo que sea un fármaco, "25/8 FEP/METRO/FLUCO 26/8 VANCO"
+  //     convertía en dosis el 26/8, que es el día en que se agregó la
+  //     vancomicina.
+  //
+  // Lo que separa los dos casos es el segundo número. Como intervalo sólo
+  // valen 4, 6, 8, 12 y 24 horas; como mes vale cualquier cosa de 1 a 12. El
+  // solapamiento real es 4, 6, 8 y 12, así que ahí manda una segunda pista:
+  // si adelante hay una fecha suelta —el patrón "25/8 ATB 26/8 ATB"— todo el
+  // renglón está fechado y el par es una fecha más. Cuando no hay ninguna
+  // fecha en el renglón, es una dosis.
+  [/\b([A-Za-zÁÉÍÓÚÑáéíóúñ]{4,})\s+([\d.,]+)\s*\/\s*(4|6|8|12|24)\b(?!\s*\/)/g,
+    function (m, palabra, dosis, cada, off, todo) {
+      const p = palabra.toUpperCase();
+      const esDroga = PA_FARMACOS.has(p) || PA_DROGAS_CORTAS[palabra.toLowerCase()] ||
+        /(CILINA|MICINA|AZOL|PENEM|PRAZOL|OLOL|PINA|PAMO|SARTAN|DIPINA|FLOXACINA|CICLINA|TIDINA|ZEPAM|SETRON|DONA|FENAC|AMOL|EPINA|IRINA|ARINA|OXINA|TOINA|MIDA|ACETAM)$/.test(p);
+      if (!esDroga) return m;
+      // ¿Hay una fecha escrita antes, en este mismo renglón? Se mira sólo
+      // hacia atrás desde acá hasta el salto de línea anterior.
+      const desde = todo.lastIndexOf("\n", off) + 1;
+      const antes = todo.slice(desde, off);
+      const hayFecha = /(?:^|\s)(?:0?[1-9]|[12]\d|3[01])\/(?:0?[1-9]|1[0-2])(?:\/\d{2,4})?(?=\s)/.test(antes);
+      const entero = !/[.,]/.test(dosis) && +dosis >= 1 && +dosis <= 31;
+      if (hayFecha && entero) return m;      // "25/8 FLUCO 26/8 VANCO"
+      return `${palabra} ${dosis} mg cada ${cada} h`;
+    }],
   [/\bC\/\s*(4|6|8|12|24)\s*(?:HS?)?\b/gi, "cada $1 h"],
   // El balance del día al final del renglón, en palabras.
   [/,\s*(\d{2,4})\s*-\s*(\d{2,4})\s*$/gm, ". Ingresos $1 ml, diuresis $2 ml"],
   // ── Sacadas del contexto de los propios pases (barrido de las 25 camas) ──
   // Antibióticos y microbiología: aparecen siempre dentro de listas de ATB o
   // de cultivos, así que el contexto no deja lugar a dudas.
-  [/\bTIGE\b/gi, "tigeciclina"], [/\bCRO\b/gi, "ceftriaxona"],
-  [/\bCAZ\s*\/\s*AVI\b/gi, "ceftazidima-avibactam"], [/\bCEFTA\s+AVI\b/gi, "ceftazidima-avibactam"],
-  [/\bFEP\b/gi, "cefepime"], [/\bDAPTO\b/gi, "daptomicina"], [/\bMETRO\b/gi, "metronidazol"],
-  [/\bANIDULA\b/gi, "anidulafungina"], [/\bLEVO\b/gi, "levofloxacina"],
+  // ── Antibióticos: SIEMPRE en mayúscula y abreviados ─────────────────────
+  // Regla de Gonzalo del 2/9/2026. En un pase los ATB son lo que uno busca
+  // primero, y en mayúscula saltan a la vista dentro de un renglón de texto
+  // corrido. Además la forma corta es la que se usa hablando, así que el
+  // papel y la conversación coinciden.
+  //
+  // Van todos a la MISMA forma vengan como vengan: "meropenem", "MERO" y
+  // "Meropenem" terminan los tres en MERO.
+  [/\b(?:TIGECICLINA|TIGE)\b/gi, "TIGE"],
+  [/\b(?:CEFTRIAXONA|CRO)\b/gi, "CRO"],
+  [/\b(?:CEFTAZIDIMA[\s-]*AVIBACTAM|CAZ\s*\/\s*AVI|CEFTA\s+AVI)\b/gi, "CAZ/AVI"],
+  [/\b(?:CEFEPIME|FEP)\b/gi, "FEP"],
+  [/\b(?:DAPTOMICINA|DAPTO)\b/gi, "DAPTO"],
+  [/\b(?:METRONIDAZOL|METRO)\b/gi, "METRO"],
+  [/\b(?:ANIDULAFUNGINA|ANIDULA)\b/gi, "ANIDULA"],
+  [/\b(?:LEVOFLOXACINA|LEVO)\b/gi, "LEVO"],
+  [/\b(?:MEROPENEM|MERO)\b/gi, "MERO"],
+  [/\b(?:VANCOMICINA|VANCO)\b/gi, "VANCO"],
+  [/\b(?:PIPERACILINA[\s-]*TAZOBACTAM|PIPE[\s-]*TAZO|PTZ)\b/gi, "PTZ"],
+  [/\b(?:COLISTINA|COLI|COL)\b/gi, "COLI"],
+  [/\b(?:AMPICILINA[\s-]*SULBACTAM|AMS)\b/gi, "AMS"],
+  [/\b(?:CLARITROMICINA|CLARITRO)\b/gi, "CLARITRO"],
+  [/\b(?:FLUCONAZOL|FLUCO)\b/gi, "FLUCO"],
+  [/\b(?:ACICLOVIR|ACICLO)\b/gi, "ACICLO"],
+  [/\b(?:ANFOTERICINA|ANFO)\b/gi, "ANFO"],
+  [/\b(?:CIPROFLOXACINA|CIPRO)\b/gi, "CIPRO"],
+  [/\b(?:AMIKACINA|AMIKA)\b/gi, "AMIKA"],
+  [/\b(?:GENTAMICINA|GENTA)\b/gi, "GENTA"],
+  [/\b(?:LINEZOLID|LINE)\b/gi, "LINEZOLID"],
+  [/\b(?:CASPOFUNGINA|CASPO)\b/gi, "CASPO"],
+  [/\b(?:TRIMETOPRIMA[\s-]*SULFAMETOXAZOL|TMS|TMP[\s-]*SMX)\b/gi, "TMS"],
+  [/\b(?:CEFTAZIDIMA|CAZ)\b/gi, "CAZ"],
+  [/\b(?:CEFTAROLINA|CEFTARO)\b/gi, "CEFTARO"],
+  [/\b(?:MINOCICLINA|MINO)\b/gi, "MINO"],
+  [/\b(?:RIFAMPICINA|RIFA)\b/gi, "RIFA"],
   [/\bCGP\b/gi, "cocos gram positivos"], [/\bBGN\b/gi, "bacilos gram negativos"],
   [/\bEVR\b/gi, "enterococo vancomicina resistente"],
   [/\bTCD\b/gi, "toxina de Clostridioides difficile"],
@@ -6325,12 +6429,55 @@ const PA_EXPANDIR = [
   // ILEO depende del contexto: solo se toca cuando el propio renglón lo
   // aclara. "ILEOCOLICO", "ILEOSTOMIA" y demás no se rompen porque el \b
   // exige que la palabra termine ahí.
-  [/\b[IÍ]LEO\s+PARAL[IÍ]TICO\b/gi, "íleo paralítico"],
+  //
+  // Cuando es el cuadro clínico va en minúscula, porque es una palabra
+  // castellana y no una sigla: "íleo funcional", "íleo paralítico". ILEO en
+  // mayúscula queda sólo cuando abrevia ILEOSTOMÍA, que sí es una sigla.
+  [/\b[IÍ]LEO\s+(PARAL[IÍ]TICO|FUNCIONAL|OBSTRUCTIVO|MEC[AÁ]NICO|ADIN[AÁ]MICO|POSTOPERATORIO|POSTQUIR[UÚ]RGICO|PROLONGADO|PERSISTENTE)\b/gi,
+    (m, tipo) => "íleo " + tipo.toLowerCase()],
   [/\bILEOSTOM[IÍ]A\b/gi, "ileostomía"],
   // CTE es contraste cuando habla una tomografía; si no, se deja.
   [/\b(TC|TAC|RMN|RESONANCIA|TOMOGRAF[IÍ]A)\s*(C\/|CON\s+|S\/|SIN\s+)?CTE\b/gi,
     (m, est, prep) => `${est} ${prep ? prep.replace(/^C\/$/i, "con ").replace(/^S\/$/i, "sin ") : ""}contraste`.replace(/\s+/g, " ")],
   [/\bC\/\s*CTE\b/gi, "con contraste"], [/\bS\/\s*CTE\b/gi, "sin contraste"],
+  // ── CM: centímetros o Clínica Médica ─────────────────────────────────────
+  // Pegado a un número es la unidad ("mide 3 CM" → "3 cm"). Si no hay número,
+  // en este servicio es el otro servicio: el paciente que viene de sala, o al
+  // que se le pide interconsulta. Se escriben distinto a propósito para que
+  // no haya que adivinar leyendo.
+  [/(\d)\s*CM\b/gi, "$1 cm"],
+  [/\b(A|DE|POR|CON|PARA|IC|INTERCONSULTA|PASA|PASE|DERIVA|DERIVADO|CAMA)\s+CM\b/gi,
+    (m, prev) => `${prev} clínica médica`],
+  [/\bCM\s+(EVAL[UÚ]A|EVALUA|VE|SIGUE|CONTROLA|INTERNA|INDICA|SUGIERE)\b/gi,
+    (m, verbo) => `Clínica médica ${verbo.toLowerCase()}`],
+
+  // ── Cultivos: forma canónica de las siglas ───────────────────────────────
+  // Hemocultivos y material quirúrgico se escriben de seis maneras distintas
+  // según quién anota. Se llevan todas a la misma: HCx2 con la equis chica,
+  // MatQx con las mayúsculas donde van. Es la forma que usa el servicio y la
+  // que hace que dos renglones del mismo germen se vean iguales.
+  [/\bH(?:C|MC)\s*[xX×]\s*(\d)\b/g, "HCx$1"],
+  [/\bHEMOCULTIVOS?\s*(?:X|POR)?\s*(\d)\b/gi, "HCx$1"],
+  [/\bHEMOCULTIVOS?\b/gi, "HC"],
+  [/\bMAT\s*\/?\s*QX\b/gi, "MatQx"],
+  [/\bMATERIAL\s+QUIR[UÚ]RGICO\b/gi, "MatQx"],
+
+  // ── Accesos: qué vena y de qué lado ──────────────────────────────────────
+  // YD/YI/FD/FI dicen dónde está el catéter. Se expanden sólo cuando el
+  // renglón habla de un acceso; sueltas no se tocan, porque FI también es
+  // "fecha de inicio" y convertirla en "femoral izquierda" sería inventar un
+  // catéter que nadie puso.
+  [/\b(VVC|CVC|V[IÍ]A\s+VENOSA\s+CENTRAL|CAT[EÉ]TER|PICC|ACCESO|VVP)\s+YD\b/gi, "$1 yugular derecha"],
+  [/\b(VVC|CVC|V[IÍ]A\s+VENOSA\s+CENTRAL|CAT[EÉ]TER|PICC|ACCESO|VVP)\s+YI\b/gi, "$1 yugular izquierda"],
+  [/\b(VVC|CVC|V[IÍ]A\s+VENOSA\s+CENTRAL|CAT[EÉ]TER|PICC|ACCESO|VVP)\s+FD\b/gi, "$1 femoral derecha"],
+  [/\b(VVC|CVC|V[IÍ]A\s+VENOSA\s+CENTRAL|CAT[EÉ]TER|PICC|ACCESO|VVP)\s+FI\b/gi, "$1 femoral izquierda"],
+
+  // RNM y RMN son la misma resonancia; el servicio la escribe RMN. La "x" de
+  // "DIFU X RNM" es la preposición "por", no una multiplicación.
+  [/\bDIFU(?:SI[ÓO]N)?\s*[xX×]\s*RN?MN?\b/g, "difusión por RMN"],
+  [/\bRNM\b/g, "RMN"],
+  [/\b([A-Za-zÁÉÍÓÚÑáéíóúñ]{3,})\s+[xX×]\s+(RMN|TC|TAC|ECO|EEG)\b/g, "$1 por $2"],
+
   // MM pegado a un número es milímetros; suelto puede ser otra cosa y no se toca.
   [/(\d)\s*MM\b/g, "$1 mm"],
 ];
@@ -6735,6 +6882,16 @@ function paCamaOrden(cama) {
 function paLimpiar(txt) {
   if (!txt) return txt;
   let t = txt.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  // Renglones que el Drive pegó sin salto: "…8/12QUETIAPINA 25/12" o
+  // "…cada 12 hQuetiapina". Va acá arriba, sobre el texto crudo, porque más
+  // abajo ya se bajó todo a minúscula y el límite entre las dos palabras se
+  // vuelve invisible. Leer dos fármacos pegados en un renglón es exactamente
+  // cómo se saltea una indicación al pasar la vista.
+  //
+  // Se corta después de un dígito o de una minúscula, nunca entre dos
+  // mayúsculas: "FEP/METRO" y "TAC TX" tienen que quedar como están.
+  t = t.replace(/(\d)([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]{3,})/g, "$1\n$2")
+       .replace(/([a-záéíóúñ])([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})/g, "$1\n$2");
   const letras = t.replace(/[^a-zA-ZáéíóúñÁÉÍÓÚÑ]/g, "");
   const mays = (t.match(/[A-ZÁÉÍÓÚÑ]/g) || []).length;
   if (letras.length && mays / letras.length >= 0.55) {
@@ -6769,6 +6926,11 @@ function paLimpiar(txt) {
   // se expande a "hemodinámicamente estable. ventilando..." con la minúscula
   // ya cristalizada después del punto.
   t = t.replace(/(^|\n|(?<=[.;:] ))([a-záéíóúñ])/g, (m, a, b) => a + b.toUpperCase());
+  // Último corte de renglones pegados. Va acá, al final, porque "…8/12MH:
+  // LORAZEPAM" recién se convierte en "…cada 8 hLorazepam" DESPUÉS de expandir
+  // las siglas: antes de este punto las dos palabras todavía no existen como
+  // tales. Se corta después de una unidad, que es donde termina una indicación.
+  t = t.replace(/(\d\s*(?:h|mg|ml|g|kg|mcg|kg\/h))([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})/g, "$1\n$2");
   return t;
 }
 
@@ -6820,6 +6982,33 @@ function paLeerArm(txt) {
 // distintos, así que se parten acá. Lo que no se puede clasificar queda en
 // accesos, que es lo que más aparece: es mejor dejarlo donde estaba que
 // inventarle una categoría.
+/* El primer renglón de TRATAMIENTO en el Drive no es tratamiento: es el peso
+   y la dieta ("PESO 60 KG DIETA BLANDA", o directamente "70 KG"). Estaban
+   ocupando el lugar de la primera indicación y encima el peso ya se muestra
+   arriba, en la ficha, donde uno lo busca.
+
+   Se saca de ahí y se devuelve aparte: la dieta pasa a Requerimientos, que es
+   donde va, y el peso se descarta porque ya está parseado en su propio campo.
+
+   Sólo se toca el ARRANQUE del campo. Un "70 kg" en medio de la medicación
+   puede ser parte de una indicación y no se toca. */
+function paPartirTto(txt) {
+  if (!txt) return { tto: txt, dieta: "" };
+  const ls = String(txt).split("\n");
+  const primera = (ls[0] || "").trim();
+  // Tiene que ser un renglón CORTO que arranque con el peso: si es largo,
+  // seguramente ya trae medicación pegada y partirlo perdería información.
+  const m = primera.match(/^(?:PESO\s*(?:REAL\s*)?(?:ESTIMADO\s*)?(?:DE\s*)?)?(\d{2,3})\s*KG\b\.?\s*(.*)$/i);
+  if (!m || primera.length > 90) return { tto: txt, dieta: "" };
+  const resto = (m[2] || "").trim();
+  // Lo que sobra después del peso es la dieta ("dieta blanda", "NXB", "NTE 21").
+  const esDieta = /^(DIETA|NADA POR BOCA|NXB|NPO|N[EPT]{1,2}\b|AYUNO|V[IÍ]A ORAL|NUTRICI[ÓO]N)/i.test(resto);
+  return {
+    tto: ls.slice(1).join("\n").replace(/^\n+/, ""),
+    dieta: esDieta || resto ? resto : "",
+  };
+}
+
 function paPartirAccesos(txt) {
   const out = { accesos: [], imagenes: [], arm: [] };
   if (!txt) return { accesos: "", imagenes: "", arm: "" };
@@ -6863,7 +7052,28 @@ function paProcesar(raw, unidad) {
 
   // Repartir laboratorio, EAB, cultivos y estudios según lo que dice cada
   // renglón, no según en qué campo lo escribieron.
-  Object.assign(campos, paReordenarClinicos(campos));
+  // El peso y la dieta salen del arranque de TRATAMIENTO: el peso ya se
+  // muestra en la ficha y la dieta pertenece a Requerimientos.
+  if (campos.tto) {
+    const pt = paPartirTto(campos.tto);
+    if (pt.tto !== campos.tto) {
+      campos.tto = pt.tto;
+      if (pt.dieta) campos.req = [pt.dieta, campos.req].filter(Boolean).join("\n");
+      if (!campos.tto) delete campos.tto;
+    }
+  }
+  // Ojo con Object.assign acá: paReordenarClinicos puede BORRAR un campo
+  // —cuando todos sus renglones se mudaron a otra sección— y assign sólo
+  // copia las claves que existen, así que la vieja sobrevivía. El resultado
+  // era el mismo cultivo apareciendo en Cultivos y en Estudios a la vez.
+  // Hay que sacar explícitamente las que el reordenado eliminó.
+  {
+    const ordenado = paReordenarClinicos(campos);
+    for (const k of ["labo", "eab", "cultivos", "estudios"]) {
+      if (ordenado[k] === undefined) delete campos[k];
+      else campos[k] = ordenado[k];
+    }
+  }
 
   const todo = Object.values(campos).join(" ");
   const inf = [], vistos = new Set();
@@ -6948,7 +7158,10 @@ function paProcesar(raw, unidad) {
   // muestra, con la fecha adelante.
   const CON_ASTERISCO = new Set(["labo", "eab", "cultivos", "estudios"]);
   for (const [k, v] of Object.entries(campos)) if (k !== "pendiente") {
-    const limpio = k === "cultivos" ? paCultivos(v) : paLimpiar(v);
+    // Cultivos pasa por paLimpiar ANTES de agruparse: si no, las siglas de
+    // esa sección se quedaban crudas —"HMC X2" seguía siendo "HMC X2" en vez
+    // de "HCx2"— porque paCultivos sólo reordena y nunca normaliza.
+    const limpio = k === "cultivos" ? paCultivos(paLimpiar(v)) : paLimpiar(v);
     // *fecha estudio resultado, en las tres secciones fechadas.
     limpios[k] = CON_ASTERISCO.has(k) ? paFormatoAsterisco(limpio) : limpio;
   }
@@ -7586,6 +7799,12 @@ function PaseAppView({ user }) {
       <div className="no-print" style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
         <button onClick={deshacer} style={B}>↶ Deshacer</button>
         <button onClick={reiniciar} style={B}>Borrar mis anotaciones y sincronizar pase</button>
+        {/* El botón de imprimir el pase está sacado a propósito (2/9/2026).
+            La función imprimirPase() sigue abajo, entera y funcionando, pero
+            el formato todavía tiene errores que Gonzalo está marcando sobre
+            los PDF de ejemplo. Hasta que estén resueltos no se ofrece, porque
+            un pase impreso con datos mal ordenados es peor que no tenerlo.
+            Para volver a habilitarlo alcanza con reponer este botón. */}
         <label style={{ ...B, display: "inline-flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={verOriginal} onChange={(e) => setVerOriginal(e.target.checked)}
             style={{ width: 16, height: 16, accentColor: "#0F5F66", margin: 0 }} />
@@ -8282,6 +8501,209 @@ function ArmPopup({ p, v, set, setPT, cerrar }) {
 // dice todo lo que hay que saber en el renglón de tratamiento; ponerlo acá
 // abajo repetido solo hace ruido en la sección que uno mira para chequear una
 // bomba.
+/* ══════════════════════════════════════════════════════════════════════════
+   IMPRIMIR EL PASE
+
+   Para llevar en el bolsillo del ambo y anotar encima. Las restricciones
+   vienen de cómo se usa, no de cómo se ve lindo en pantalla:
+
+   · Máximo dos hojas (cuatro carillas) por UTI. Medido sobre el pase real,
+     UTI 3 es la peor con 15.350 caracteres en nueve camas; a dos columnas y
+     cuerpo 7.5 entra en tres carillas, con margen.
+   · No falta NADA. Todos los campos, completos, sin recortar. Un pase al que
+     le falta un renglón no sirve, y peor: hace desconfiar del resto.
+   · Un paciente no se parte entre dos carillas: buscar el final de la ficha
+     dando vuelta la hoja es exactamente lo que uno no quiere hacer en el
+     medio de un pase.
+   · Se imprime en blanco y negro, que es lo que hay. Las jerarquías se hacen
+     con peso y tamaño de letra, no con color: un fondo gris claro sale negro
+     en una impresora cansada y tapa el texto.
+   · Espacio en blanco para anotar a mano, porque la hoja se usa con birome.
+
+   Va en una ventana aparte con su propio HTML: pelear contra los estilos de
+   pantalla para que impriman distinto es más frágil y más difícil de leer.
+   ══════════════════════════════════════════════════════════════════════════ */
+function imprimirPase(pacientes, unidad, tomado) {
+  const esc = (s) => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Los marcadores internos no van al papel: «» era negrita en pantalla y los
+  // caracteres de resaltado son invisibles pero ocupan lugar.
+  const limpio = (s) => paSinMarcas(String(s || "")).replace(/[«»]/g, "");
+
+  // Un renglón resaltado en pantalla se imprime con una barra al margen: el
+  // color no sobrevive al blanco y negro, pero la marca sí tiene que llegar.
+  const renglones = (txt) => String(txt || "").split("\n").map((cruda) => {
+    const { color, texto } = paMarcaDe(cruda);
+    const l = texto.replace(/[\u00AB\u00BB]/g, "").trim();
+    if (!l) return "";
+    return `<div class="l${color ? " mk" : ""}">${esc(l)}</div>`;
+  }).join("");
+
+  const ficha = (p) => {
+    // Las dosis calculadas van al papel: es la cuenta que uno no quiere hacer
+    // de memoria a las cuatro de la mañana. Se arma acá arriba porque las
+    // secciones la insertan debajo de Tratamiento.
+    const inf = (p.infusiones || []).map((i) => {
+      const g = paDosis(i, p.peso);
+      if (g.sinUnidad) return `${esc(i.droga)} ${i.mg}/${i.ml}/${i.ritmo}`;
+      // Los decimales se eligen segun la magnitud: una noradrenalina a
+      // 0.019 mcg/kg/min con dos decimales sale "0.00", que en una hoja de
+      // pase es peor que no poner nada. Numeros chicos piden mas resolucion.
+      const fmt = (x) => x >= 10 ? x.toFixed(1) : x >= 0.1 ? x.toFixed(2) : x.toFixed(3);
+      const val = PA_POR_MINUTO.has(i.droga)
+        ? `${fmt(g.kgmin)} mcg/kg/min`
+        : `${fmt(g.kgh)} ${g.u}`;
+      return `${esc(i.droga)} ${i.mg}/${i.ml}/${i.ritmo} = <b>${val}</b>${g.supuesto ? " *" : ""}`;
+    });
+    const dosisHTML = () => inf.length
+      ? `<div class="dos"><span class="r2">Dosis calculadas</span>${inf.map((x) => `<div class="l">${x}</div>`).join("")}</div>`
+      : "";
+
+    // Qué va en columnas y qué cruza la ficha entera.
+    //
+    // Las cuatro primeras son el relato del paciente —quién es, qué le pasó,
+    // qué necesita, qué recibe— y son cortas y comparables: puestas al lado se
+    // leen en paralelo, que es como uno las piensa (esto tiene, esto le doy).
+    //
+    // Las otras son listas de datos fechados, largas y de ancho irregular. En
+    // media columna quedarían en un chorizo de dos palabras por renglón, así
+    // que cruzan la ficha entera y ganan aire.
+    const EN_COLUMNA = ["ap", "ea", "req", "tto"];
+    const uno = (k) => `<div class="s"><span class="r">${esc(PA_ROT[k])}</span>${renglones(p.campos[k])}`
+      // Las dosis calculadas van pegadas a Tratamiento y no al final de la
+      // ficha: son la lectura de esos mismos renglones, y separarlas obliga
+      // a saltar de una punta a la otra para cruzar la infusion con su dosis.
+      + (k === "tto" ? dosisHTML() : "") + `</div>`;
+
+    const hay = (k) => (p.campos || {})[k] && String(p.campos[k]).trim();
+    const enCol = PA_ORDEN.filter((k) => EN_COLUMNA.includes(k) && hay(k));
+    const anchas = PA_ORDEN.filter((k) => !EN_COLUMNA.includes(k) && hay(k));
+
+    const secciones =
+      (enCol.length ? `<div class="par">${enCol.map(uno).join("")}</div>` : "") +
+      anchas.map(uno).join("");
+    const pesos = [p.peso ? `${p.peso} kg` : null, p.pesoTeorico ? `PT ${p.pesoTeorico}` : null]
+      .filter(Boolean).join(" · ");
+    return `<article class="p">
+      <header>
+        <span class="cama">${esc(p.cama)}</span>
+        <span class="nom">${esc(p.nombre) || "—"}</span>
+        <span class="meta">${[p.edad ? p.edad + "a" : "", p.sexo ? p.sexo[0].toUpperCase() : "", pesos].filter(Boolean).join(" · ")}</span>
+      </header>
+      ${p.mi ? `<div class="mi">${esc(limpio(p.mi))}</div>` : ""}
+      ${secciones}
+      ${inf.length && !(p.campos || {}).tto ? `<div class="s">${dosisHTML()}</div>` : ""}
+      ${(() => {
+        // Pendientes: lo que queda por hacer. Cruza la ficha entera y va al
+        // pie, que es el lugar donde uno vuelve a mirar antes de irse.
+        // Con recuadro propio porque es lo único de la hoja que no describe
+        // al paciente sino que le pide algo a quien la está leyendo.
+        //
+        // Hasta hoy este campo del Drive no se imprimía ni se veía en
+        // pantalla: se leía, se convertía en la lista de tareas, y ahí moría.
+        // Diez de los veinticinco pacientes lo traen.
+        const ps = (p.pendientes || []).filter((x) => x && x.texto && !x.listo);
+        if (!ps.length) return "";
+        return `<div class="pend"><span class="r2">Pendientes</span>` +
+          ps.map((x) => `<div class="l">☐ ${esc(limpio(x.texto))}</div>`).join("") + `</div>`;
+      })()}
+      <div class="notas"></div>
+    </article>`;
+  };
+
+  const vivos = pacientes.filter((p) => !p.egresado);
+  const win = window.open("", "_blank");
+  if (!win) { alert("El navegador bloqueó la ventana de impresión. Permitila y probá de nuevo."); return; }
+  const titulo = `Pase ${unidad} — ${new Date().toLocaleDateString("es-AR")}`;
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8" />
+  <title>${esc(titulo)}</title>
+  <style>
+    * { box-sizing: border-box; }
+    @page { size: A4; margin: 7mm 6mm; }
+    body { font-family: 'Inter', system-ui, sans-serif; color: #000; margin: 0; font-size: 7pt; line-height: 1.2; }
+
+    /* Dos columnas: el texto del pase son frases cortas, y a un ancho de
+       página entero el ojo se pierde volviendo al margen izquierdo. */
+    /* La hoja ya no se parte en dos columnas de fichas: cada paciente ocupa
+       una FILA completa, uno debajo del otro. Antes, con dos columnas de
+       fichas, una ficha larga saltaba a la columna de al lado y arriba, que
+       es justo lo que uno no quiere leyendo un pase.
+
+       Las columnas ahora viven ADENTRO de cada ficha, entre secciones. */
+    .cols { }
+
+    h1 { font-size: 11pt; margin: 0 0 1mm; }
+    .sub { font-size: 7pt; color: #444; margin: 0 0 2.5mm;
+           border-bottom: .5pt solid #000; padding-bottom: 1mm; }
+
+    /* Las cuatro secciones del relato clinico, una al lado de la otra.
+       columns y no grid: asi una seccion mas larga que la otra no deja un
+       hueco, el texto sigue fluyendo a la columna siguiente. */
+    .par { columns: 2; column-gap: 4mm; margin-bottom: .4mm; }
+    .par > .s { break-inside: avoid; }
+
+    /* Pendientes: lo unico que le pide algo al que lee. Recuadro propio,
+       cruzando toda la ficha, con casillas para tildar con birome. */
+    .pend { border: .7pt solid #000; border-radius: 1mm; padding: .8mm 1.4mm;
+            margin-top: .8mm; break-inside: avoid; }
+    .pend .l { padding-left: 0; text-indent: 0; }
+
+    /* Un paciente NUNCA se parte. Antes se permitia para ahorrar espacio y
+       el resultado era una ficha que seguia arriba a la derecha, en la otra
+       columna: al pasar la vista uno cree que termino y se saltea media
+       ficha. Con el limite en cuatro carillas por unidad hay lugar de sobra
+       para no hacer esa concesion. */
+    .p { border: .5pt solid #000; border-radius: 1.2mm; padding: 1.2mm 1.6mm;
+         margin: 0 0 1.4mm; break-inside: avoid; page-break-inside: avoid; }
+    .p > header { break-after: avoid; page-break-after: avoid; }
+
+    .p > header { display: flex; align-items: baseline; gap: 1.5mm;
+                  border-bottom: .5pt solid #999; padding-bottom: .8mm; margin-bottom: 1mm; }
+    .cama { font-family: ui-monospace, Menlo, monospace; font-size: 10pt; font-weight: 800; }
+    .nom { font-size: 8.6pt; font-weight: 700; flex: 1; }
+    .meta { font-size: 6.6pt; color: #333; white-space: nowrap; }
+
+    /* El motivo de ingreso es lo primero que uno lee para ubicarse. */
+    .mi { font-size: 7.4pt; font-weight: 700; margin: 0 0 .7mm; }
+
+    /* Una sección no se parte al medio: cortar "Cultivos" entre dos columnas
+       es justo lo que hace perder el hilo leyendo. */
+    .s { margin-bottom: .6mm; break-inside: avoid; }
+    /* Las dosis calculadas, colgando de Tratamiento. Sangradas y con filete
+       para que se lean como lo que son: la cuenta hecha sobre los renglones
+       de arriba, no una sección más del pase. */
+    .dos { margin: .5mm 0 0 1.5mm; padding-left: 1.5mm; border-left: .8pt solid #666; }
+    .r2 { font-size: 5.9pt; font-weight: 800; text-transform: uppercase;
+          color: #333; display: block; }
+    /* El rótulo va en la misma línea que el texto y no en un renglón propio:
+       diez secciones por paciente son diez renglones perdidos por ficha. */
+    .r { font-size: 6.2pt; font-weight: 800; text-transform: uppercase;
+         letter-spacing: .02em; color: #000; display: block;
+         border-bottom: .3pt dotted #bbb; margin-bottom: .3mm; }
+    .l { margin: 0; padding-left: 1.6mm; text-indent: -1.6mm; }
+    /* Lo que estaba resaltado en pantalla: barra al margen, que sí imprime. */
+    .l.mk { border-left: 1.2pt solid #000; padding-left: 1.4mm; margin-left: -2mm; text-indent: 0; }
+
+    /* Lugar para escribir con birome durante el pase. */
+    .notas { height: 5mm; border-top: .3pt dashed #999; margin-top: .8mm; }
+
+    @media print { .noprint { display: none; } }
+    .noprint { position: fixed; top: 8px; right: 8px; font-family: system-ui;
+               font-size: 12px; padding: 8px 14px; border: 1px solid #888;
+               border-radius: 6px; background: #fff; cursor: pointer; }
+  </style></head><body>
+  <button class="noprint" onclick="window.print()">Imprimir</button>
+  <h1>${esc(unidad)} · ${vivos.length} paciente${vivos.length === 1 ? "" : "s"}</h1>
+  <div class="sub">Pase del Drive ${esc(tomado ? new Date(tomado).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—")}
+    · impreso ${esc(new Date().toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }))}
+    · las dosis con * usan 70 kg supuestos</div>
+  <div class="cols">${vivos.map(ficha).join("")}</div>
+  </body></html>`);
+  win.document.close();
+  setTimeout(() => { win.focus(); win.print(); }, 250);
+}
+
 function DosisDe({ p, onCambio }) {
   const inf = p.infusiones || [];
   if (!inf.length) return null;
