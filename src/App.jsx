@@ -6976,23 +6976,119 @@ function PaseAppView({ user }) {
   // nuevo; o copia del paciente que se está viendo, para cuando lo que se
   // quiere es una segunda versión de la misma ficha (por ejemplo, dejar el
   // pase de la mañana y arrancar el de la tarde sin volver a tipear todo).
-  const agregarCama = (copiar) => {
-    const base = copiar
-      ? JSON.parse(JSON.stringify(mio[idx] || {}))
-      : {
-          nombre: "", edad: null, sexo: null, mi: "", peso: null, pesoTeorico: null,
-          campos: {}, anotaciones: [], infusiones: [], arm: {}, ordenCampos: [],
-        };
+  const agregarCama = () => {
+    const base = {
+      nombre: "", edad: null, sexo: null, mi: "", peso: null, pesoTeorico: null,
+      campos: {}, anotaciones: [], infusiones: [], arm: {}, ordenCampos: [],
+    };
     base.cama = String((mio[idx] || {}).cama || "");
     base.unidad = uSel;
     base.egresado = false;
     base.sinCompletar = false;
     base.agregada = true;               // marca: no vino del Drive
-    if (copiar) base.nombre = (base.nombre || "") + " (copia)";
     mutar((d) => { d.splice(idx + 1, 0, base); });
     setISel(idx + 1);
     setEditando(true);                  // se abre la ficha para completarla
-    setEstado(copiar ? "Cama agregada como copia" : "Cama agregada");
+    setEstado("Cama agregada");
+  };
+
+  /* ── Enviar un paciente a otra cama ─────────────────────────────────────
+     Los movimientos de cama son de las cosas que más pasan en una guardia y
+     hasta ahora había que editar la ficha a mano de los dos lados, con el
+     riesgo de dejar dos pacientes declarando la misma cama sin darse cuenta.
+
+     La cama viaja con el paciente: lo que se mueve es la ficha entera, y el
+     número de cama y la unidad pasan a ser los del destino. Se puede cruzar
+     de unidad —de UTI 1 a RECU, por ejemplo—, que es lo que pasa de verdad.
+
+     Si el destino está libre, se muda y listo, sin preguntar. Si está
+     ocupado hay que decidir qué pasa con el que estaba, y ahí sí pregunta:
+     intercambiarlos, mandarlo a una tercera cama, o marcarlo como egresado.
+     Nunca se resuelve solo, porque las tres respuestas son plausibles y
+     elegir mal significa perder una ficha entera. */
+  const [enviando, setEnviando] = useState(null);   // { destino, choque } | null
+
+  // La ficha vacía que queda cuando alguien egresa. Es la misma forma que usa
+  // marcarEgreso, sacada acá para no repetirla en los dos lugares.
+  const fichaVacia = (cama, unidad) => ({
+    cama, unidad, egresado: true, agregada: false, sinCompletar: false,
+    nombre: "", edad: null, sexo: null, mi: "", peso: null, pesoTeorico: null,
+    campos: {}, anotaciones: [], infusiones: [], intermitentes: [],
+    pendientes: [], arm: {}, ordenCampos: [], armTexto: "",
+    balance: { ingresos: [], egresos: [] },
+  });
+
+  // Una cama está ocupada si tiene a alguien que no egresó. Una cama vacía
+  // por egreso se puede reusar sin preguntar nada.
+  const ocupada = (x) => x && !x.egresado && (x.nombre || "").trim();
+
+  // Todas las camas del pase, para el selector de destino. Se ofrecen las de
+  // todas las unidades porque los traslados entre sectores son moneda
+  // corriente; la propia queda afuera, que mandarse a uno mismo no es nada.
+  const destinos = mio
+    .map((x, i) => ({ i, cama: x.cama, unidad: x.unidad, quien: ocupada(x) ? x.nombre : null }))
+    .filter((c) => c.i !== idx);
+
+  // Paso 1: elegiste el destino. Si está libre se muda directo; si no, se
+  // guarda el choque para que la pantalla pregunte qué hacer con el que está.
+  const elegirDestino = (j) => {
+    if (ocupada(mio[j])) { setEnviando({ destino: j, choque: true }); return; }
+    moverA(j, "libre", null);
+  };
+
+  // Paso 2: el movimiento en sí. `que` dice qué pasa con el desplazado:
+  //   libre        → no había nadie
+  //   intercambiar → se va a la cama que dejo yo
+  //   tercera      → se va a la cama `otro` que elegiste
+  //   egreso       → su ficha se vacía y queda como cama libre
+  const moverA = (j, que, otro) => {
+    const miCama = mio[idx].cama, miUnidad = mio[idx].unidad;
+    const suCama = mio[j].cama, suUnidad = mio[j].unidad;
+    mutar((d) => {
+      // Los índices se corren en cuanto se borra un elemento, así que primero
+      // se agarran las fichas por referencia y recién después se toca el
+      // array. Trabajar con índices y splice a la vez es la forma clásica de
+      // mover mal a un paciente.
+      const yo = d[idx], el = d[j], tercero = otro != null ? d[otro] : null;
+
+      if (que === "intercambiar") {
+        el.cama = miCama; el.unidad = miUnidad;
+      } else if (que === "tercera" && tercero) {
+        el.cama = tercero.cama; el.unidad = tercero.unidad;
+        // La tercera cama estaba libre (el selector sólo ofrece libres), así
+        // que lo que había ahí era una ficha vacía y sobra.
+        d.splice(d.indexOf(tercero), 1);
+      } else if (que === "egreso") {
+        // El que estaba se fue: su ficha desaparece y la cama la ocupa el que
+        // llega. Dejar la ficha vacía además haría que dos renglones declaren
+        // la misma cama.
+        d.splice(d.indexOf(el), 1);
+      } else if (que === "libre") {
+        // El destino era una cama vacía. Esa ficha vacía se consume: si no,
+        // quedan dos renglones diciendo ser la misma cama, uno con el
+        // paciente y otro vacío, y en la barra aparece dos veces.
+        d.splice(d.indexOf(el), 1);
+      }
+      yo.cama = suCama;
+      yo.unidad = suUnidad;
+    });
+    // La vista sigue al paciente movido: si no, desaparece de la pestaña en
+    // la que estabas y parece que se perdió. No se puede guardar la ficha por
+    // referencia porque mutar clona todo; se lo busca por nombre y cama, que
+    // después del movimiento ya lo identifican.
+    const miNombre = mio[idx].nombre;
+    setUSel(suUnidad);
+    setMio((cur) => {
+      const k = cur.findIndex((x) => x.cama === suCama && x.unidad === suUnidad && x.nombre === miNombre);
+      if (k >= 0) setISel(k);
+      return cur;
+    });
+    setEnviando(null);
+    setEstado(
+      que === "intercambiar" ? `Intercambiados: ${miCama} ↔ ${suCama}`
+      : que === "egreso" ? `Movido a ${suCama}. El paciente de ${suCama} egresó.`
+      : `Movido a ${suCama}`
+    );
   };
 
   const deshacer = () => {
@@ -7395,19 +7491,17 @@ function PaseAppView({ user }) {
               </span>
             )}
             {p.sinCompletar && <span style={{ fontSize: 11.5, border: "1px dashed #FCA5A5", color: "#B91C1C", borderRadius: 4, padding: "3px 8px" }}>Último día sin completar</span>}
-            {/* Agregar cama: se puede repetir el número, y se elige si nace
-                vacía o como copia de la ficha que se está mirando. */}
             {editable && !confirmandoEgreso && (
               <span style={{ marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button onClick={() => agregarCama(false)}
+                <button onClick={agregarCama}
                   title="Sumar una cama a esta unidad, vacía. Se puede repetir el número de cama."
                   style={{ fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "#334155", background: "#fff", border: "1px solid #CBD5E1", borderRadius: 4, padding: "4px 10px", cursor: "pointer" }}>
                   + Agregar cama
                 </button>
-                <button onClick={() => agregarCama(true)}
-                  title="Sumar una cama copiando esta ficha entera"
+                <button onClick={() => setEnviando({ destino: null, choque: false })}
+                  title="Mover este paciente a otra cama, de esta o de otra unidad"
                   style={{ fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "#334155", background: "#fff", border: "1px solid #CBD5E1", borderRadius: 4, padding: "4px 10px", cursor: "pointer" }}>
-                  + Copia de esta
+                  → Enviar a otra cama
                 </button>
                 <button onClick={() => setConfirmandoEgreso(true)}
                   title="El paciente egresó y el pase del Drive todavía lo muestra"
@@ -7417,6 +7511,84 @@ function PaseAppView({ user }) {
               </span>
             )}
           </div>
+
+          {/* Enviar a otra cama. Dos pasos: elegir destino y, si está ocupado,
+              decidir qué pasa con el que estaba. */}
+          {editable && enviando && (
+            <div style={{ marginTop: 10, padding: "12px 14px", borderRadius: 6, border: "1.5px solid #CBD5E1", background: "#F8FAFC" }}>
+              {!enviando.choque ? (
+                <>
+                  <div style={{ fontSize: 13.5, color: "#0F172A", marginBottom: 9 }}>
+                    Enviar a <b>{p.nombre || "este paciente"}</b> (cama {p.cama}) a:
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxHeight: 200, overflowY: "auto" }}>
+                    {destinos.map((c) => (
+                      <button key={c.i} onClick={() => elegirDestino(c.i)}
+                        title={c.quien ? `Ocupada por ${c.quien}` : "Cama libre"}
+                        style={{ fontFamily: "ui-monospace,monospace", fontSize: 13, fontWeight: 700, padding: "6px 10px", borderRadius: 5, cursor: "pointer",
+                          border: `1.5px solid ${c.quien ? "#E9C48A" : "#86EFAC"}`,
+                          background: c.quien ? "#FFFBF3" : "#F0FDF4", color: "#334155" }}>
+                        {c.cama}
+                        <span style={{ display: "block", fontSize: 10, fontWeight: 600, opacity: 0.75, fontFamily: "inherit" }}>
+                          {c.unidad}{c.quien ? " · ocupada" : " · libre"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <button onClick={() => setEnviando(null)} style={{ ...B, marginTop: 10 }}>Cancelar</button>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 13.5, color: "#0F172A", lineHeight: 1.55, marginBottom: 10 }}>
+                    En la cama <b>{mio[enviando.destino].cama}</b> está <b>{mio[enviando.destino].nombre}</b>.
+                    ¿Qué hacemos con {mio[enviando.destino].nombre ? "él" : "esa ficha"}?
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button onClick={() => moverA(enviando.destino, "intercambiar", null)} style={{ ...B, fontWeight: 700 }}>
+                      Se cambian de lugar (pasa a {p.cama})
+                    </button>
+                    <button onClick={() => setEnviando({ ...enviando, tercera: true })} style={B}>
+                      Mandarlo a otra cama
+                    </button>
+                    <button onClick={() => moverA(enviando.destino, "egreso", null)}
+                      style={{ ...B, color: "#B91C1C", borderColor: "#FCA5A5" }}>
+                      Ese paciente se fue
+                    </button>
+                    <button onClick={() => setEnviando(null)} style={B}>Cancelar</button>
+                  </div>
+
+                  {/* Tercera cama: sólo las libres, porque encadenar dos
+                      desplazados abre una cadena sin fin. */}
+                  {enviando.tercera && (
+                    <div style={{ marginTop: 11, paddingTop: 10, borderTop: "1px dashed #CBD5E1" }}>
+                      <div style={{ fontSize: 12.5, color: "#475569", marginBottom: 7 }}>
+                        ¿A qué cama libre va <b>{mio[enviando.destino].nombre}</b>?
+                      </div>
+                      {(() => {
+                        const libres = destinos.filter((c) => c.i !== enviando.destino && !c.quien);
+                        if (!libres.length) return (
+                          <div style={{ fontSize: 12.5, color: "#B91C1C" }}>
+                            No hay ninguna cama libre. Agregá una con “+ Agregar cama” y volvé a intentar.
+                          </div>
+                        );
+                        return (
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {libres.map((c) => (
+                              <button key={c.i} onClick={() => moverA(enviando.destino, "tercera", c.i)}
+                                style={{ fontFamily: "ui-monospace,monospace", fontSize: 13, fontWeight: 700, padding: "6px 10px", borderRadius: 5, cursor: "pointer", border: "1.5px solid #86EFAC", background: "#F0FDF4", color: "#334155" }}>
+                                {c.cama}
+                                <span style={{ display: "block", fontSize: 10, fontWeight: 600, opacity: 0.75, fontFamily: "inherit" }}>{c.unidad}</span>
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {campos.map((k) => {
