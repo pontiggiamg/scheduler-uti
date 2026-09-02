@@ -5939,6 +5939,82 @@ const paTitulo = (s) => s.split(/\s+/).map((w, i) => {
   return i > 0 && PA_CHICAS.has(lw) ? lw : lw.charAt(0).toUpperCase() + lw.slice(1);
 }).join(" ");
 
+/* ── Nombres de pila ───────────────────────────────────────────────────────
+   Sirven para una sola cosa: decidir el orden cuando el pase no lo aclara.
+   "FUENTES ARMANDO, M, 77" tiene coma, pero la coma separa el sexo, no el
+   apellido; sin esta lista la app mostraba "Fuentes Armando" al revés.
+
+   Es una lista, no una regla: no hay ninguna forma de saber por la forma de
+   la palabra si "Armando" es nombre o apellido —de hecho Armando Espasandín
+   y Armando Fuentes están los dos en el pase, uno con Armando de nombre y el
+   otro también—. Por eso sólo se da vuelta el nombre cuando UNA de las dos
+   palabras está acá y la otra no. Si están las dos, o ninguna, se respeta el
+   orden en que lo escribieron: "Juan Máximo" queda "Juan Máximo".
+
+   Están los de uso corriente en el plantel de pacientes del servicio. Si
+   aparece uno que falta y sale al revés, se agrega acá y listo. */
+const PA_PILA = new Set([
+  // Masculinos
+  "JUAN", "JOSE", "JOSÉ", "LUIS", "CARLOS", "JORGE", "MIGUEL", "ANGEL", "ÁNGEL",
+  "MANUEL", "PEDRO", "PABLO", "RICARDO", "ROBERTO", "RAUL", "RAÚL", "OSCAR",
+  "OSVALDO", "HECTOR", "HÉCTOR", "HUGO", "ALBERTO", "ADOLFO", "ANDRES", "ANDRÉS",
+  "ANTONIO", "ARMANDO", "ARTURO", "DANIEL", "DAVID", "DIEGO", "DOMINGO", "EDUARDO",
+  "ENRIQUE", "ERNESTO", "FEDERICO", "FELIX", "FÉLIX", "FERNANDO", "FRANCISCO",
+  "GABRIEL", "GERARDO", "GUILLERMO", "GUSTAVO", "HORACIO", "IGNACIO", "JAVIER",
+  "JULIO", "LEANDRO", "LEONARDO", "LORENZO", "LUCAS", "MARCELINO", "MARCELO",
+  "MARCOS", "MARIANO", "MARIO", "MARTIN", "MARTÍN", "MATIAS", "MATÍAS", "MAURICIO",
+  "MAXIMO", "MÁXIMO", "NESTOR", "NÉSTOR", "NICOLAS", "NICOLÁS", "NORBERTO",
+  "OMAR", "PATRICIO", "RAMON", "RAMÓN", "RODOLFO", "RODRIGO", "RUBEN", "RUBÉN",
+  "SANTIAGO", "SEBASTIAN", "SEBASTIÁN", "SERGIO", "TOMAS", "TOMÁS", "VICENTE",
+  "VICTOR", "VÍCTOR", "WALTER", "ADRIAN", "ADRIÁN", "ALEJANDRO", "ALFREDO",
+  "CRISTIAN", "DARIO", "DARÍO", "EMILIO", "ESTEBAN", "EZEQUIEL", "FABIAN", "FABIÁN",
+  "GONZALO", "JOAQUIN", "JOAQUÍN", "LUCIANO", "MAXIMILIANO", "AGUSTIN", "AGUSTÍN",
+  // Femeninos
+  "MARIA", "MARÍA", "ANA", "CARMEN", "CRISTINA", "GRACIELA", "SUSANA", "SILVIA",
+  "PATRICIA", "MONICA", "MÓNICA", "BEATRIZ", "LAURA", "MARTA", "NORMA", "ELENA",
+  "ROSA", "TERESA", "ALICIA", "ANDREA", "CLAUDIA", "GABRIELA", "MARCELA",
+  "VERONICA", "VERÓNICA", "ADRIANA", "SANDRA", "VIVIANA", "LILIANA", "MIRTA",
+  "NELIDA", "NÉLIDA", "OLGA", "IRMA", "ELSA", "HILDA", "JULIA", "LUCIA", "LUCÍA",
+  "FLORENCIA", "SOFIA", "SOFÍA", "VALERIA", "NATALIA", "NATALY", "CAROLINA",
+  "CARLA", "KARINA", "PAULA", "LUISANA", "ROMINA", "YAMELA", "CECILIA", "DANIELA",
+  "ESTELA", "INES", "INÉS", "IRENE", "ISABEL", "JOSEFA", "JUANA", "LIDIA", "LUISA",
+  "MERCEDES", "NORA", "RAQUEL", "SARA", "STELLA", "VICTORIA", "AGUSTINA",
+  "CAMILA", "MICAELA", "ROCIO", "ROCÍO", "SOLEDAD", "VANESA", "XIMENA",
+]);
+
+const esPila = (w) => PA_PILA.has((w || "").toUpperCase());
+
+/* Decide el orden de "PALABRA PALABRA" cuando el pase no lo aclara con una
+   coma. Devuelve el texto reordenado como "nombre apellido", o el mismo
+   texto si no hay una razón clara para darlo vuelta. */
+function paOrdenNombre(t) {
+  const ws = t.split(/\s+/).filter(Boolean);
+  if (ws.length < 2) return t;
+  const pilas = ws.map(esPila);
+  const cuantas = pilas.filter(Boolean).length;
+  // Ninguna reconocida, o todas: no hay información para decidir. Se respeta
+  // lo escrito, que es lo que pidió Gonzalo para los casos dudosos.
+  if (cuantas === 0 || cuantas === ws.length) return t;
+
+  // Los nombres de pila van juntos: o están todos al principio (ya está bien)
+  // o todos al final (hay que darlo vuelta). Si están intercalados, es un
+  // nombre raro y no se toca.
+  const primera = pilas.indexOf(true), ultima = pilas.lastIndexOf(true);
+  if (ultima - primera + 1 !== cuantas) return t;
+
+  if (primera === 0) return t;                       // "Armando Fuentes": ya está
+
+  // Sólo se da vuelta el caso de dos palabras: "FUENTES ARMANDO" → "Armando
+  // Fuentes". Con tres o más no alcanza para decidir. "HASAN NICOLÁS DANIEL"
+  // puede ser apellido Hasan con dos nombres, o dos apellidos con Daniel de
+  // nombre; las dos lecturas son razonables y dar vuelta una a la fuerza
+  // acierta la mitad de las veces. En la duda se respeta lo escrito, y si
+  // está mal se corrige a mano desde "editar ficha".
+  if (ws.length === 2 && ultima === ws.length - 1)
+    return [ws[1], ws[0]].join(" ");
+  return t;
+}
+
 function paNombre(raw) {
   let t = (raw || "").replace(/\s+/g, " ").trim();
   let edad = null, sexo = null;
@@ -5950,11 +6026,20 @@ function paNombre(raw) {
   let nombre;
   if (t.includes(",")) {
     const [ap, no] = t.split(/,(.+)/);
-    nombre = `${paTitulo(no.trim())} ${paTitulo(ap.trim())}`;
+    // La coma dice "apellido, nombre" y casi siempre acierta. Pero hay pases
+    // escritos "FUENTES ARMANDO, M, 77", donde la coma separaba el sexo y ya
+    // se la comió el paso de arriba: lo que queda antes de la coma es el
+    // nombre completo, no sólo el apellido. Si de ese lado hay un nombre de
+    // pila reconocible, mandan las palabras y no la coma.
+    nombre = no === undefined
+      ? paTitulo(paOrdenNombre(ap.trim()))
+      : `${paTitulo(no.trim())} ${paTitulo(ap.trim())}`;
   } else {
-    // Sin coma no se sabe dónde termina el apellido: invertir a ciegas convierte
-    // "Hasan Nicolás Daniel" en "Daniel Hasan Nicolás". Se deja el orden.
-    nombre = paTitulo(t);
+    // Sin coma no se sabe dónde termina el apellido. Se da vuelta sólo si una
+    // de las palabras es un nombre de pila conocido y la otra no; si no, se
+    // respeta el orden, porque invertir a ciegas convierte "Hasan Nicolás
+    // Daniel" en "Daniel Hasan Nicolás".
+    nombre = paTitulo(paOrdenNombre(t));
   }
   return { nombre: nombre.trim(), edad, sexo };
 }
@@ -6570,6 +6655,15 @@ function paCultivos(txt) {
     .join("\n");
 }
 
+/* Clave para ordenar camas como las cuenta una persona y no como las ordena
+   una computadora. Cada tanda de dígitos se rellena con ceros a la izquierda,
+   así "1.2" queda antes que "1.10" y "R3" antes que "R12". Comparar los
+   textos crudos daría el orden alfabético, donde "1.10" viene antes que
+   "1.2" porque el "1" pesa menos que el "2". */
+function paCamaOrden(cama) {
+  return String(cama || "").replace(/\d+/g, (n) => n.padStart(6, "0"));
+}
+
 function paLimpiar(txt) {
   if (!txt) return txt;
   let t = txt.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
@@ -7007,6 +7101,7 @@ function PaseAppView({ user }) {
      Nunca se resuelve solo, porque las tres respuestas son plausibles y
      elegir mal significa perder una ficha entera. */
   const [enviando, setEnviando] = useState(null);   // { destino, choque } | null
+  const [trayendo, setTrayendo] = useState(false);  // eligiendo a quién traer a una cama libre
 
   // La ficha vacía que queda cuando alguien egresa. Es la misma forma que usa
   // marcarEgreso, sacada acá para no repetirla en los dos lugares.
@@ -7084,6 +7179,53 @@ function PaseAppView({ user }) {
     );
   };
 
+  /* ── Qué se puede hacer con una cama libre ──────────────────────────────
+     Una cama vacía no es un error ni un hueco: durante la guardia es un
+     lugar donde puede entrar alguien. Las tres salidas son las que pasan de
+     verdad — entra un paciente nuevo, se muda uno que ya está, o la cama no
+     va más en el pase. */
+
+  // Entra alguien nuevo: la ficha se vacía del todo y se abre para escribir.
+  const ingresarPaciente = () => {
+    mutar((d) => {
+      const c = d[idx].cama, u = d[idx].unidad;
+      d[idx] = {
+        ...fichaVacia(c, u),
+        egresado: false,        // deja de ser cama libre
+        agregada: true,         // no vino del Drive
+        ingreso: paAhora(),     // queda la marca de cuándo entró
+      };
+    });
+    setEditando(true);
+    setEstado("Cama ocupada. Completá la ficha.");
+  };
+
+  // Se muda alguien que ya está en otra cama. Su cama anterior queda libre,
+  // que es lo que pasa de verdad: el lugar del que se fue no desaparece.
+  const traerDe = (j) => {
+    const suCama = mio[j].cama, suUnidad = mio[j].unidad;
+    const acaCama = mio[idx].cama, acaUnidad = mio[idx].unidad;
+    const quien = mio[j].nombre;
+    mutar((d) => {
+      const el = d[j];
+      // La ficha entera se muda: se conserva todo y sólo cambian cama y unidad.
+      d[idx] = { ...JSON.parse(JSON.stringify(el)), cama: acaCama, unidad: acaUnidad };
+      // Donde estaba, queda una cama libre.
+      d[j] = fichaVacia(suCama, suUnidad);
+    });
+    setTrayendo(false);
+    setEstado(`${(quien || "").split(" ").pop()} pasó de ${suCama} a ${acaCama}. La ${suCama} quedó libre.`);
+  };
+
+  // La cama no va más. Se saca del pase: si la agregaste vos desaparece y
+  // listo; si venía del Drive, vuelve cuando sincronices, y el cartel lo dice.
+  const eliminarCama = () => {
+    const c = mio[idx].cama;
+    mutar((d) => { d.splice(idx, 1); });
+    setISel(0);
+    setEstado(`Cama ${c} sacada del pase`);
+  };
+
   const deshacer = () => {
     if (!undo.current.length) { setEstado("Nada para deshacer"); return; }
     const prev = JSON.parse(undo.current.pop());
@@ -7101,7 +7243,19 @@ function PaseAppView({ user }) {
 
   if (cargando || !mio || !foto) return <Skeleton />;
 
-  const idxUnidad = mio.map((p, i) => [p, i]).filter(([p]) => p.unidad === uSel).map(([, i]) => i);
+  // La tira de camas va ordenada por número de cama, no por la posición que
+  // la ficha tiene en el array. Antes seguía el orden del array y al mover a
+  // alguien de unidad aparecía último de la fila aunque su cama fuera la 1.1:
+  // uno recorre la sala por número, así que la barra tiene que leerse igual.
+  //
+  // El orden es natural: "1.2" va antes que "1.10", y "R3" antes que "R12".
+  // Comparar como texto pondría "1.10" antes que "1.2", que es como ordena
+  // una computadora y no como cuenta una persona.
+  const idxUnidad = mio
+    .map((p, i) => [p, i])
+    .filter(([p]) => p.unidad === uSel)
+    .sort(([a], [b]) => paCamaOrden(a.cama).localeCompare(paCamaOrden(b.cama)))
+    .map(([, i]) => i);
   const idx = idxUnidad.includes(iSel) ? iSel : (idxUnidad[0] ?? 0);
   const o = foto.pacientes[idx] || {};
   const p = verOriginal ? o : (mio[idx] || {});
@@ -7367,16 +7521,78 @@ function PaseAppView({ user }) {
           saber que hay lugar es información útil durante la guardia. */}
       {p.egresado ? (
         <div style={{ ...caja, borderStyle: "dashed", background: "#F8FAFC", padding: "26px 18px", textAlign: "center" }}>
-          <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 20, fontWeight: 800, color: "#94A3B8" }}>{p.cama}</div>
-          <div style={{ fontSize: 14.5, fontWeight: 700, color: "#475569", marginTop: 7 }}>Cama libre</div>
-          <div style={{ fontSize: 12.5, color: "#64748B", marginTop: 5, lineHeight: 1.5, maxWidth: 420, margin: "5px auto 0" }}>
-            La sacaste vos durante la guardia. El pase del Drive todavía la muestra ocupada;
-            cuando entre un pase nuevo, con <b>“Borrar mis anotaciones y sincronizar pase”</b> vuelve
-            lo que diga el Drive.
+          {/* El número de cama se edita acá mismo: una cama que agregaste nace
+              con el número de la que estabas mirando y casi siempre hay que
+              corregirlo, y no tenía sentido obligar a abrir la ficha para eso. */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
+            {editable ? (
+              <input value={p.cama || ""} onChange={(e) => mutar((d) => { d[idx].cama = e.target.value; })}
+                title="Número de cama"
+                style={{ width: 92, textAlign: "center", fontFamily: "ui-monospace,monospace", fontSize: 20, fontWeight: 800, color: "#475569", padding: "3px 6px", border: "1.5px solid #CBD5E1", borderRadius: 5, background: "#fff" }} />
+            ) : (
+              <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 20, fontWeight: 800, color: "#94A3B8" }}>{p.cama}</div>
+            )}
           </div>
+          <div style={{ fontSize: 14.5, fontWeight: 700, color: "#475569", marginTop: 7 }}>Cama libre</div>
+          <div style={{ fontSize: 12.5, color: "#64748B", marginTop: 5, lineHeight: 1.5, maxWidth: 440, margin: "5px auto 0" }}>
+            {p.agregada
+              ? <>La agregaste vos durante la guardia. No existe en el pase del Drive.</>
+              : <>La sacaste vos durante la guardia. El pase del Drive todavía la muestra ocupada;
+                 cuando entre un pase nuevo, con <b>“Borrar mis anotaciones y sincronizar pase”</b> vuelve
+                 lo que diga el Drive.</>}
+          </div>
+
           {editable && (
-            <button onClick={() => mutar((d) => { d[idx] = JSON.parse(JSON.stringify(foto.pacientes[idx])); })}
-              style={{ ...B, marginTop: 13 }}>Traer de nuevo los datos del pase</button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginTop: 14 }}>
+              <button onClick={ingresarPaciente} style={{ ...B, fontWeight: 700 }}>
+                Ingresar nuevo paciente
+              </button>
+              <button onClick={() => setTrayendo(true)} style={B}>
+                Traer paciente de otra cama
+              </button>
+              <button onClick={() => eliminarCama()} style={{ ...B, color: "#B91C1C", border: "1.5px solid #FCA5A5" }}>
+                Eliminar cama del pase
+              </button>
+              {/* Sólo tiene sentido si la cama venía del Drive: una cama que
+                  agregaste vos no tiene datos a los que volver. */}
+              {!p.agregada && foto.pacientes[idx] && (
+                <button onClick={() => mutar((d) => { d[idx] = JSON.parse(JSON.stringify(foto.pacientes[idx])); })}
+                  style={B}>Traer de nuevo los datos del pase</button>
+              )}
+            </div>
+          )}
+
+          {/* Traer a alguien de otra cama: la lista de los que hay, y al
+              elegir uno se muda acá y su cama anterior queda libre. */}
+          {editable && trayendo && (
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #CBD5E1", textAlign: "left" }}>
+              <div style={{ fontSize: 12.5, color: "#475569", marginBottom: 8 }}>
+                ¿A quién traés a la cama <b>{p.cama}</b>?
+              </div>
+              {(() => {
+                const gente = mio
+                  .map((x, i) => ({ i, x }))
+                  .filter(({ i, x }) => i !== idx && ocupada(x))
+                  .sort((a, b) => paCamaOrden(a.x.cama).localeCompare(paCamaOrden(b.x.cama)));
+                if (!gente.length) return (
+                  <div style={{ fontSize: 12.5, color: "#64748B" }}>No hay ningún paciente cargado en otra cama.</div>
+                );
+                return (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxHeight: 190, overflowY: "auto" }}>
+                    {gente.map(({ i, x }) => (
+                      <button key={i} onClick={() => traerDe(i)}
+                        style={{ fontFamily: "ui-monospace,monospace", fontSize: 13, fontWeight: 700, padding: "6px 10px", borderRadius: 5, cursor: "pointer", border: "1.5px solid #CBD5E1", background: "#fff", color: "#334155", textAlign: "left" }}>
+                        {x.cama}
+                        <span style={{ display: "block", fontSize: 10.5, fontWeight: 600, opacity: 0.8, fontFamily: "inherit" }}>
+                          {x.unidad} · {(x.nombre || "").split(" ").pop()}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+              <button onClick={() => setTrayendo(false)} style={{ ...B, marginTop: 10 }}>Cancelar</button>
+            </div>
           )}
         </div>
       ) : (
