@@ -7927,6 +7927,7 @@ function PaseAppView({ user }) {
      pantalla que dice "no pude leer tu copia" a una que miente diciendo que
      no había nada. */
   const [fallo, setFallo] = useState(null);
+  const [noGuarda, setNoGuarda] = useState(null);
   const [viendoCopias, setViendoCopias] = useState(false);
   const [copias, setCopias] = useState(null);
   const [reintento, setReintento] = useState(0);
@@ -7964,22 +7965,43 @@ function PaseAppView({ user }) {
   useEffect(() => {
     if (!viendoCopias || !user) return;
     let vivo = true;
-    getDocs(collection(db, PASEAPP_COL)).then((qs) => {
+    /* Se piden los documentos UNO POR UNO, por fecha, en vez de barrer la
+       colección entera.
+
+       Barrerla no funciona: las reglas exigen que el id del documento empiece
+       con el uid de quien pide, y una consulta que abarca toda la colección
+       no puede garantizar eso, así que Firestore la rechaza completa. El
+       resultado era un listado vacío que decía "no hay copias" cuando en
+       realidad quería decir "no pude preguntar" — que es peor que no tener la
+       función, porque hace concluir que el trabajo se perdió.
+
+       Pidiendo cada documento por su id la regla se cumple y la respuesta es
+       de verdad. Se miran los últimos 30 días, que es de sobra: las
+       anotaciones son del día y no se guardan más allá. */
+    const dias = [];
+    for (let i = 0; i < 30; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      dias.push(isoDate(d));
+    }
+    Promise.all(dias.map((f) =>
+      getDoc(doc(db, PASEAPP_COL, `${user.uid}__${f}`))
+        .then((snap) => {
+          if (!snap.exists()) return null;
+          const v = snap.data() || {};
+          return {
+            id: snap.id, fecha: f,
+            guardadoEn: v.guardadoEn || "",
+            pacientes: Array.isArray(v.pacientes) ? v.pacientes : [],
+          };
+        })
+        .catch(() => null)     // una fecha que falle no tira abajo la lista
+    )).then((todas) => {
       if (!vivo) return;
-      const mias = [];
-      qs.forEach((dd) => {
-        if (!dd.id.startsWith(user.uid + "__")) return;   // sólo las propias
-        const v = dd.data() || {};
-        mias.push({
-          id: dd.id,
-          fecha: dd.id.split("__")[1] || "",
-          guardadoEn: v.guardadoEn || "",
-          pacientes: Array.isArray(v.pacientes) ? v.pacientes : [],
-        });
-      });
+      const mias = todas.filter(Boolean);
       mias.sort((a, b) => (b.guardadoEn || b.fecha).localeCompare(a.guardadoEn || a.fecha));
       setCopias(mias);
-    }).catch((e) => { console.error("listar copias", e); if (vivo) setCopias([]); });
+    });
     return () => { vivo = false; };
   }, [viendoCopias, user]);
 
@@ -8015,8 +8037,17 @@ function PaseAppView({ user }) {
       try {
         await escribir(datos);
         pendienteRef.current = null;
+        setNoGuarda(null);        // volvió a andar
         setEstado("Guardado " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }));
-      } catch (e) { console.error("guardar pase", e); setEstado("No se pudo guardar"); }
+      } catch (e) {
+        console.error("guardar pase", e);
+        setEstado("No se pudo guardar");
+        // Un cartel chico abajo a la derecha no alcanza para esto: si el
+        // guardado falla y uno sigue anotando, al final de la guardia el
+        // trabajo no está en ningún lado. Se levanta una bandera que corta la
+        // pantalla hasta que se resuelva.
+        setNoGuarda(e && e.message ? e.message : "no se pudo guardar");
+      }
     }, 700);
   };
 
@@ -8249,10 +8280,18 @@ function PaseAppView({ user }) {
       <div style={{ fontSize: 16, fontWeight: 800, color: "#7F1D1D" }}>No pude leer tus anotaciones</div>
       <div style={{ fontSize: 13.5, color: "#7F1D1D", lineHeight: 1.6, marginTop: 8 }}>
         Tus ediciones <b>no se perdieron</b>: están guardadas en tu cuenta. Lo que falló fue traerlas
-        recién ahora, casi siempre por la conexión. No te muestro el pase sin editar para que no
-        parezca que se borró todo, y para que nada de lo que escribas encima las pise.
+        recién ahora. No te muestro el pase sin editar para que no parezca que se borró todo, y para
+        que nada de lo que escribas encima las pise.
       </div>
       <div style={{ fontSize: 11.5, color: "#991B1B", marginTop: 8, fontFamily: "ui-monospace,monospace" }}>{fallo}</div>
+      {/* El error de permisos tiene una causa concreta y una solución concreta;
+          decirla acá evita que alguien crea que perdió el trabajo de la guardia. */}
+      {/permission|insufficient/i.test(fallo || "") && (
+        <div style={{ fontSize: 12.5, color: "#7F1D1D", lineHeight: 1.55, marginTop: 8, background: "#fff", border: "1px solid #FCA5A5", borderRadius: 6, padding: "9px 11px" }}>
+          Esto no es la conexión: la base está rechazando la lectura. Hay que revisar las reglas de
+          Firestore en la consola de Firebase. Avisale a Gonzalo.
+        </div>
+      )}
       <button onClick={() => setReintento((n) => n + 1)}
         style={{ marginTop: 14, fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, padding: "9px 16px", borderRadius: 6, border: "none", background: "#B91C1C", color: "#fff", cursor: "pointer" }}>
         Reintentar
@@ -8533,6 +8572,21 @@ function PaseAppView({ user }) {
         </div>
         <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.7 }}>{estado}</span>
       </div>
+
+      {/* Lo que se está escribiendo NO se está guardando. Va arriba de todo,
+          en rojo y ocupando el ancho: es la única forma de que alguien en el
+          medio de un pase lo registre antes de seguir anotando media hora al
+          vacío. */}
+      {noGuarda && (
+        <div className="no-print" style={{ background: "#B91C1C", color: "#fff", borderRadius: 8, padding: "12px 15px", marginBottom: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 800 }}>⚠ No se está guardando lo que escribís</div>
+          <div style={{ fontSize: 13, lineHeight: 1.55, marginTop: 5, opacity: 0.95 }}>
+            Lo que anotes ahora se pierde al cerrar la pestaña. Sacale una foto a lo importante
+            y avisale a Gonzalo antes de seguir.
+          </div>
+          <div style={{ fontSize: 11.5, fontFamily: "ui-monospace,monospace", marginTop: 6, opacity: 0.85 }}>{noGuarda}</div>
+        </div>
+      )}
 
       <div className="no-print" style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
         <button onClick={deshacer} style={B}>↶ Deshacer</button>
