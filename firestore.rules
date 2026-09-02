@@ -102,6 +102,13 @@ service cloud.firestore {
     match /procedimientos/{docId}       { allow read, write: if autorizado(); }
     match /cobertura_sala/{docId}       { allow read, write: if autorizado(); }
     match /registro_clases/{docId}      { allow read, write: if autorizado(); }
+    // Relevamiento diario para el RedCap. Un documento por día, con todas las
+    // camas adentro. Lo completa cualquiera del plantel: la pestaña existe
+    // justamente para que la carga se reparta entre todos.
+    //
+    // OJO: acá hay datos de pacientes (cama, nombre y ocho variables
+    // clínicas), así que queda cerrado como el resto. No entra en docPublico().
+    match /redcap_diario/{docId}        { allow read, write: if autorizado(); }
 
     // ── Pase App: la copia privada de cada residente ─────────────────────
     //

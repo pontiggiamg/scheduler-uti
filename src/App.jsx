@@ -2302,7 +2302,9 @@ function PasesView({ isAdmin }) {
                           ))}
                         </div>
                       )}
-                      {p.mi && <div style={{ fontSize: 12, color: colorUnidad(activeUnit).fuerte, fontWeight: 600, marginTop: 4, lineHeight: 1.35 }}>{paLimpiar(p.mi)}</div>}
+                      {p.vacia
+                        ? <div style={{ fontSize: 12, color: "#94A3B8", fontStyle: "italic", marginTop: 4 }}>Cama libre</div>
+                        : p.mi && <div style={{ fontSize: 12, color: colorUnidad(activeUnit).fuerte, fontWeight: 600, marginTop: 4, lineHeight: 1.35 }}>{paLimpiar(p.mi)}</div>}
                       {p.status && <div style={{ fontSize: 11.5, color: "#475569", marginTop: 5, lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: isOpen ? "unset" : 2, WebkitBoxOrient: "vertical", overflow: isOpen ? "visible" : "hidden" }}>{paLimpiar(p.status)}</div>}
                     </div>
                     <div style={{ flexShrink: 0, color: "#64748B", fontSize: 12, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }}>▼</div>
@@ -4640,11 +4642,18 @@ const REDCAP_PREGUNTAS = [
 function RedcapView({ user }) {
   const [foto, setFoto] = useState(null);      // el pase del Drive
   const [dia, setDia] = useState(() => isoDate(new Date()));
-  const [reg, setReg] = useState({});          // { "unidad__cama": {campo: bool, _quien, _cuando} }
+  // El documento del día entero: las respuestas más los arreglos al padrón.
+  const [doc_, setDoc_] = useState({ camas: {}, extras: [], ajustes: {} });
   const [cargando, setCargando] = useState(true);
   const [uSel, setUSel] = useState(null);
   const [estado, setEstado] = useState("");
+  const [editandoPadron, setEditandoPadron] = useState(false);
+  const [nuevo_, setNuevo_] = useState({ cama: "", nombre: "" });
   const chico = useChico();
+
+  const reg = doc_.camas || {};
+  const extras = doc_.extras || [];
+  const ajustes = doc_.ajustes || {};
 
   // El pase del Drive: la lista de camas ocupadas sale de ahí, igual que en
   // las otras pestañas. Así no hay que mantener un padrón aparte.
@@ -4665,36 +4674,23 @@ function RedcapView({ user }) {
     return unsub;
   }, []);
 
-  // Lo ya marcado ese día. Un documento por día con todas las camas adentro:
-  // son 25 respuestas cortas, entran de sobra en un documento y se leen de una
-  // sola vez en lugar de 25 lecturas sueltas.
+  // Lo ya cargado ese día. Un documento por día con todo adentro: son
+  // respuestas cortas, entran de sobra y se leen de una sola vez.
   useEffect(() => {
     if (!dia) return;
     const unsub = onSnapshot(doc(db, REDCAP_COL, dia), (snap) => {
-      setReg(snap.exists() ? (snap.data().camas || {}) : {});
+      const d = snap.exists() ? snap.data() : {};
+      setDoc_({ camas: d.camas || {}, extras: d.extras || [], ajustes: d.ajustes || {} });
     }, (e) => console.error("redcap", e));
     return unsub;
   }, [dia]);
 
-  const clave = (p) => `${p.unidad}__${p.cama}`;
-
-  const marcar = async (p, campo, valor) => {
-    const k = clave(p);
-    const previo = reg[k] || {};
-    // Volver a tocar la misma respuesta la borra: es la forma de deshacer un
-    // dedazo sin tener que agregar un botón de "limpiar".
-    const nuevo = { ...previo };
-    if (nuevo[campo] === valor) delete nuevo[campo];
-    else nuevo[campo] = valor;
-    nuevo._quien = user?.displayName || user?.email || "—";
-    nuevo._cuando = new Date().toISOString();
-    nuevo._nombre = p.nombre || "";
-    setReg((r) => ({ ...r, [k]: nuevo }));       // que se vea ya, sin esperar la red
+  const guardar = async (parche) => {
+    const next = { ...doc_, ...parche };
+    setDoc_(next);                    // que se vea ya, sin esperar la red
     try {
       await setDoc(doc(db, REDCAP_COL, dia), {
-        fecha: dia,
-        camas: { ...reg, [k]: nuevo },
-        actualizado: new Date().toISOString(),
+        fecha: dia, ...next, actualizado: new Date().toISOString(),
       }, { merge: true });
       setEstado("Guardado " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }));
     } catch (e) {
@@ -4703,23 +4699,105 @@ function RedcapView({ user }) {
     }
   };
 
+  /* ── El padrón del día ───────────────────────────────────────────────────
+     La lista de camas sale del pase del Drive, pero el Drive se actualiza
+     cuando los residentes llegan a cargarlo, y el que está al lado de la cama
+     necesita relevar lo que ve ahora. Así que el padrón se puede arreglar acá
+     mismo, de tres formas, que son los tres casos reales:
+
+       · falta un paciente que sí está internado  → se agrega
+       · el nombre o la cama están mal            → se corrigen
+       · figura alguien que ya se fue             → se saca
+
+     Los arreglos son compartidos: los ve y los puede hacer cualquiera, igual
+     que las respuestas. No tocan el pase del Drive ni la Pase App — viven
+     solamente en el relevamiento de ese día.
+
+     Se guardan por día y no de forma permanente porque el padrón es parte del
+     dato: el 2/9 había estas camas ocupadas. Si mañana el Drive sigue
+     desactualizado hay que volver a agregarlo, y eso además avisa que el pase
+     del Drive necesita atención. */
+
+  const agregarPaciente = () => {
+    const cama = nuevo_.cama.trim(), nombre = nuevo_.nombre.trim();
+    if (!cama && !nombre) return;
+    const p = {
+      id: "x" + Date.now().toString(36),
+      unidad: uSel, cama: cama || "—", nombre,
+      quien: user?.displayName || user?.email || "—",
+      cuando: new Date().toISOString(),
+    };
+    setNuevo_({ cama: "", nombre: "" });
+    guardar({ extras: [...extras, p] });
+  };
+
+  const editarExtra = (id, campo, valor) =>
+    guardar({ extras: extras.map((x) => x.id === id ? { ...x, [campo]: valor } : x) });
+
+  const borrarExtra = (id) => {
+    const camas = { ...reg };
+    delete camas[id];                 // se lleva sus respuestas
+    guardar({ extras: extras.filter((x) => x.id !== id), camas });
+  };
+
+  // Corrección sobre un paciente que vino del Drive. La clave sigue siendo la
+  // original, así que las respuestas ya marcadas no se pierden al corregir el
+  // nombre o la cama.
+  const ajustar = (k, campo, valor) =>
+    guardar({ ajustes: { ...ajustes, [k]: { ...(ajustes[k] || {}), [campo]: valor } } });
+
+  const clave = (p) => p.id || `${p.unidad}__${p.cama}`;
+
+  const marcar = (p, campo, valor) => {
+    const k = clave(p);
+    const previo = reg[k] || {};
+    // Volver a tocar la misma respuesta la borra: es la forma de deshacer un
+    // dedazo sin agregar un botón de "limpiar".
+    const n = { ...previo };
+    if (n[campo] === valor) delete n[campo];
+    else n[campo] = valor;
+    n._quien = user?.displayName || user?.email || "—";
+    n._cuando = new Date().toISOString();
+    n._nombre = p.nombre || "";
+    guardar({ camas: { ...reg, [k]: n } });
+  };
+
+  /* La lista final de una unidad: los del Drive con sus correcciones
+     aplicadas y sin los que se sacaron, más los agregados a mano. */
+  const pacientesDe = (u) => {
+    const delDrive = (foto?.pacientes || [])
+      .filter((p) => p.unidad === u)
+      .map((p) => {
+        const k = `${p.unidad}__${p.cama}`;
+        const a = ajustes[k] || {};
+        return { ...p, nombre: a.nombre ?? p.nombre, cama: a.cama ?? p.cama, _k: k, _oculto: !!a.oculto };
+      })
+      .filter((p) => !p._oculto);
+    const propios = extras.filter((x) => x.unidad === u);
+    return [...delDrive, ...propios]
+      .sort((a, b) => paCamaOrden(a.cama).localeCompare(paCamaOrden(b.cama)));
+  };
+
   // Para bajar y cargar en el RedCap. Sin esto los datos quedan encerrados en
   // la app, que es el problema que esta pestaña vino a resolver.
   const exportar = () => {
-    const cols = ["fecha", "unidad", "cama", "paciente", ...REDCAP_PREGUNTAS.map(([k]) => k), "completado_por", "completado_el"];
+    const cols = ["fecha", "unidad", "cama", "paciente", "origen",
+      ...REDCAP_PREGUNTAS.map(([k]) => k), "completado_por", "completado_el"];
     const filas = [cols.join(",")];
-    for (const p of (foto?.pacientes || [])) {
-      const r = reg[clave(p)] || {};
-      const val = (x) => x === true ? "1" : x === false ? "0" : "";
-      const txt = (x) => `"${String(x == null ? "" : x).replace(/"/g, '""')}"`;
-      filas.push([
-        dia, txt(p.unidad), txt(p.cama), txt(p.nombre),
-        ...REDCAP_PREGUNTAS.map(([k]) => val(r[k])),
-        txt(r._quien || ""), txt(r._cuando || ""),
-      ].join(","));
+    for (const u of (foto?.unidades || [])) {
+      for (const p of pacientesDe(u)) {
+        const r = reg[clave(p)] || {};
+        const val = (x) => x === true ? "1" : x === false ? "0" : "";
+        const txt = (x) => `"${String(x == null ? "" : x).replace(/"/g, '""')}"`;
+        filas.push([
+          dia, txt(u), txt(p.cama), txt(p.nombre), txt(p.id ? "agregado a mano" : "pase del Drive"),
+          ...REDCAP_PREGUNTAS.map(([k]) => val(r[k])),
+          txt(r._quien || ""), txt(r._cuando || ""),
+        ].join(","));
+      }
     }
     // BOM adelante para que Excel en Windows respete los acentos.
-    const blob = new Blob(["﻿" + filas.join("\n")], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob(["\ufeff" + filas.join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `redcap-uti-${dia}.csv`;
@@ -4735,8 +4813,8 @@ function RedcapView({ user }) {
   );
 
   const B = { fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "7px 12px", borderRadius: 5, border: "1.5px solid #E2E8F0", background: "#fff", color: "#0F172A", cursor: "pointer" };
-  const delDia = foto.pacientes.filter((p) => p.unidad === uSel);
-  // Cuántas camas de la unidad tienen las ocho respuestas.
+  const INP = { fontFamily: "inherit", fontSize: 13, padding: "7px 9px", border: "1.5px solid #CBD5E1", borderRadius: 5, minHeight: 38, boxSizing: "border-box" };
+  const delDia = pacientesDe(uSel);
   const completas = delDia.filter((p) => {
     const r = reg[clave(p)] || {};
     return REDCAP_PREGUNTAS.every(([k]) => typeof r[k] === "boolean");
@@ -4749,7 +4827,7 @@ function RedcapView({ user }) {
         <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: -0.3 }}>Ayudanos con el RedCap</div>
         <div style={{ fontSize: 13, lineHeight: 1.55, opacity: 0.85, marginTop: 6 }}>
           Ocho preguntas por paciente, sí o no. Lo puede completar cualquiera y se guarda solo.
-          Cada día se releva aparte, así queda registrado cuándo cambió cada cosa.
+          Si el pase del Drive quedó desactualizado, podés arreglar la lista de camas acá mismo.
         </div>
       </div>
 
@@ -4757,48 +4835,100 @@ function RedcapView({ user }) {
         <label style={{ fontSize: 12.5, color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
           Día
           <input type="date" value={dia} max={hoy} onChange={(e) => setDia(e.target.value)}
-            style={{ fontFamily: "inherit", fontSize: 13, padding: "6px 8px", border: "1.5px solid #CBD5E1", borderRadius: 5 }} />
+            style={{ ...INP, minHeight: 34 }} />
         </label>
-        {dia !== hoy && (
-          <button onClick={() => setDia(hoy)} style={B}>Volver a hoy</button>
-        )}
+        {dia !== hoy && <button onClick={() => setDia(hoy)} style={B}>Volver a hoy</button>}
         <button onClick={exportar} style={B}>Bajar CSV de este día</button>
         {estado && <span style={{ fontSize: 11.5, color: "#64748B", marginLeft: "auto" }}>{estado}</span>}
       </div>
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-        {foto.unidades.map((u) => {
-          const n = foto.pacientes.filter((p) => p.unidad === u).length;
-          return (
-            <button key={u} onClick={() => setUSel(u)}
-              style={{ ...B, fontWeight: 700, ...(u === uSel ? { background: "#0F172A", borderColor: "#0F172A", color: "#fff" } : {}) }}>
-              {u} <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 10, opacity: 0.7 }}>{n}</span>
-            </button>
-          );
-        })}
+        {foto.unidades.map((u) => (
+          <button key={u} onClick={() => setUSel(u)}
+            style={{ ...B, fontWeight: 700, ...(u === uSel ? { background: "#0F172A", borderColor: "#0F172A", color: "#fff" } : {}) }}>
+            {u} <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 10, opacity: 0.7 }}>{pacientesDe(u).length}</span>
+          </button>
+        ))}
       </div>
 
-      <div style={{ fontSize: 12.5, color: "#475569", marginBottom: 10 }}>
-        {uSel}: <b>{completas}</b> de <b>{delDia.length}</b> camas completas
-        {dia !== hoy && <span style={{ color: "#8A4B00", marginLeft: 8 }}>· estás viendo el {dia.split("-").reverse().join("/")}</span>}
+      <div style={{ display: "flex", gap: 9, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontSize: 12.5, color: "#475569" }}>
+          {uSel}: <b>{completas}</b> de <b>{delDia.length}</b> camas completas
+          {dia !== hoy && <span style={{ color: "#8A4B00", marginLeft: 8 }}>· estás viendo el {dia.split("-").reverse().join("/")}</span>}
+        </span>
+        <button onClick={() => setEditandoPadron((v) => !v)}
+          style={{ ...B, marginLeft: "auto", ...(editandoPadron ? { background: "#0F172A", borderColor: "#0F172A", color: "#fff" } : {}) }}>
+          {editandoPadron ? "Listo" : "Corregir la lista de camas"}
+        </button>
       </div>
+
+      {editandoPadron && (
+        <div style={{ background: "#FFFBF3", border: "1.5px solid #E9C48A", borderRadius: 8, padding: "13px 15px", marginBottom: 12 }}>
+          <div style={{ fontSize: 12.5, color: "#7A4B00", lineHeight: 1.5, marginBottom: 10 }}>
+            Agregá un paciente que el pase del Drive todavía no tiene, corregí un nombre o una cama,
+            o sacá a alguien que ya se fue. Es sólo para el relevamiento de este día y lo ven todos.
+          </div>
+          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+            <input value={nuevo_.cama} placeholder="Cama"
+              onChange={(e) => setNuevo_((n) => ({ ...n, cama: e.target.value }))}
+              style={{ ...INP, width: 90, fontFamily: "ui-monospace,monospace" }} />
+            <input value={nuevo_.nombre} placeholder="Nombre y apellido"
+              onChange={(e) => setNuevo_((n) => ({ ...n, nombre: e.target.value }))}
+              onKeyDown={(e) => e.key === "Enter" && agregarPaciente()}
+              style={{ ...INP, flex: 1, minWidth: 170 }} />
+            <button onClick={agregarPaciente}
+              style={{ ...B, background: "#0F172A", borderColor: "#0F172A", color: "#fff", minHeight: 38 }}>
+              Agregar a {uSel}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {delDia.length === 0 && (
+        <div style={{ fontSize: 13, color: "#64748B", padding: "14px 2px" }}>
+          No hay camas cargadas en {uSel}. Usá “Corregir la lista de camas” para agregarlas.
+        </div>
+      )}
 
       {delDia.map((p) => {
         const k = clave(p);
         const r = reg[k] || {};
         const listo = REDCAP_PREGUNTAS.every(([kk]) => typeof r[kk] === "boolean");
+        const propio = !!p.id;
         return (
           <div key={k} style={{ background: "#fff", border: `1.5px solid ${listo ? "#86EFAC" : "#E2E8F0"}`, borderRadius: 8, padding: "12px 14px", marginBottom: 9 }}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap", marginBottom: 9 }}>
-              <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 16, fontWeight: 800 }}>{p.cama}</span>
-              <span style={{ fontSize: 14.5, fontWeight: 700 }}>{p.nombre || "—"}</span>
-              {p.edad && <span style={{ fontSize: 11.5, color: "#64748B" }}>{p.edad} años</span>}
-              {listo && <span style={{ fontSize: 11, fontWeight: 700, color: "#166534", background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 999, padding: "2px 9px" }}>completo</span>}
-            </div>
+            {editandoPadron ? (
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center", marginBottom: 9 }}>
+                <input value={p.cama || ""}
+                  onChange={(e) => propio ? editarExtra(p.id, "cama", e.target.value) : ajustar(p._k, "cama", e.target.value)}
+                  style={{ ...INP, width: 90, fontFamily: "ui-monospace,monospace", fontWeight: 700 }} />
+                <input value={p.nombre || ""} placeholder="Nombre y apellido"
+                  onChange={(e) => propio ? editarExtra(p.id, "nombre", e.target.value) : ajustar(p._k, "nombre", e.target.value)}
+                  style={{ ...INP, flex: 1, minWidth: 160 }} />
+                <button
+                  onClick={() => propio ? borrarExtra(p.id) : ajustar(p._k, "oculto", true)}
+                  title={propio ? "Sacar esta cama que agregaste" : "Este paciente ya no está en la UTI"}
+                  style={{ ...B, color: "#B91C1C", border: "1.5px solid #FCA5A5", minHeight: 38 }}>
+                  Sacar
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap", marginBottom: 9 }}>
+                <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 16, fontWeight: 800 }}>{p.cama}</span>
+                <span style={{ fontSize: 14.5, fontWeight: 700 }}>{p.nombre || "—"}</span>
+                {p.edad && <span style={{ fontSize: 11.5, color: "#64748B" }}>{p.edad} años</span>}
+                {propio && (
+                  <span title={`Agregado por ${p.quien}`}
+                    style={{ fontSize: 11, fontWeight: 700, color: "#7A4B00", background: "#FFFBF3", border: "1px solid #E9C48A", borderRadius: 999, padding: "2px 9px" }}>
+                    agregado a mano
+                  </span>
+                )}
+                {listo && <span style={{ fontSize: 11, fontWeight: 700, color: "#166534", background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 999, padding: "2px 9px" }}>completo</span>}
+              </div>
+            )}
 
             {REDCAP_PREGUNTAS.map(([campo, rot]) => (
-              <div key={campo} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", flexWrap: "wrap",
-                borderTop: "1px solid #F1F5F9" }}>
+              <div key={campo} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", flexWrap: "wrap", borderTop: "1px solid #F1F5F9" }}>
                 <span style={{ flex: 1, fontSize: 13, color: "#334155", minWidth: 165 }}>{rot}</span>
                 {[["Sí", true], ["No", false]].map(([txt, val]) => {
                   const activo = r[campo] === val;
@@ -4829,11 +4959,13 @@ function RedcapView({ user }) {
 
       <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.55, padding: "6px 2px 30px" }}>
         Se guarda solo, sin botón de confirmar. Tocá de nuevo una respuesta para desmarcarla.
-        Las camas salen del último pase del Drive ({foto.tomado ? timeAgo(foto.tomado) : "sin fecha"}).
+        Las camas salen del último pase del Drive ({foto.tomado ? timeAgo(foto.tomado) : "sin fecha"}),
+        más los arreglos que se hayan hecho para este día.
       </div>
     </div>
   );
 }
+
 
 function ImpresionesView({ user, isAdmin }) {
   const mesDeHoy = () => {
@@ -6414,6 +6546,14 @@ function paNombre(raw) {
 
 // Acentos que el pase escribe en mayúscula sin tilde y se pierden al bajar.
 const PA_ACENTOS = {
+  // Sumados el 2/9/2026 mirando un pase real: son los que quedaban sin tilde
+  // a la vista en la pantalla.
+  medico: "médico", medica: "médica", cardiaca: "cardíaca", cardiacas: "cardíacas",
+  dilatacion: "dilatación", mejorara: "mejorará", asintomatico: "asintomático",
+  asintomatica: "asintomática", somnolienta: "somnolienta", somnoliento: "somnoliento",
+  taquipneica: "taquipneica", desaturacion: "desaturación", hipoventilacion: "hipoventilación",
+  espirometria: "espirometría", ecocardiograma: "ecocardiograma", akinesia: "acinesia",
+  aquinesia: "acinesia", hipoquinesia: "hipocinesia", hipokinesia: "hipocinesia",
   paralitico: "paralítico", paralitica: "paralítica", colectomia: "colectomía",
   debito: "débito",
   lucido: "lúcido", lucida: "lúcida", distension: "distensión", serohematico: "serohemático",
@@ -6684,6 +6824,13 @@ const PA_EXPANDIR = [
   // aneurisma. Sin ninguna de las dos pistas, se deja sin tocar.
   [/\bAA\s+(QX|LAP|PERFORATIVO|OBSTRUCTIVO)\b/gi, "abdomen agudo $1"],
   [/\bAA\s+(INFRARENAL|INFRARRENAL|AORT[AI]CO|DE\s+AORTA)\b/gi, "aneurisma $1"],
+  // Tipeos que se repiten en el pase. Se corrigen porque leer "incian" o
+  // "cvoid" hace dudar de todo el renglón.
+  [/\bINCIAN\b/gi, "inician"], [/\bCVOID\b/gi, "COVID"], [/\bCOVID\b/gi, "COVID"],
+  [/\bINSUF\.?\s+RESP\b/gi, "insuficiencia respiratoria"],
+  [/\bINSUF\.?\s+CARD[IÍ]ACA\b/gi, "insuficiencia cardíaca"],
+  [/\bASINTOMAT\.?\b/gi, "asintomática"],
+  [/\bOSELTA\b/gi, "OSELTA"],   // antiviral: va con los ATB, en mayúscula
   [/\bPEND\b/gi, "pendiente"], [/\bCIR\b/gi, "catéter peridural"], [/\bTFG\b/gi, "filtrado glomerular"],
   // ── Sumadas el 2/9/2026 ──────────────────────────────────────────────────
   // Normalizaciones de laboratorio: el pase escribe la misma cosa de tres
@@ -7207,7 +7354,11 @@ function paLimpiar(txt) {
   // LORAZEPAM" recién se convierte en "…cada 8 hLorazepam" DESPUÉS de expandir
   // las siglas: antes de este punto las dos palabras todavía no existen como
   // tales. Se corta después de una unidad, que es donde termina una indicación.
-  t = t.replace(/(\d\s*(?:h|mg|ml|g|kg|mcg|kg\/h))([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})/g, "$1\n$2");
+  t = t.replace(/(\d\s*(?:h|mg|ml|g|kg|mcg|kg\/h))([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})/g, "$1\n$2")
+       // ...y también cuando lo que sigue es una sigla en mayúsculas
+       // ("cada 12 hMH aspirina"), que la regla de arriba no veía porque
+       // esperaba una minúscula después de la primera letra.
+       .replace(/(\d\s*(?:h|mg|ml|g|kg|mcg))([A-ZÁÉÍÓÚÑ]{2,})/g, "$1\n$2");
   return t;
 }
 
@@ -7270,19 +7421,31 @@ function paLeerArm(txt) {
    Sólo se toca el ARRANQUE del campo. Un "70 kg" en medio de la medicación
    puede ser parte de una indicación y no se toca. */
 function paPartirTto(txt) {
-  if (!txt) return { tto: txt, dieta: "" };
+  if (!txt) return { tto: txt, dieta: "", peso: null };
   const ls = String(txt).split("\n");
   const primera = (ls[0] || "").trim();
   // Tiene que ser un renglón CORTO que arranque con el peso: si es largo,
   // seguramente ya trae medicación pegada y partirlo perdería información.
-  const m = primera.match(/^(?:PESO\s*(?:REAL\s*)?(?:ESTIMADO\s*)?(?:DE\s*)?)?(\d{2,3})\s*KG\b\.?\s*(.*)$/i);
-  if (!m || primera.length > 90) return { tto: txt, dieta: "" };
+  // Con o sin "KG": el pase escribe "PESO 60 KG DIETA BLANDA" y también
+  // "Peso 80" a secas. Sin la palabra PESO adelante se sigue exigiendo la
+  // unidad, porque un número suelto al principio del tratamiento podría ser
+  // cualquier cosa.
+  const m = primera.match(/^PESO\s*(?:REAL\s*)?(?:ESTIMADO\s*)?(?:DE\s*)?:?\s*(\d{2,3})\s*(?:KG\b)?\.?\s*(.*)$/i)
+         || primera.match(/^(\d{2,3})\s*KG\b\.?\s*(.*)$/i);
+  if (!m || primera.length > 90) return { tto: txt, dieta: "", peso: null };
   const resto = (m[2] || "").trim();
   // Lo que sobra después del peso es la dieta ("dieta blanda", "NXB", "NTE 21").
   const esDieta = /^(DIETA|NADA POR BOCA|NXB|NPO|N[EPT]{1,2}\b|AYUNO|V[IÍ]A ORAL|NUTRICI[ÓO]N)/i.test(resto);
+  // El peso se DEVUELVE, no se tira. Antes este renglón se borraba del
+  // tratamiento y recién después se buscaba el peso en el texto: para
+  // entonces ya no estaba, así que el paciente quedaba sin peso y todas sus
+  // dosis se calculaban sobre los 70 kg supuestos. El bug lo tapaba el hecho
+  // de que casi todos los pases escriben además "PESO n KG" en otro lado.
+  const n = +m[1];
   return {
     tto: ls.slice(1).join("\n").replace(/^\n+/, ""),
     dieta: esDieta || resto ? resto : "",
+    peso: n >= 30 && n <= 250 ? n : null,
   };
 }
 
@@ -7329,11 +7492,13 @@ function paProcesar(raw, unidad) {
 
   // Repartir laboratorio, EAB, cultivos y estudios según lo que dice cada
   // renglón, no según en qué campo lo escribieron.
-  // El peso y la dieta salen del arranque de TRATAMIENTO: el peso ya se
-  // muestra en la ficha y la dieta pertenece a Requerimientos.
+  // El peso y la dieta salen del arranque de TRATAMIENTO: el peso se guarda
+  // aparte —lo usa el cálculo de dosis— y la dieta pasa a Requerimientos.
+  let pesoDelTto = null;
   if (campos.tto) {
     const pt = paPartirTto(campos.tto);
     if (pt.tto !== campos.tto) {
+      pesoDelTto = pt.peso;
       campos.tto = pt.tto;
       if (pt.dieta) campos.req = [pt.dieta, campos.req].filter(Boolean).join("\n");
       if (!campos.tto) delete campos.tto;
@@ -7407,12 +7572,28 @@ function paProcesar(raw, unidad) {
   // Peso real estimado: es el que se usa para calcular las dosis. Cualquier
   // peso escrito sin aclaración ("PESO 70 KG", o incluso "70 KG" suelto) se
   // interpreta como real estimado — así lo definió Gonzalo el 2/9/2026.
-  const mp = todo.match(/PESO\s*(?:REAL\s*)?(?:ESTIMADO\s*)?(?:DE\s*)?(\d{2,3})\s*KG/i)
-          || todo.match(/(?<![A-ZÁÉÍÓÚÑ])PR\s*(\d{2,3})\s*KG/i);
+  /* El "KG" es opcional: el pase escribe tanto "PESO 80 KG" como "Peso 80" a
+     secas, y hasta el 2/9/2026 la segunda forma no se reconocía. Eso no era
+     cosmético: sin peso, TODAS las dosis del paciente se calculaban sobre los
+     70 kg supuestos. Un paciente de 80 kg con noradrenalina mostraba una
+     dosis 14% más alta que la real.
+
+     Alcanza con que esté la palabra PESO o PR adelante para que el número no
+     sea ambiguo. Se exige además un rango plausible (30 a 250 kg) para que un
+     dedazo no cargue un peso imposible sin que nadie lo note. */
+  const pesoDe = (re) => {
+    const m = todo.match(re);
+    if (!m) return null;
+    const n = +m[1];
+    return n >= 30 && n <= 250 ? n : null;
+  };
+  const mp = pesoDe(/PESO\s*(?:REAL\s*)?(?:ESTIMADO\s*)?(?:DE\s*)?:?\s*(\d{2,3})\s*(?:KG\b)?/i)
+          ?? pesoDe(/(?<![A-ZÁÉÍÓÚÑ])PR\s*:?\s*(\d{2,3})\s*(?:KG\b)?/i)
+          ?? pesoDelTto;   // el que venía en el encabezado del tratamiento
   // Peso teórico (PT), también llamado predicho. NO se usa para las dosis:
   // sirve sólo para la mecánica ventilatoria, donde el volumen corriente se
   // calcula por kilo de peso predicho y no por el peso real del paciente.
-  const mpt = todo.match(/(?<![A-ZÁÉÍÓÚÑ])PT\s*:?\s*(\d{2,3})\s*KG/i);
+  const mpt = pesoDe(/(?<![A-ZÁÉÍÓÚÑ])PT\s*:?\s*(\d{2,3})\s*(?:KG\b)?/i);
   // Balance del día escrito al final del renglón de estado: "…, 890-590" son
   // 890 ml de ingresos y 590 ml de diuresis. Se acota fuerte a propósito —par
   // al final del renglón, precedido por coma y sin "%"— porque el mismo patrón
@@ -7424,10 +7605,45 @@ function paProcesar(raw, unidad) {
     if (mb) balDia = { ingresos: +mb[1], egresos: +mb[2] };
   }
 
-  const pend = (campos.pendiente || "")
+  /* ── Los pendientes ──────────────────────────────────────────────────────
+     Salen del campo PENDIENTES del Drive, pero también aparecen escritos
+     dentro de otras secciones, sobre todo en Estudios: "Pendiente: LAB, RX".
+     Esos renglones son tareas de verdad —lo que hay que ir a buscar— y
+     quedaban como texto suelto mientras la lista de pendientes se veía vacía.
+
+     Hay que distinguirlos de otra cosa que también dice "pendiente" y NO es
+     una tarea: el RESULTADO de un cultivo que todavía no salió ("HMC x2:
+     pendiente", "retrocultivos PICC: pendiente"). Eso es información del
+     estudio, no algo para tildar, y moverlo sería vaciar la sección de
+     cultivos. La diferencia es dónde está la palabra: una tarea ARRANCA con
+     "Pendiente:" y después dice qué falta; un resultado la tiene al final,
+     después de los dos puntos.
+
+     Se corta por coma para poder tildar el laboratorio cuando sale y dejar la
+     radiografía todavía pendiente. */
+  const TAREA_PEND = /^\*?\s*(?:\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\s+)?PENDIENTES?\s*[:\-]\s*(.+)$/i;
+  const partir = (txt) => String(txt || "")
     .split(/\n|\/\/|(?<=[a-zA-ZáéíóúÁÉÍÓÚ0-9])\s+\/\s+(?=[A-ZÁÉÍÓÚ])/)
-    .map((x) => x.replace(/^[\s/]+|[\s/]+$/g, "")).filter(Boolean)
-    .map((x) => ({ texto: paLimpiar(x), listo: false }));
+    .map((x) => x.replace(/^[\s/]+|[\s/]+$/g, "")).filter(Boolean);
+
+  const pend = partir(campos.pendiente).map((x) => ({ texto: paLimpiar(x), listo: false }));
+
+  // Las tareas escritas dentro de otras secciones se mudan acá, y el renglón
+  // se saca de donde estaba para no leerlo dos veces.
+  for (const k of ["estudios", "labo", "req", "eab", "accesos", "imagenes"]) {
+    if (!campos[k]) continue;
+    const quedan = [];
+    for (const linea of String(campos[k]).split("\n")) {
+      const m = linea.match(TAREA_PEND);
+      if (!m) { quedan.push(linea); continue; }
+      for (const tarea of m[1].split(/\s*[,;]\s*/)) {
+        const t = paLimpiar(tarea.trim());
+        if (t) pend.push({ texto: t, listo: false, de: k });
+      }
+    }
+    const v = quedan.join("\n").trim();
+    if (v) campos[k] = v; else delete campos[k];
+  }
   const req = (campos.req || "").split("\n").map((x) => x.trim()).filter(Boolean);
   const ult = req.length ? req[req.length - 1] : "";
   const limpios = {};
@@ -7444,8 +7660,13 @@ function paProcesar(raw, unidad) {
   }
   return {
     unidad, cama: raw.bed, ...paNombre(raw.name),
+    // El sync marca con vacia:true las camas que rellenó porque el Drive las
+    // salteaba (la 2.4 entre la 2.3 y la 2.5). Acá se traducen a la marca que
+    // la app ya usa para una cama sin paciente, así caen solas en la vista de
+    // "Cama libre" con sus opciones de ingresar o traer a alguien.
+    egresado: !!raw.vacia,
     mi: paLimpiar(raw.mi || ""), campos: limpios,
-    peso: mp ? +mp[1] : null, pesoTeorico: mpt ? +mpt[1] : null,
+    peso: mp, pesoTeorico: mpt,
     infusiones: inf, intermitentes: interm,
     pendientes: pend, anotaciones: [],
     // Si el pase ya traía el balance del día, entra precargado en vez de
@@ -7520,19 +7741,86 @@ function conNegritas(txt, key) {
 const PA_MARCA = { "\u0011": "#FEF08A", "\u0012": "#BBF7D0" };   // amarillo, verde
 const PA_MARCA_ROT = { "\u0011": "Amarillo", "\u0012": "Verde" };
 const PA_MARCAS = Object.keys(PA_MARCA);
+const PA_FIN = "\u0013";                                        // cierra un resaltado
 
-// Separa el color de una linea de su texto.
+/* Los resaltados viven DENTRO del texto: un caracter invisible abre el color y
+   otro lo cierra. Así viajan con el campo —se guardan, se sincronizan y
+   sobreviven a mover renglones— sin una estructura aparte que haya que
+   mantener en sincronía con el texto.
+
+   Se trabaja con un "mapa de colores": una lista con un color (o nada) por
+   cada caracter del texto limpio. Es más código que meter y sacar marcas a
+   mano, pero es la única forma en que resaltar sobre algo ya resaltado, o
+   pisar dos colores, no termine en marcas cruzadas o sin cerrar.
+
+   Compatible con el formato viejo, que pintaba el renglón entero poniendo la
+   marca al principio y sin cerrarla: una marca sin cierre pinta hasta el fin
+   del renglón, que es exactamente lo que hacía antes. */
+function paColores(txt) {
+  const t = String(txt || "");
+  let limpio = "", colores = [], actual = null;
+  for (const ch of t) {
+    if (PA_MARCA[ch]) { actual = ch; continue; }
+    if (ch === PA_FIN) { actual = null; continue; }
+    if (ch === "\n") actual = null;      // el color no cruza de renglón
+    limpio += ch;
+    colores.push(ch === "\n" ? null : actual);
+  }
+  return { limpio, colores };
+}
+
+function paDeColores(limpio, colores) {
+  let out = "", actual = null;
+  for (let i = 0; i < limpio.length; i++) {
+    const c = colores[i] || null;
+    if (c !== actual) {
+      if (actual) out += PA_FIN;
+      if (c) out += c;
+      actual = c;
+    }
+    out += limpio[i];
+    if (limpio[i] === "\n") actual = null;   // se cierra solo al saltar
+  }
+  if (actual) out += PA_FIN;
+  return out;
+}
+
+/* Pinta (o despinta, con color null) el tramo [desde, hasta) del texto. Las
+   posiciones son sobre el texto LIMPIO, que es lo que ve y selecciona el que
+   está leyendo; adentro se traduce al texto con marcas. */
+function paPintarRango(txt, desde, hasta, color) {
+  const { limpio, colores } = paColores(txt);
+  const a = Math.max(0, Math.min(desde, limpio.length));
+  const b = Math.max(a, Math.min(hasta, limpio.length));
+  for (let i = a; i < b; i++) if (limpio[i] !== "\n") colores[i] = color;
+  return paDeColores(limpio, colores);
+}
+
+/* Los tramos de un texto, cada uno con su color y su posición de arranque
+   dentro del texto limpio. Esa posición es la que permite volver de una
+   selección del navegador a un índice de caracter. */
+function paSegmentos(txt) {
+  const { limpio, colores } = paColores(txt);
+  const segs = [];
+  let i = 0;
+  while (i < limpio.length) {
+    if (limpio[i] === "\n") { segs.push({ texto: "\n", color: null, inicio: i }); i++; continue; }
+    let j = i;
+    while (j < limpio.length && colores[j] === colores[i] && limpio[j] !== "\n") j++;
+    segs.push({ texto: limpio.slice(i, j), color: colores[i], inicio: i });
+    i = j;
+  }
+  return segs;
+}
+
+const paSinMarcas = (t) => (t || "").replace(/[\u0011\u0012\u0013]/g, "");
+
+// El modo de reordenar renglónes sigue preguntando por el color de una línea
+// entera: devuelve el primero que encuentre, o nada.
 function paMarcaDe(linea) {
-  const c = (linea || "")[0];
-  return PA_MARCA[c] ? { color: c, texto: linea.slice(1) } : { color: null, texto: linea || "" };
+  const { limpio, colores } = paColores(linea);
+  return { color: colores.find(Boolean) || null, texto: limpio };
 }
-// Pone, cambia o saca el color de una linea.
-function paMarcar(linea, color) {
-  const { texto } = paMarcaDe(linea);
-  return color ? color + texto : texto;
-}
-// Saca todas las marcas de un texto. Se usa al editar y al copiar.
-const paSinMarcas = (t) => (t || "").replace(/[\u0011\u0012]/g, "");
 
 /* Lo que escribiste va en naranja; lo que borraste, no se muestra.
    Antes se mostraba tachado al lado, y en un renglón muy editado quedaban dos
@@ -7598,6 +7886,7 @@ function PaseAppView({ user }) {
   const [armAbierto, setArmAbierto] = useState(false);
   const [ordenando, setOrdenando] = useState(null);
   const [resaltando, setResaltando] = useState(null);  // campo en modo resaltar
+  const [colorSel, setColorSel] = useState(PA_MARCAS[0]);  // con qué color pinta
   const chico = useChico();
   const [editando, setEditando] = useState(false);
   const [confirmandoEgreso, setConfirmandoEgreso] = useState(false);
@@ -7623,35 +7912,137 @@ function PaseAppView({ user }) {
     return unsub;
   }, []);
 
-  // 2) Mi copia. Si no existe todavía, arranca siendo la foto.
+  /* 2) Mi copia. Si no existe todavía, arranca siendo la foto del Drive.
+
+     El manejo del error de acá es la parte importante. Antes, si la lectura
+     fallaba —se cortó la red, la respuesta tardó, un permiso— la app se caía
+     en silencio a la foto del Drive y mostraba el pase limpio, como si uno
+     nunca hubiera editado nada. Las ediciones seguían guardadas en Firestore,
+     pero desde la pantalla eso es indistinguible de haberlas perdido, y lo
+     peor: la primera edición que hicieras encima sobreescribía la copia buena
+     con la que estabas viendo.
+
+     Ahora un error NO descarta nada. Se avisa, se ofrece reintentar, y hasta
+     que la lectura no responda no se deja escribir: es preferible una
+     pantalla que dice "no pude leer tu copia" a una que miente diciendo que
+     no había nada. */
+  const [fallo, setFallo] = useState(null);
+  const [viendoCopias, setViendoCopias] = useState(false);
+  const [copias, setCopias] = useState(null);
+  const [reintento, setReintento] = useState(0);
+
   useEffect(() => {
     if (!docId || !foto) return;
     let vivo = true;
+    setFallo(null);
     getDoc(doc(db, PASEAPP_COL, docId)).then((snap) => {
       if (!vivo) return;
       if (snap.exists() && Array.isArray(snap.data().pacientes)) {
         setMio(snap.data().pacientes);
         setEstado("Recuperado de tu última sesión");
       } else {
+        // No hay copia guardada todavía: es la primera vez con este pase.
         setMio(JSON.parse(JSON.stringify(foto.pacientes)));
       }
-    }).catch(() => setMio(JSON.parse(JSON.stringify(foto.pacientes))));
+    }).catch((e) => {
+      if (!vivo) return;
+      console.error("leer mi copia", e);
+      setFallo(e && e.message ? e.message : "no se pudo leer");
+    });
     return () => { vivo = false; };
-  }, [docId, foto]);
+  }, [docId, foto, reintento]);
+
+  /* Todas las copias privadas que tiene guardadas este usuario.
+
+     Existe porque la copia se guarda con la FECHA DEL PASE del Drive adentro
+     de la clave: si el pase se resincroniza y cambia de fecha, la app pasa a
+     usar otra clave y lo anotado antes queda en un documento que ya nadie
+     abre. No se borró, pero deja de estar a la vista, que en la práctica es
+     lo mismo si uno no sabe dónde buscar.
+
+     Acá se listan todas y se puede traer cualquiera a la copia actual. */
+  useEffect(() => {
+    if (!viendoCopias || !user) return;
+    let vivo = true;
+    getDocs(collection(db, PASEAPP_COL)).then((qs) => {
+      if (!vivo) return;
+      const mias = [];
+      qs.forEach((dd) => {
+        if (!dd.id.startsWith(user.uid + "__")) return;   // sólo las propias
+        const v = dd.data() || {};
+        mias.push({
+          id: dd.id,
+          fecha: dd.id.split("__")[1] || "",
+          guardadoEn: v.guardadoEn || "",
+          pacientes: Array.isArray(v.pacientes) ? v.pacientes : [],
+        });
+      });
+      mias.sort((a, b) => (b.guardadoEn || b.fecha).localeCompare(a.guardadoEn || a.fecha));
+      setCopias(mias);
+    }).catch((e) => { console.error("listar copias", e); if (vivo) setCopias([]); });
+    return () => { vivo = false; };
+  }, [viendoCopias, user]);
+
+  // Traer una copia guardada a la de hoy. No pisa nada sin avisar: se
+  // pregunta, porque lo que hay ahora también puede ser trabajo de alguien.
+  const restaurarCopia = (c) => {
+    if (!confirm(`Traer las anotaciones del pase del ${c.fecha}?\n\n` +
+      `Son ${c.pacientes.length} camas. Lo que tengas cargado ahora se reemplaza.`)) return;
+    mutar((d) => { d.length = 0; for (const x of c.pacientes) d.push(x); });
+    setViendoCopias(false);
+    setEstado(`Restaurada tu copia del ${c.fecha}`);
+  };
+
+  // Lo último que hay para guardar, por si la ventana se cierra antes de que
+  // venza la espera de abajo.
+  const pendienteRef = useRef(null);
+
+  const escribir = async (datos) => {
+    if (!docId) return;
+    await setDoc(doc(db, PASEAPP_COL, docId), {
+      uid: user.uid, email: user.email || "", nombre: user.displayName || "",
+      tomado: foto.tomado, guardadoEn: new Date().toISOString(), pacientes: datos,
+    });
+  };
 
   const guardar = (datos) => {
     if (!docId) return;
+    pendienteRef.current = datos;
     clearTimeout(guardarTimer.current);
+    // Se espera 700 ms antes de escribir para no mandar una escritura por cada
+    // tecla mientras alguien redacta un renglón.
     guardarTimer.current = setTimeout(async () => {
       try {
-        await setDoc(doc(db, PASEAPP_COL, docId), {
-          uid: user.uid, email: user.email || "", nombre: user.displayName || "",
-          tomado: foto.tomado, guardadoEn: new Date().toISOString(), pacientes: datos,
-        });
+        await escribir(datos);
+        pendienteRef.current = null;
         setEstado("Guardado " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }));
       } catch (e) { console.error("guardar pase", e); setEstado("No se pudo guardar"); }
     }, 700);
   };
+
+  /* Si la pestaña se cierra dentro de esos 700 ms, el último cambio se perdía.
+     Pasa poco, pero pasa justo en el peor momento: uno anota algo y cierra.
+     Al ocultarse la pestaña se fuerza la escritura de lo que quedó pendiente.
+
+     Va con "visibilitychange" y no con "beforeunload" porque en el celular
+     cambiar de app no dispara beforeunload, y ese es exactamente el caso que
+     se quiere cubrir. */
+  useEffect(() => {
+    const alOcultar = () => {
+      if (document.visibilityState !== "hidden") return;
+      const p = pendienteRef.current;
+      if (!p) return;
+      clearTimeout(guardarTimer.current);
+      pendienteRef.current = null;
+      escribir(p).catch((e) => console.error("guardar al salir", e));
+    };
+    document.addEventListener("visibilitychange", alOcultar);
+    window.addEventListener("pagehide", alOcultar);
+    return () => {
+      document.removeEventListener("visibilitychange", alOcultar);
+      window.removeEventListener("pagehide", alOcultar);
+    };
+  });
 
   // Toda mutación pasa por acá: apila para deshacer y guarda.
   const mutar = (fn) => {
@@ -7850,6 +8241,25 @@ function PaseAppView({ user }) {
     setEstado("Pase sincronizado y anotaciones borradas");
   };
 
+  /* No se pudo leer la copia propia. Se corta acá a propósito: mostrar el
+     pase del Drive sería hacerle creer a alguien que perdió lo que anotó, y
+     la primera tecla que tocara encima pisaría la copia buena. */
+  if (fallo) return (
+    <div style={{ maxWidth: 620, margin: "24px auto", background: "#FEF2F2", border: "1.5px solid #FCA5A5", borderRadius: 10, padding: "18px 20px" }}>
+      <div style={{ fontSize: 16, fontWeight: 800, color: "#7F1D1D" }}>No pude leer tus anotaciones</div>
+      <div style={{ fontSize: 13.5, color: "#7F1D1D", lineHeight: 1.6, marginTop: 8 }}>
+        Tus ediciones <b>no se perdieron</b>: están guardadas en tu cuenta. Lo que falló fue traerlas
+        recién ahora, casi siempre por la conexión. No te muestro el pase sin editar para que no
+        parezca que se borró todo, y para que nada de lo que escribas encima las pise.
+      </div>
+      <div style={{ fontSize: 11.5, color: "#991B1B", marginTop: 8, fontFamily: "ui-monospace,monospace" }}>{fallo}</div>
+      <button onClick={() => setReintento((n) => n + 1)}
+        style={{ marginTop: 14, fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, padding: "9px 16px", borderRadius: 6, border: "none", background: "#B91C1C", color: "#fff", cursor: "pointer" }}>
+        Reintentar
+      </button>
+    </div>
+  );
+
   if (cargando || !mio || !foto) return <Skeleton />;
 
   // La tira de camas va ordenada por número de cama, no por la posición que
@@ -7866,7 +8276,23 @@ function PaseAppView({ user }) {
     .sort(([a], [b]) => paCamaOrden(a.cama).localeCompare(paCamaOrden(b.cama)))
     .map(([, i]) => i);
   const idx = idxUnidad.includes(iSel) ? iSel : (idxUnidad[0] ?? 0);
-  const o = foto.pacientes[idx] || {};
+  /* El paciente tal como vino del Drive, para poder marcar en naranja lo que
+     uno cambió.
+
+     Se busca POR CAMA Y UNIDAD, no por posición en la lista. Antes era
+     foto.pacientes[idx], que asume que tu copia y la foto del Drive tienen
+     exactamente el mismo orden y la misma cantidad de camas. Deja de ser
+     cierto apenas alguien agrega una cama, manda un paciente a otra unidad o
+     —como pasó el 2/9/2026— el pase del Drive cambia y una UTI pasa de ocho
+     camas a seis: los índices se corren y la app termina comparando la ficha
+     de un paciente contra la de otro. Como todo difiere, TODO sale marcado
+     como editado, y el naranja deja de querer decir algo.
+
+     Buscar por cama es estable frente a todo eso. Si la cama no está en la
+     foto —una que agregaste vos, o una que el Drive ya no trae— no hay contra
+     qué comparar y no se marca nada, que es lo correcto. */
+  const yo_ = mio[idx] || {};
+  const o = foto.pacientes.find((x) => x.cama === yo_.cama && x.unidad === yo_.unidad) || {};
   const p = verOriginal ? o : (mio[idx] || {});
   const editable = !verOriginal;
 
@@ -7890,12 +8316,24 @@ function PaseAppView({ user }) {
   const guardado = (p.ordenCampos || []).filter((k) => presentes.includes(k));
   const campos = [...guardado, ...presentes.filter((k) => !guardado.includes(k))];
 
+  /* Subir o bajar una sección. El orden se aplica a TODOS los pacientes, no
+     sólo al que estabas mirando: es una preferencia de cómo querés leer el
+     pase, no un dato de ese paciente. Acomodarlo cama por cama sería una
+     tarea de veinticinco pasos para conseguir una sola cosa.
+
+     Sigue siendo privado: vive en la copia de cada uno, así que el orden de
+     uno no le cambia la pantalla a nadie. */
   const moverCampo = (k, paso) => mutar((d) => {
     const act = [...campos];
     const i = act.indexOf(k), j = i + paso;
     if (i < 0 || j < 0 || j >= act.length) return;
     [act[i], act[j]] = [act[j], act[i]];
-    d[idx].ordenCampos = act;
+    for (const x of d) {
+      // Cada paciente tiene sus propias secciones —no todos traen EAB, por
+      // ejemplo—, así que se guarda el orden elegido y después las que ese
+      // paciente sí tiene se ordenan según él.
+      x.ordenCampos = act;
+    }
   });
 
   // Cambiar dilución o ritmo de una infusión. Se guarda en la copia propia y
@@ -7971,12 +8409,35 @@ function PaseAppView({ user }) {
 
   // Pintar o despintar un renglón. El color se guarda dentro del texto, así
   // que viaja con el campo y no hay una estructura aparte que mantener.
-  const marcarLinea = (k, i, color) => mutar((d) => {
-    const ls = (d[idx].campos[k] || "").split("\n");
-    if (i < 0 || i >= ls.length) return;
-    ls[i] = paMarcar(ls[i], color);
-    d[idx].campos[k] = ls.join("\n");
-  });
+  /* Pinta lo que el usuario acaba de seleccionar.
+
+     El navegador informa la selección como "nodo + desplazamiento dentro de
+     ese nodo", que no sirve para tocar el texto: hay que saber en qué caracter
+     del campo cae. Por eso cada tramo se dibuja con su posición de arranque en
+     data-i; se sube desde el nodo seleccionado hasta el tramo que lo contiene,
+     se le suma el desplazamiento, y eso sí es un índice de caracter.
+
+     Con colorSel en null la selección se despinta, que es como se saca un
+     resaltado sin tener que acordarse de qué color era. */
+  const pintarSeleccion = (k) => {
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const posicion = (nodo, off) => {
+      let el = nodo && nodo.nodeType === 3 ? nodo.parentElement : nodo;
+      while (el && (!el.dataset || el.dataset.i === undefined)) el = el.parentElement;
+      if (!el) return null;
+      return +el.dataset.i + off;
+    };
+    const a = posicion(sel.anchorNode, sel.anchorOffset);
+    const b = posicion(sel.focusNode, sel.focusOffset);
+    if (a == null || b == null) return;
+    const desde = Math.min(a, b), hasta = Math.max(a, b);
+    if (hasta <= desde) return;
+    mutar((d) => {
+      d[idx].campos[k] = paPintarRango(d[idx].campos[k] || "", desde, hasta, colorSel);
+    });
+    sel.removeAllRanges();   // si no, queda la selección azul encima del color
+  };
 
   const moverLinea = (k, i, paso) => mutar((d) => {
     const ls = (d[idx].campos[k] || "").split("\n");
@@ -8076,6 +8537,9 @@ function PaseAppView({ user }) {
       <div className="no-print" style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
         <button onClick={deshacer} style={B}>↶ Deshacer</button>
         <button onClick={reiniciar} style={B}>Borrar mis anotaciones y sincronizar pase</button>
+        <button onClick={() => setViendoCopias((v) => !v)} style={B}>
+          Mis copias guardadas
+        </button>
         {/* Imprime la unidad que se está mirando con el mismo formato y las
             mismas palabras que la pestaña Pases, más los pendientes y las
             dosis calculadas. Se abre en una ventana aparte donde se puede
@@ -8108,17 +8572,66 @@ function PaseAppView({ user }) {
         {idxUnidad.map((i) => {
           const x = mio[i];
           const pend = (x.pendientes || []).filter((y) => !y.listo).length;
+          // Una cama de la que se fue el paciente sigue en la barra, pero
+          // antes quedaba como un botón con el número y nada debajo: se leía
+          // como un hueco y parecía que la cama había desaparecido. Ahora lo
+          // dice, y con borde punteado, que es como se ve un lugar libre.
+          const libre = !!x.egresado;
           return (
             <button key={i} onClick={() => setISel(i)}
-              style={{ flex: "0 0 auto", fontFamily: "ui-monospace,monospace", fontSize: 16, fontWeight: 700, padding: "7px 13px", borderRadius: 5, border: "1.5px solid #E2E8F0", cursor: "pointer", background: i === idx ? "#0F5F66" : "#fff", color: i === idx ? "#fff" : "#334155" }}>
+              title={libre ? "Cama libre" : undefined}
+              style={{ flex: "0 0 auto", fontFamily: "ui-monospace,monospace", fontSize: 16, fontWeight: 700,
+                padding: "7px 13px", borderRadius: 5, cursor: "pointer",
+                border: libre ? "1.5px dashed #CBD5E1" : "1.5px solid #E2E8F0",
+                background: i === idx ? "#0F5F66" : (libre ? "#F8FAFC" : "#fff"),
+                color: i === idx ? "#fff" : (libre ? "#94A3B8" : "#334155") }}>
               {x.cama}{pend ? " •" : ""}
               {/* El apellido entero: cortarlo a ocho letras hacía que dos
                   pacientes distintos se vieran igual en la barra. */}
-              <span style={{ display: "block", fontSize: 11.5, fontWeight: 600, opacity: 0.85, fontFamily: "inherit" }}>{(x.nombre || "").split(" ").pop()}</span>
+              <span style={{ display: "block", fontSize: 11.5, fontWeight: 600, opacity: 0.85, fontFamily: "inherit",
+                fontStyle: libre ? "italic" : "normal" }}>
+                {libre ? "libre" : (x.nombre || "").split(" ").pop()}
+              </span>
             </button>
           );
         })}
       </div>
+
+      {viendoCopias && (
+        <div className="no-print" style={{ background: "#fff", border: "1.5px solid #CBD5E1", borderRadius: 8, padding: "14px 16px", marginBottom: 12 }}>
+          <div style={{ fontSize: 14.5, fontWeight: 800, marginBottom: 4 }}>Mis copias guardadas</div>
+          <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.55, marginBottom: 10 }}>
+            Cada vez que el pase del Drive cambia de día, tus anotaciones quedan guardadas aparte.
+            Si algo que escribiste no aparece, buscalo acá y traelo.
+          </div>
+          {copias === null ? (
+            <div style={{ fontSize: 13, color: "#64748B" }}>Buscando…</div>
+          ) : copias.length === 0 ? (
+            <div style={{ fontSize: 13, color: "#64748B" }}>No encontré ninguna copia guardada en tu cuenta.</div>
+          ) : copias.map((c) => {
+            const conTexto = c.pacientes.filter((x) => (x.anotaciones || []).length ||
+              Object.values(x.campos || {}).some(Boolean)).length;
+            const esLaDeAhora = c.id === docId;
+            return (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "9px 0", borderTop: "1px solid #F1F5F9" }}>
+                <div style={{ flex: 1, minWidth: 190 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700 }}>
+                    Pase del {c.fecha.split("-").reverse().join("/")}
+                    {esLaDeAhora && <span style={{ fontSize: 11, fontWeight: 700, color: "#166534", background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 999, padding: "1px 8px", marginLeft: 7 }}>la que estás viendo</span>}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "#64748B" }}>
+                    {c.pacientes.length} camas · {conTexto} con contenido
+                    {c.guardadoEn && " · guardada " + new Date(c.guardadoEn).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                </div>
+                {!esLaDeAhora && (
+                  <button onClick={() => restaurarCopia(c)} style={B}>Traer estas anotaciones</button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {verOriginal && (
         <div style={{ padding: "9px 13px", borderRadius: 6, background: "#FFF6E5", border: "1px solid #E9C48A", color: "#8A4B00", fontSize: 12.5, fontWeight: 600, marginBottom: 12 }}>
@@ -8513,24 +9026,54 @@ function PaseAppView({ user }) {
                     })}
                   </div>
                 ) : resaltando === k ? (
-                  /* Modo resaltar: un renglón por fila y los colores al lado.
-                     Tocar el color que ya tiene se lo saca. */
-                  <div style={{ display: "grid", gap: 4 }}>
-                    {(txt || "").split("\n").map((l, li) => {
-                      const { color, texto } = paMarcaDe(l);
-                      return (
-                        <div key={li} style={{ display: "flex", alignItems: "flex-start", gap: 6, background: color ? PA_MARCA[color] : "#F8FAFC", borderRadius: 4, padding: "5px 7px" }}>
-                          <span style={{ flex: 1, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{texto}</span>
-                          {PA_MARCAS.map((c) => (
-                            <button key={c} onClick={() => marcarLinea(k, li, color === c ? null : c)}
-                              title={color === c ? "Sacar el resaltado" : PA_MARCA_ROT[c]}
-                              style={{ width: 26, height: 26, flex: "0 0 auto", borderRadius: 5, cursor: "pointer",
-                                background: PA_MARCA[c],
-                                border: color === c ? "2.5px solid #0F172A" : "1.5px solid #CBD5E1" }} />
-                          ))}
-                        </div>
-                      );
-                    })}
+                  /* Modo resaltar: se elige el color arriba y después se
+                     selecciona con el dedo o el mouse la palabra a pintar.
+                     Antes se pintaba el renglón entero, que para marcar dos
+                     palabras obligaba a teñir tres líneas de texto alrededor.
+
+                     El texto se dibuja en tramos, cada uno con su posición de
+                     arranque en el atributo data-i. Con eso, cuando el
+                     navegador avisa qué seleccionó el usuario, se puede
+                     traducir esa selección a un índice de caracter: sin las
+                     posiciones habría que adivinar dónde cae la selección
+                     dentro del texto, que es donde estas cosas fallan. */
+                  <div style={{ display: "grid", gap: 7 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 11.5, color: "#64748B" }}>Color</span>
+                      {PA_MARCAS.map((c) => (
+                        <button key={c} onClick={() => setColorSel(c)}
+                          title={PA_MARCA_ROT[c]}
+                          style={{ width: 34, height: 34, flex: "0 0 auto", borderRadius: 6, cursor: "pointer",
+                            background: PA_MARCA[c],
+                            border: colorSel === c ? "3px solid #0F172A" : "1.5px solid #CBD5E1" }} />
+                      ))}
+                      <button onClick={() => setColorSel(null)}
+                        title="Seleccionar texto ya pintado para despintarlo"
+                        style={{ fontFamily: "inherit", fontSize: 12, fontWeight: 600, height: 34, padding: "0 11px",
+                          borderRadius: 6, cursor: "pointer", background: "#fff", color: "#475569",
+                          border: colorSel === null ? "3px solid #0F172A" : "1.5px solid #CBD5E1" }}>
+                        Borrar
+                      </button>
+                      <span style={{ fontSize: 11.5, color: "#64748B", marginLeft: "auto" }}>
+                        Seleccioná la palabra
+                      </span>
+                    </div>
+                    <div
+                      onMouseUp={() => pintarSeleccion(k)}
+                      onTouchEnd={() => setTimeout(() => pintarSeleccion(k), 10)}
+                      style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", background: "#F8FAFC",
+                        borderRadius: 5, padding: "8px 10px", cursor: "text", lineHeight: 1.6 }}>
+                      {paSegmentos(txt).map((seg, si) => seg.texto === "\n"
+                        ? <br key={si} />
+                        : <span key={si} data-i={seg.inicio}
+                            style={seg.color ? { background: PA_MARCA[seg.color], borderRadius: 2, padding: "1px 0" } : undefined}>
+                            {/* Los «» se muestran crudos a propósito: sacarlos
+                                acortaría el texto y las posiciones dejarían de
+                                coincidir con lo que se ve, que es lo que hace
+                                que la selección pinte el tramo equivocado. */}
+                            {seg.texto}
+                          </span>)}
+                    </div>
                   </div>
                 ) : (
                   <div contentEditable={editable} suppressContentEditableWarning

@@ -37,7 +37,78 @@ var FIELDS = [
 ];
 
 var BED_RE = /^(\d\.\d{1,2}|R\d{1,2}|UCO\s*\d{1,2})$/i;
-var UNIT_RE = /^(UTI\s*\d|UCO|RECU)$/i;
+/* El encabezado de la unidad adentro del documento. Se acepta con dos puntos,
+   guion o una fecha al lado ("UTI 2:", "UTI 2 - 02/09"), porque el pase se
+   escribe a mano y el encabezado se retoca seguido. Antes se exigía que el
+   renglón dijera exactamente "UTI 2" y cualquier agregado lo volvía
+   irreconocible. */
+var UNIT_RE = /^(UTI\s*\d|UCO|RECU|TERAPIA\s*\d|RECUPERACI[OÓ]N)\s*[:\-–]?\s*(\d{1,2}\/\d{1,2}(\/\d{2,4})?)?$/i;
+
+/* La unidad que le corresponde a una cama, leída del propio número: "2.5" es
+   UTI 2, "R3" es RECU, "UCO 4" es UCO.
+
+   Esto es lo que salva el pase cuando el encabezado del documento falta o
+   está mal escrito. El 2/9/2026 alguien tocó el encabezado del documento de
+   UTI 2 y la app mostró una pestaña llamada "Doc 3" con las camas 2.1 a 2.5
+   adentro: el nombre de respaldo era una etiqueta interna, no una respuesta.
+   El número de cama, en cambio, siempre está y no miente. */
+/* Rellena las camas que faltan en el medio de una unidad.
+
+   El documento del Drive lista solamente las camas OCUPADAS: si la 2.4 está
+   vacía, simplemente no aparece, y en la app quedaba un salto de 2.3 a 2.5
+   que se lee como si esa cama no existiera. Pero existe, está libre, y saber
+   dónde hay lugar es información útil en el medio de una guardia.
+
+   Se rellena entre la primera y la última cama que el documento sí nombra.
+   Lo que NO se puede saber es si hay camas después de la última nombrada: si
+   la unidad tiene seis camas y la 2.6 está vacía, el documento no la menciona
+   en ningún lado y no hay de dónde deducirla. Para ese caso está el botón
+   "+ Agregar cama" de la Pase App.
+
+   Las camas rellenadas se marcan con vacia:true para que la app las muestre
+   como libres y no como un paciente sin datos. */
+function completarCamas(lista) {
+  if (!lista || lista.length < 2) return lista;
+  // Sólo se rellena si TODAS las camas de la unidad tienen la misma forma:
+  // "2.n" todas, o "Rn" todas. Con formas mezcladas no hay una serie que
+  // completar y meterse a inventar sería peor que dejar el hueco.
+  var m0 = String(lista[0].bed || "").toUpperCase().match(/^(\d\.|R|UCO\s*)(\d+)$/);
+  if (!m0) return lista;
+  var prefijo = m0[1];
+  var nums = [];
+  for (var i = 0; i < lista.length; i++) {
+    var m = String(lista[i].bed || "").toUpperCase().match(/^(\d\.|R|UCO\s*)(\d+)$/);
+    if (!m || m[1] !== prefijo) return lista;      // formas mezcladas: no se toca
+    nums.push(+m[2]);
+  }
+  var min = Math.min.apply(null, nums), max = Math.max.apply(null, nums);
+  // Un rango absurdo (alguien escribió "2.99") no dispara cien camas vacías.
+  if (max - min > 30) return lista;
+  var unidad = lista[0].unit;
+  var out = lista.slice();
+  for (var n = min; n <= max; n++) {
+    if (nums.indexOf(n) >= 0) continue;
+    out.push({
+      unit: unidad, bed: prefijo + n, name: "", age: null, mi: "",
+      flags: [], fields: {}, status: "", vacia: true,
+    });
+  }
+  out.sort(function (a, b) {
+    var na = +String(a.bed).replace(/^(\d\.|R|UCO\s*)/i, "");
+    var nb = +String(b.bed).replace(/^(\d\.|R|UCO\s*)/i, "");
+    return na - nb;
+  });
+  return out;
+}
+
+function unidadDeCama(bed) {
+  var b = String(bed || "").toUpperCase().replace(/\s+/g, "");
+  var m = b.match(/^(\d)\./);
+  if (m) return "UTI " + m[1];
+  if (/^R\d/.test(b)) return "RECU";
+  if (/^UCO/.test(b)) return "UCO";
+  return null;
+}
 var AGE_RE = /(\d{1,3})\s*A[NY]OS?/i;
 var DATE_RE = /(\d{1,2}\/\d{1,2})/;
 
@@ -62,6 +133,9 @@ function parsePase(raw, defaultUnit) {
   var lines = raw.split("\n").map(cleanLine);
   var patients = [];
   var unit = defaultUnit;
+  // ¿El documento traía un encabezado de unidad de verdad? Si no, cada cama
+  // decide su unidad por su propio número.
+  var vioEncabezado = false;
   var cur = null;
   var curField = null;
 
@@ -79,13 +153,16 @@ function parsePase(raw, defaultUnit) {
 
     if (UNIT_RE.test(line) && !BED_RE.test(line)) {
       push();
-      unit = line.toUpperCase().replace(/\s+/g, " ");
+      // Se guarda sólo la sigla, sin los dos puntos ni la fecha que pueda
+      // traer el encabezado.
+      unit = (line.toUpperCase().match(/^(UTI\s*\d|UCO|RECU)/) || [line.toUpperCase()])[0].replace(/\s+/g, " ").trim();
+      vioEncabezado = true;
       continue;
     }
 
     if (BED_RE.test(line)) {
       push();
-      cur = { unit: unit, bed: line.toUpperCase().replace(/\s+/g, ""), name: "", age: null, mi: "", flags: [], fields: {} };
+      cur = { unit: (vioEncabezado ? unit : (unidadDeCama(line) || unit)), bed: line.toUpperCase().replace(/\s+/g, ""), name: "", age: null, mi: "", flags: [], fields: {} };
       curField = null;
       continue;
     }
@@ -272,6 +349,10 @@ export default async function handler(req, res) {
         errors.push({ unit: d.fallbackUnit, error: e.message });
       }
     }
+
+    // Las camas libres del medio se agregan acá, una vez que ya está armada
+    // la lista completa de cada unidad.
+    Object.keys(units).forEach(function (u) { units[u] = completarCamas(units[u]); });
 
     var known = UNIT_ORDER.filter(function(u) { return units[u] && units[u].length; });
     var extra = Object.keys(units).filter(function(u) { return UNIT_ORDER.indexOf(u) < 0; });

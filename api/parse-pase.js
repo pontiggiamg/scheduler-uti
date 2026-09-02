@@ -17,7 +17,28 @@ const FIELDS = [
 // Marcadores de cama: "1.1", "2.3", "R1", "UCO 1", "UCO1"
 const BED_RE = /^(\d\.\d{1,2}|R\d{1,2}|UCO\s*\d{1,2})$/i;
 // Encabezado de unidad dentro del doc: "UTI 2", "UCO", "RECU"
-const UNIT_RE = /^(UTI\s*\d|UCO|RECU)$/i;
+/* El encabezado de la unidad adentro del documento. Se acepta con dos puntos,
+   guion o una fecha al lado ("UTI 2:", "UTI 2 - 02/09"), porque el pase se
+   escribe a mano y el encabezado se retoca seguido. Antes se exigía que el
+   renglón dijera exactamente "UTI 2" y cualquier agregado lo volvía
+   irreconocible. */
+const UNIT_RE = /^(UTI\s*\d|UCO|RECU|TERAPIA\s*\d|RECUPERACI[OÓ]N)\s*[:\-–]?\s*(\d{1,2}\/\d{1,2}(\/\d{2,4})?)?$/i;
+
+/* La unidad que le corresponde a una cama, leída del propio número: "2.5" es
+   UTI 2, "R3" es RECU, "UCO 4" es UCO.
+
+   Esto es lo que salva el pase cuando el encabezado del documento falta o
+   está mal escrito. El 2/9/2026 alguien tocó el encabezado del documento de
+   UTI 2 y la app mostró una pestaña llamada "Doc 3" con las camas 2.1 a 2.5
+   adentro. El número de cama, en cambio, siempre está y no miente. */
+function unidadDeCama(bed) {
+  const b = String(bed || "").toUpperCase().replace(/\s+/g, "");
+  const m = b.match(/^(\d)\./);
+  if (m) return "UTI " + m[1];
+  if (/^R\d/.test(b)) return "RECU";
+  if (/^UCO/.test(b)) return "UCO";
+  return null;
+}
 
 const AGE_RE = /(\d{1,3})\s*A[ÑN]OS?/i;
 const DATE_RE = /(\d{1,2}\/\d{1,2})/;
@@ -52,6 +73,9 @@ export function parsePase(raw, defaultUnit) {
 
   const patients = [];
   let unit = defaultUnit;
+  // ¿El documento traía un encabezado de unidad de verdad? Si no, cada cama
+  // decide su unidad por su propio número.
+  let vioEncabezado = false;
   let cur = null;
   let curField = null;
 
@@ -70,14 +94,17 @@ export function parsePase(raw, defaultUnit) {
 
     if (UNIT_RE.test(line) && !BED_RE.test(line)) {
       push();
-      unit = line.toUpperCase().replace(/\s+/g, " ");
+      // Se guarda sólo la sigla, sin los dos puntos ni la fecha que pueda
+      // traer el encabezado.
+      unit = (line.toUpperCase().match(/^(UTI\s*\d|UCO|RECU)/) || [line.toUpperCase()])[0].replace(/\s+/g, " ").trim();
+      vioEncabezado = true;
       continue;
     }
 
     if (BED_RE.test(line)) {
       push();
       const bed = line.toUpperCase().replace(/\s+/g, "");
-      cur = { unit, bed, name: "", age: null, mi: "", fields: {} };
+      cur = { unit: vioEncabezado ? unit : (unidadDeCama(bed) || unit), bed, name: "", age: null, mi: "", fields: {} };
       curField = null;
       continue;
     }
