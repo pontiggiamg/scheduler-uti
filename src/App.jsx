@@ -7927,13 +7927,41 @@ function PaseAppView({ user }) {
      pantalla que dice "no pude leer tu copia" a una que miente diciendo que
      no había nada. */
   const [fallo, setFallo] = useState(null);
+  // La foto congelada contra la que se compara `mio` (naranja / "ver
+  // original"). Se fija una sola vez al cargar la copia y no se vuelve a
+  // tocar por un resync — ver el comentario en el efecto de más abajo.
+  const [fotoBase, setFotoBase] = useState(null);
   const [noGuarda, setNoGuarda] = useState(null);
   const [viendoCopias, setViendoCopias] = useState(false);
   const [copias, setCopias] = useState(null);
   const [reintento, setReintento] = useState(0);
 
+  /* `foto` sólo se usa acá abajo para el caso "todavía no hay copia mía": la
+     primera vez que alguien abre el pase de hoy, se arranca con lo que trajo
+     el Drive. Se guarda en un ref, no en el efecto de abajo, a propósito. */
+  const fotoRef = useRef(foto);
+  fotoRef.current = foto;
+
+  /* Esto se dispara al entrar y cada vez que cambia docId (uid + fecha del
+     pase), NUNCA por un resync.
+
+     Antes dependía también de `foto`, y `foto` cambia cada vez que alguien
+     resincroniza la pestaña Pases — algo que puede pasar en cualquier momento
+     de la guardia, sin que quien está en Pase App haga nada. Cada resync
+     volvía a leer la copia guardada en la nube y LA PISABA ENCIMA de `mio`,
+     el estado que se está editando en pantalla. Si eso pasaba dentro de los
+     700 ms que tarda en guardarse un cambio (ver `guardar`), lo último
+     tipiado se perdía sin aviso: no había error, la pantalla seguía mostrando
+     el pase, y la próxima vez que se guardara se guardaba la versión vieja.
+     Así se explica que camas y pacientes de Pase App "cambiaran solos" a
+     mitad de guardia.
+
+     `docId` no cambia con un resync común: sólo cambia si cambia la fecha del
+     pase (un día nuevo). Por eso alcanza con sacar `foto` de las dependencias
+     — la fecha del pase actual (para armar docId) igual se sigue leyendo de
+     `foto` más arriba, eso no se toca. */
   useEffect(() => {
-    if (!docId || !foto) return;
+    if (!docId || !fotoRef.current) return;
     let vivo = true;
     setFallo(null);
     getDoc(doc(db, PASEAPP_COL, docId)).then((snap) => {
@@ -7950,6 +7978,15 @@ function PaseAppView({ user }) {
       const localEsMasNuevo = local && Array.isArray(local.pacientes) &&
         (!nube || (local.guardadoEn || "") > (nube.guardadoEn || ""));
 
+      // La foto contra la que se va a comparar (naranja / "ver original")
+      // queda congelada acá, en el mismo momento en que se carga `mio`. Un
+      // resync posterior de la pestaña Pases sigue actualizando `foto` para
+      // el cartelito de arriba, pero ya no mueve esta base: si el Drive
+      // cambia un dato que vos nunca tocaste, tu campo no se pone naranja
+      // solo. Para traer lo nuevo del Drive está, a propósito,
+      // "Borrar mis anotaciones y sincronizar pase".
+      setFotoBase(fotoRef.current);
+
       if (localEsMasNuevo) {
         setMio(local.pacientes);
         setEstado("Recuperado de este navegador — no había llegado a guardarse en la nube");
@@ -7958,11 +7995,12 @@ function PaseAppView({ user }) {
         setEstado("Recuperado de tu última sesión");
       } else {
         // No hay copia guardada todavía: es la primera vez con este pase.
-        setMio(JSON.parse(JSON.stringify(foto.pacientes)));
+        setMio(JSON.parse(JSON.stringify(fotoRef.current.pacientes)));
       }
     }).catch((e) => {
       if (!vivo) return;
       console.error("leer mi copia", e);
+      setFotoBase(fotoRef.current);
       // Si la nube no responde pero este navegador tiene una copia, se usa
       // esa: es mejor seguir trabajando sobre lo propio que quedar frenado.
       let local = null;
@@ -7979,7 +8017,7 @@ function PaseAppView({ user }) {
       }
     });
     return () => { vivo = false; };
-  }, [docId, foto, reintento]);
+  }, [docId, reintento]);
 
   /* Todas las copias privadas que tiene guardadas este usuario.
 
@@ -8318,6 +8356,10 @@ function PaseAppView({ user }) {
     const limpio = JSON.parse(JSON.stringify(foto.pacientes));
     undo.current = [];
     setMio(limpio);
+    // Esto sí es un resync a propósito: acá la foto congelada se vuelve a
+    // fijar en la más nueva, porque el pedido explícito es "traeme lo que
+    // diga el Drive ahora".
+    setFotoBase(foto);
     try { await deleteDoc(doc(db, PASEAPP_COL, docId)); } catch (e) { /* si no existía, da igual */ }
     setEstado("Pase sincronizado y anotaciones borradas");
   };
@@ -8349,7 +8391,7 @@ function PaseAppView({ user }) {
     </div>
   );
 
-  if (cargando || !mio || !foto) return <Skeleton />;
+  if (cargando || !mio || !foto || !fotoBase) return <Skeleton />;
 
   // La tira de camas va ordenada por número de cama, no por la posición que
   // la ficha tiene en el array. Antes seguía el orden del array y al mover a
@@ -8379,9 +8421,17 @@ function PaseAppView({ user }) {
 
      Buscar por cama es estable frente a todo eso. Si la cama no está en la
      foto —una que agregaste vos, o una que el Drive ya no trae— no hay contra
-     qué comparar y no se marca nada, que es lo correcto. */
+     qué comparar y no se marca nada, que es lo correcto.
+
+     Y se busca en `fotoBase` —la foto CONGELADA al momento de cargar tu
+     copia— y no en `foto`, que sigue viva con cada resync. Si se buscara en
+     `foto`, un resync a mitad de guardia que cambie un dato en el Drive haría
+     aparecer naranja en un campo que vos nunca tocaste, porque de golpe tu
+     copia (vieja, intacta) pasaría a diferir de un original que cambió
+     debajo. Con `fotoBase` fija, naranja quiere decir siempre "esto lo
+     edité yo", sin excepción. */
   const yo_ = mio[idx] || {};
-  const o = foto.pacientes.find((x) => x.cama === yo_.cama && x.unidad === yo_.unidad) || {};
+  const o = fotoBase.pacientes.find((x) => x.cama === yo_.cama && x.unidad === yo_.unidad) || {};
   const p = verOriginal ? o : (mio[idx] || {});
   const editable = !verOriginal;
 
@@ -8810,9 +8860,14 @@ function PaseAppView({ user }) {
                 Eliminar cama del pase
               </button>
               {/* Sólo tiene sentido si la cama venía del Drive: una cama que
-                  agregaste vos no tiene datos a los que volver. */}
-              {!p.agregada && foto.pacientes[idx] && (
-                <button onClick={() => mutar((d) => { d[idx] = JSON.parse(JSON.stringify(foto.pacientes[idx])); })}
+                  agregaste vos no tiene datos a los que volver. Se usa `o`
+                  —la misma búsqueda por cama y unidad de más arriba, sobre
+                  la foto CONGELADA— en vez de foto.pacientes[idx]: buscar por
+                  posición asume que tu copia y la foto del Drive tienen el
+                  mismo orden, y ya causó que esto trajera los datos de otro
+                  paciente. */}
+              {!p.agregada && o.cama && (
+                <button onClick={() => mutar((d) => { d[idx] = JSON.parse(JSON.stringify(o)); })}
                   style={B}>Traer de nuevo los datos del pase</button>
               )}
             </div>
@@ -8950,9 +9005,16 @@ function PaseAppView({ user }) {
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 9, alignItems: "center" }}>
             <span style={{ fontSize: 11.5, border: "1px solid #E2E8F0", borderRadius: 4, padding: "3px 8px" }}>
               Cama <b style={{ fontFamily: "ui-monospace,monospace" }}>{p.cama}</b>
-              {p.unidad !== (foto.pacientes[idx] || {}).unidad && (
-                <b style={{ color: "#8A4B00", marginLeft: 5 }}>· movido a {p.unidad}</b>
-              )}
+              {/* Se busca esta cama por su NÚMERO en toda la foto congelada
+                  (no por posición ni por la unidad actual, que ya puede
+                  haber cambiado) para saber en qué unidad la tenía el Drive
+                  originalmente. */}
+              {(() => {
+                const oCama = fotoBase.pacientes.find((x) => x.cama === p.cama);
+                return oCama && p.unidad !== oCama.unidad && (
+                  <b style={{ color: "#8A4B00", marginLeft: 5 }}>· movido a {p.unidad}</b>
+                );
+              })()}
             </span>
             {/* Los dos pesos, uno al lado del otro. El real estimado manda en
                 las dosis; el teórico (predicho) sólo se usa para el Vt/kg en
