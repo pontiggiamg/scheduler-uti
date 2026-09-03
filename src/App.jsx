@@ -8413,6 +8413,30 @@ function PaseAppView({ user }) {
   };
   const reiniciar = async () => {
     if (!confirm("Esto borra tus anotaciones y ediciones, y vuelve a traer el pase del Drive.\n\n¿Seguro?")) return;
+
+    /* Antes esto sólo borraba el documento de la nube, y por eso "Borrar mis
+       anotaciones y sincronizar pase" podía no servir de nada: la pantalla
+       se veía limpia un instante, pero apenas se recargaba la página (o se
+       cambiaba de pestaña y se volvía) el efecto de carga encontraba que la
+       nube ya no tenía nada, y entonces usaba lo que hubiera en
+       localStorage —que seguía teniendo la copia VIEJA, porque acá nunca se
+       tocaba— y la traía de vuelta entera: anotaciones incluidas, y con ella
+       el naranja de campos que en esta sesión nadie tocó. Cuantas más veces
+       se apretaba el botón, más confuso: cada vez se veía limpio un
+       segundo y volvía a aparecer lo viejo.
+
+       También podía quedar una escritura pendiente de antes de apretar el
+       botón (la que se demora 700 ms para no guardar por cada tecla, ver
+       `guardar`): si ese timer llegaba a disparar DESPUÉS del borrado, volvía
+       a escribir la copia vieja tanto en la nube como en localStorage, y el
+       borrado quedaba deshecho solo, sin que nadie tocara nada.
+
+       Ahora se cancela cualquier guardado pendiente, se borra la nube Y el
+       localStorage de esta copia, en ese orden, antes de mostrar nada como
+       terminado. */
+    clearTimeout(guardarTimer.current);
+    pendienteRef.current = null;
+
     const limpio = JSON.parse(JSON.stringify(foto.pacientes));
     undo.current = [];
     setMio(limpio);
@@ -8420,7 +8444,10 @@ function PaseAppView({ user }) {
     // fijar en la más nueva, porque el pedido explícito es "traeme lo que
     // diga el Drive ahora".
     setFotoBase(foto);
+
     try { await deleteDoc(doc(db, PASEAPP_COL, docId)); } catch (e) { /* si no existía, da igual */ }
+    try { if (claveLocal) localStorage.removeItem(claveLocal); } catch (e) { /* sin espacio o modo privado: da igual */ }
+
     setEstado("Pase sincronizado y anotaciones borradas");
   };
 
