@@ -6354,11 +6354,39 @@ const TEXTAREA = { width: "100%", minHeight: 52, padding: "6px 8px", borderRadiu
       "PL s/p" tiene que verse como dos palabras nuevas y no como siete letras
       sueltas intercaladas.
 
-   3) Las anotaciones son temporales por definición, pero no se borran solas:
-      hay un botón explícito. Un borrado automático a las 24 h le puede comer a
-      alguien una nota a mitad de guardia, y eso es peor que arrastrar datos
-      viejos un día de más.
+   3) Las anotaciones son temporales por definición. Hasta el 3/9/2026 no se
+      borraban solas —había que usar el botón explícito— para no comerse una
+      nota a mitad de guardia con un borrado automático mal calculado.
+
+      A pedido de Gonzalo eso cambió: ahora se borran solas, sin pedir
+      confirmación, pasadas 26 horas desde que se escribieron (no 24: una
+      guardia puede estirarse, y el margen es a propósito más largo que un
+      día entero para no cortar una nota en medio de una guardia larga). Cada
+      anotación nueva guarda su hora completa en `ts` (fecha y hora, no sólo
+      "08:43" como antes); las que ya existían sin `ts` no se tocan, porque no
+      hay forma de saber su antigüedad real. Ver `purgarAnotacionesViejas`.
 */
+
+// Una anotación se borra sola pasadas estas horas desde que se escribió.
+// Ver el punto 3 de arriba.
+const PA_ANOT_TTL_HORAS = 26;
+
+// Saca de todos los pacientes las anotaciones que ya pasaron su tiempo. Pura:
+// no muta nada, devuelve un array nuevo (o el mismo, si no había nada que
+// sacar). Las anotaciones sin `ts` —de antes de este cambio— se dejan, porque
+// no hay con qué medir su antigüedad.
+function purgarAnotacionesViejas(pacientes) {
+  const limite = Date.now() - PA_ANOT_TTL_HORAS * 3600 * 1000;
+  let tocado = false;
+  const resultado = (pacientes || []).map((p) => {
+    if (!Array.isArray(p.anotaciones) || !p.anotaciones.length) return p;
+    const vivas = p.anotaciones.filter((a) => !a.ts || new Date(a.ts).getTime() > limite);
+    if (vivas.length === p.anotaciones.length) return p;
+    tocado = true;
+    return { ...p, anotaciones: vivas };
+  });
+  return tocado ? resultado : pacientes;
+}
 
 // Colección propia. Un documento por residente y por pase: id = uid + fecha de
 // la foto, así cambiar de pase no pisa lo de la guardia anterior.
@@ -7987,14 +8015,24 @@ function PaseAppView({ user }) {
       // "Borrar mis anotaciones y sincronizar pase".
       setFotoBase(fotoRef.current);
 
+      // Se cargue de donde se cargue, antes de mostrarla se le sacan las
+      // anotaciones que ya cumplieron sus 26 h (ver PA_ANOT_TTL_HORAS más
+      // arriba). Si de verdad sacó algo, se guarda esa versión más corta:
+      // si no, la próxima vez que alguien abra este pase van a seguir ahí,
+      // ahora con más horas encima todavía.
       if (localEsMasNuevo) {
-        setMio(local.pacientes);
+        const p = purgarAnotacionesViejas(local.pacientes);
+        setMio(p);
+        if (p !== local.pacientes) guardar(p);
         setEstado("Recuperado de este navegador — no había llegado a guardarse en la nube");
       } else if (nube) {
-        setMio(nube.pacientes);
+        const p = purgarAnotacionesViejas(nube.pacientes);
+        setMio(p);
+        if (p !== nube.pacientes) guardar(p);
         setEstado("Recuperado de tu última sesión");
       } else {
         // No hay copia guardada todavía: es la primera vez con este pase.
+        // No hace falta purgar acá: recién nace, no puede tener nada viejo.
         setMio(JSON.parse(JSON.stringify(fotoRef.current.pacientes)));
       }
     }).catch((e) => {
@@ -8009,7 +8047,10 @@ function PaseAppView({ user }) {
         if (crudo) local = JSON.parse(crudo);
       } catch (e2) { /* ignorar */ }
       if (local && Array.isArray(local.pacientes)) {
-        setMio(local.pacientes);
+        // Acá sólo se purga para lo que se ve en pantalla, sin forzar un
+        // guardado: la nube ya está fallando, insistir ahora sólo suma un
+        // segundo error. La próxima lectura que funcione lo guarda bien.
+        setMio(purgarAnotacionesViejas(local.pacientes));
         setEstado("Trabajando con la copia de este navegador");
         setNoGuarda(e && e.message ? e.message : "no se pudo leer");
       } else {
@@ -8111,7 +8152,9 @@ function PaseAppView({ user }) {
     guardarLocal(datos);          // primero lo seguro, después la nube
     await setDoc(doc(db, PASEAPP_COL, docId), {
       uid: user.uid, email: user.email || "", nombre: user.displayName || "",
-      tomado: foto.tomado, guardadoEn: new Date().toISOString(), pacientes: datos,
+      // `fotoBase.tomado`, no `foto.tomado`: es el pase que tu copia
+      // realmente tiene adentro, no el último que llegó del Drive.
+      tomado: fotoBase ? fotoBase.tomado : foto.tomado, guardadoEn: new Date().toISOString(), pacientes: datos,
     });
   };
 
@@ -8138,6 +8181,23 @@ function PaseAppView({ user }) {
       }
     }, 700);
   };
+
+  /* La purga de anotaciones viejas (ver PA_ANOT_TTL_HORAS) corre al abrir el
+     pase, pero una guardia puede quedar con la pestaña abierta muchas horas
+     sin recargar. Este intervalo repite la purga cada media hora mientras la
+     pestaña sigue abierta, para que una anotación no se quede esperando a
+     que alguien recargue la página para desaparecer. */
+  useEffect(() => {
+    const t = setInterval(() => {
+      setMio((cur) => {
+        if (!cur) return cur;
+        const p = purgarAnotacionesViejas(cur);
+        if (p !== cur) guardar(p);
+        return p;
+      });
+    }, 30 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
 
   /* Si la pestaña se cierra dentro de esos 700 ms, el último cambio se perdía.
      Pasa poco, pero pasa justo en el peor momento: uno anota algo y cierra.
@@ -8667,7 +8727,14 @@ function PaseAppView({ user }) {
             <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".08em", background: "#B45309", padding: "2px 6px", borderRadius: 3 }}>ALPHA</span>
           </div>
           <div style={{ fontSize: 10.5, opacity: 0.6 }}>
-            Foto del Drive {foto.tomado ? new Date(foto.tomado).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"} · {mio.length} camas · tu copia privada
+            {/* Se muestra `fotoBase` —la foto CONGELADA, la misma contra la
+                que se compara el naranja— y no `foto`, que sigue viva con
+                cada resync de la pestaña Pases. Mostrar la última resincronizada
+                acá confundía: decía una hora posterior a tus propias ediciones,
+                como si el pase se hubiera actualizado encima tuyo, cuando en
+                realidad tu copia seguía intacta. Esta hora es la del pase que
+                tu copia realmente tiene adentro. */}
+            Foto del Drive {fotoBase.tomado ? new Date(fotoBase.tomado).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"} · {mio.length} camas · tu copia privada
           </div>
         </div>
         <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.7 }}>{estado}</span>
@@ -8698,7 +8765,7 @@ function PaseAppView({ user }) {
             mismas palabras que la pestaña Pases, más los pendientes y las
             dosis calculadas. Se abre en una ventana aparte donde se puede
             editar antes de mandar a la impresora. */}
-        <button onClick={() => imprimirPase(mio.filter((x) => x.unidad === uSel), uSel, foto.tomado)}
+        <button onClick={() => imprimirPase(mio.filter((x) => x.unidad === uSel), uSel, fotoBase.tomado)}
           style={B}>Imprimir pase de {uSel}</button>
         <label style={{ ...B, display: "inline-flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={verOriginal} onChange={(e) => setVerOriginal(e.target.checked)}
@@ -8804,7 +8871,14 @@ function PaseAppView({ user }) {
             </div>
             <NuevaAnotacion onAdd={(txt) => mutar((d) => {
               d[idx].anotaciones = d[idx].anotaciones || [];
-              d[idx].anotaciones.push({ hora: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }), tipo: tipoSel, texto: txt });
+              // `ts` es la hora completa (fecha + hora), para poder calcular
+              // cuándo cumple las 26 h y se borra sola. `hora` sigue siendo
+              // sólo para mostrar, como antes.
+              d[idx].anotaciones.push({
+                hora: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
+                ts: new Date().toISOString(),
+                tipo: tipoSel, texto: txt,
+              });
             })} />
           </>
         )}
