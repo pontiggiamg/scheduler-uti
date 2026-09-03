@@ -3,6 +3,10 @@ import { db, auth, googleProvider } from "./firebase";
 import { doc, onSnapshot, setDoc, getDoc, deleteDoc, increment, arrayUnion, collection, getDocs, query, orderBy } from "firebase/firestore";
 import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
 import Lab, { isLabRoute } from "./Lab";
+// Todo lo que habla con la base pasa por acá. La razón está escrita en
+// nube.jsx y vale la pena leerla: es lo que hace que un error de la base se
+// vea en pantalla en vez de convertirse en una pantalla vacía y silenciosa.
+import { escuchar, escribir, AvisoDeFallas, useGuardadoConEspera, CARTEL_ESTADO, registrarFalla } from "./nube";
 
 /* ══════════════════ CONFIGURACIÓN ══════════════════ */
 
@@ -416,6 +420,77 @@ function normalizeRot(raw) {
   return year;
 }
 
+/* ══════════════════ LECTORES COMPARTIDOS ══════════════════
+
+   Dos datos que varias pestañas necesitan al mismo tiempo: el pase del Drive
+   y las rotaciones del año. Antes cada pestaña se conectaba por su cuenta, y
+   ese fue el origen de bugs de verdad: el pase se leía en TRES lugares con
+   tres formas distintas de interpretar los mismos campos, y el 3/9/2026 la
+   edad del paciente se perdía en dos de esos tres porque el arreglo se había
+   hecho en uno solo. Un dato leído en un solo lugar no puede desincronizarse
+   consigo mismo. */
+
+// Para quien quiere el paciente tal cual vino del Drive, sin tocarlo.
+const paseCrudo = (p) => p;
+
+/* Nombre y edad de un paciente del pase, para las pantallas que solo listan
+   camas (RedCap). La edad viene en `p.age`: el parser del servidor
+   (api/_parser.js) ya la separó del nombre al leer el Drive, así que buscarla
+   dentro de `p.name` casi nunca la encuentra. `paNombre` queda de respaldo
+   para los pases viejos que todavía la tengan pegada al nombre. */
+function paseNombreYEdad(p, unidad) {
+  const n = paNombre(p.name || "");
+  const edad = (typeof p.age === "number" && p.age > 0) ? p.age : n.edad;
+  return { unidad, cama: p.bed, nombre: n.nombre, edad };
+}
+
+/* El pase del Drive (scheduler/pases-latest).
+
+   `procesar` decide qué se hace con cada paciente crudo, que es lo único que
+   cambia entre pestañas: Pases lo quiere tal cual viene, RedCap quiere nombre
+   y edad, Pase App lo pasa por el motor completo. Devuelve además `crudo`,
+   el documento entero, para quien necesite mirar otros campos. */
+function usePaseDelDrive(procesar) {
+  const [foto, setFoto] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  // El procesador se guarda en una ref para que cambiarlo no reconecte la
+  // escucha: la suscripción se arma una sola vez y vive lo que vive la pestaña.
+  const procesarRef = useRef(procesar);
+  procesarRef.current = procesar;
+
+  useEffect(() => {
+    return escuchar(doc(db, "scheduler", "pases-latest"), (snap) => {
+      if (!snap.exists()) { setFoto(null); setCargando(false); return; }
+      const d = snap.data();
+      // Si el sync no dejó unitOrder se usan las claves de units: sin esto,
+      // un campo faltante deja la pantalla sin ninguna unidad.
+      const unidades = d.unitOrder?.length ? d.unitOrder : Object.keys(d.units || {});
+      const pacientes = unidades.flatMap((u) =>
+        (d.units?.[u] || []).map((p) => procesarRef.current(p, u)));
+      setFoto({ tomado: d.updatedAt, unidades, pacientes, crudo: d });
+      setCargando(false);
+    }, "el pase del Drive", () => setCargando(false));
+  }, []);
+
+  return { foto, cargando };
+}
+
+/* Las rotaciones y vacaciones de uno o más años (scheduler/rotaciones-AAAA).
+   Se pide más de un año cuando la semana cruza diciembre. */
+function useRotaciones(anios) {
+  const [rotPorAnio, setRotPorAnio] = useState({});
+  const clave = anios.join(",");
+  useEffect(() => {
+    const unsubs = clave.split(",").filter(Boolean).map((y) =>
+      escuchar(doc(db, "scheduler", `rotaciones-${y}`), (snap) => {
+        setRotPorAnio((cur) => ({ ...cur, [y]: snap.exists() ? normalizeRot(snap.data()) : emptyRotYear() }));
+      }, `las rotaciones de ${y}`)
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [clave]);
+  return rotPorAnio;
+}
+
 // Las semanas del mes, por criterio de mayoría: una semana "es" de este mes si
 // al menos 4 de sus 7 días caen en él. Hace falta porque las semanas cruzan
 // meses — septiembre 2026 arranca un martes, así que mirar solo el lunes
@@ -627,7 +702,7 @@ function AuthenticatedApp() {
 
   useEffect(() => {
     const ref = doc(db, "scheduler", "ui-config");
-    const unsub = onSnapshot(ref, (snap) => {
+    const unsub = escuchar(ref, (snap) => {
       const guardado = snap.exists() ? snap.data().tabOrder : null;
       const stored = Array.isArray(guardado) ? guardado.map((k) => TAB_RENOMBRADAS[k] || k) : null;
       if (Array.isArray(stored) && stored.length) {
@@ -637,13 +712,13 @@ function AuthenticatedApp() {
       } else {
         setTabOrder(DEFAULT_TAB_ORDER);
       }
-    }, () => {});
+    }, null);   // cosmético: si falla, se usa el orden por defecto y nadie nota nada
     return unsub;
   }, []);
 
   const persistTabOrder = (next) => {
     setTabOrder(next);
-    setDoc(doc(db, "scheduler", "ui-config"), { tabOrder: next }, { merge: true }).catch((e) => console.error("ui-config", e));
+    escribir(setDoc(doc(db, "scheduler", "ui-config"), { tabOrder: next }, { merge: true }), "el orden de las pestañas");
   };
 
   const handleTabDragStart = (i) => (e) => { setDragIdx(i); e.dataTransfer.effectAllowed = "move"; };
@@ -724,7 +799,7 @@ function AuthenticatedApp() {
 
     const ref = doc(db, "usuarios_autorizados", email);
     let pedidoEnviado = false;
-    const unsub = onSnapshot(ref, async (snap) => {
+    const unsub = escuchar(ref, async (snap) => {
       if (!snap.exists()) {
         if (pedidoEnviado) return;
         pedidoEnviado = true;
@@ -746,12 +821,12 @@ function AuthenticatedApp() {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ email: user.email, displayName: user.displayName || "" }),
           }).catch(() => {});
-        } catch (e) { console.error("solicitud de acceso", e); }
+        } catch (e) { registrarFalla("tu pedido de acceso", e, "escritura"); }
         return;
       }
       const estado = snap.data().estado;
       setAcceso(estado === "aprobado" ? "ok" : estado === "rechazado" ? "rechazado" : "pendiente");
-    }, (e) => { console.error("acceso", e); setAcceso("pendiente"); });
+    }, "tu estado de acceso", () => setAcceso("pendiente"));
     return unsub;
   }, [user]);
 
@@ -759,9 +834,9 @@ function AuthenticatedApp() {
   // Accesos. Solo lo mira la cuenta admin.
   useEffect(() => {
     if (!user || user.email !== ADMIN_EMAIL) { setPendientesAcceso(0); return; }
-    const unsub = onSnapshot(collection(db, "usuarios_autorizados"), (snap) => {
+    const unsub = escuchar(collection(db, "usuarios_autorizados"), (snap) => {
       setPendientesAcceso(snap.docs.filter((d) => d.data().estado === "pendiente").length);
-    }, () => {});
+    }, null);   // cosmético: es solo el numerito del badge
     return unsub;
   }, [user]);
 
@@ -776,6 +851,12 @@ function AuthenticatedApp() {
 
   return (
     <div style={{ maxWidth: 1500, margin: "0 auto", padding: "14px 12px 40px", fontFamily: "'Inter', system-ui, sans-serif" }}>
+      {/* Lo que la base no pudo leer o guardar, dicho en pantalla. Va arriba
+          de todo a propósito: si algo no se está guardando, eso es más
+          importante que cualquier cosa que se vea abajo. Cuando no hay nada
+          fallando no ocupa espacio. Ver nube.jsx. */}
+      <AvisoDeFallas />
+
       {/* User bar */}
       <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, padding: "6px 12px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #E2E8F0", fontSize: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -894,26 +975,24 @@ function AccesosView({ user }) {
   const [confirmId, setConfirmId] = useState(null);
 
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "usuarios_autorizados"), (snap) => {
+    const unsub = escuchar(collection(db, "usuarios_autorizados"), (snap) => {
       setSolicitudes(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setLoading(false);
-    }, (e) => { console.error(e); setLoading(false); });
+    }, "la lista de accesos", () => setLoading(false));
     return unsub;
   }, []);
 
   const revisar = async (id, estado) => {
-    try {
-      await setDoc(doc(db, "usuarios_autorizados", id), {
-        estado,
-        revisadoPor: user?.email || "",
-        revisadoEn: new Date().toISOString(),
-        revisadoEnAR: fechaHoraAR(new Date()),
-      }, { merge: true });
-    } catch (e) { console.error(e); }
+    await escribir(setDoc(doc(db, "usuarios_autorizados", id), {
+      estado,
+      revisadoPor: user?.email || "",
+      revisadoEn: new Date().toISOString(),
+      revisadoEnAR: fechaHoraAR(new Date()),
+    }, { merge: true }), estado === "aprobado" ? "aprobar el acceso" : "cambiar el estado del acceso");
   };
 
   const eliminar = async (id) => {
-    try { await deleteDoc(doc(db, "usuarios_autorizados", id)); } catch (e) { console.error(e); }
+    await escribir(deleteDoc(doc(db, "usuarios_autorizados", id)), "borrar la solicitud de acceso");
     setConfirmId(null);
   };
 
@@ -1023,14 +1102,12 @@ function SchedulerView({ isAdmin }) {
   const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const [week, setWeek] = useState(emptyWeek);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState("idle");
   const [sel, setSel] = useState(null);
   const [toast, setToast] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [academico, setAcademico] = useState(emptyAcademico);
   const [guardiaEdit, setGuardiaEdit] = useState(null); // índice del día cuya guardia se está editando
   const [feriadosOpen, setFeriadosOpen] = useState(false);
-  const [rotPorAnio, setRotPorAnio] = useState({});
   const [aplicandoMes, setAplicandoMes] = useState(false);
   const [equiposDoc, setEquiposDoc] = useState({});
 
@@ -1061,21 +1138,21 @@ function SchedulerView({ isAdmin }) {
   const DIAS_VIS = (verSemana || imprimiendo) ? DAYS.map((_, i) => i) : [diaVis];
 
   const docId = `week-${isoDate(monday)}`;
-  const pending = useRef(null);
-  const timer = useRef(null);
-  const statusTimer = useRef(null);
   const dirty = useRef(false);
   const toastTimer = useRef(null);
 
   useEffect(() => {
     setLoading(true); setSel(null); dirty.current = false;
     const ref = doc(db, "scheduler", docId);
-    const unsub = onSnapshot(ref, { includeMetadataChanges: false }, (snap) => {
+    // El `{ includeMetadataChanges: false }` que estaba acá era el valor por
+    // defecto de onSnapshot, así que no hacía nada. `snap.metadata` sigue
+    // llegando igual, que es lo que mira la línea de abajo.
+    const unsub = escuchar(ref, (snap) => {
       if (snap.metadata.hasPendingWrites || dirty.current) { setLoading(false); return; }
       setWeek(snap.exists() ? normalize(snap.data()) : emptyWeek());
       setLoading(false);
-    }, (err) => { console.error("snapshot", err); setStatus("error"); setLoading(false); });
-    return () => { unsub(); if (timer.current) { clearTimeout(timer.current); timer.current = null; } };
+    }, "el cronograma de la semana", () => setLoading(false));
+    return unsub;
   }, [docId]);
 
   // Rotaciones y vacaciones del año (o de los dos años, si la semana cruza el
@@ -1086,19 +1163,10 @@ function SchedulerView({ isAdmin }) {
     for (let i = 0; i < DAYS.length; i++) a.add(shift(monday, i).getFullYear());
     return [...a];
   }, [monday]);
-  const clavesAnios = aniosEnVista.join(",");
+  const rotPorAnio = useRotaciones(aniosEnVista);
 
   useEffect(() => {
-    const unsubs = clavesAnios.split(",").map((y) =>
-      onSnapshot(doc(db, "scheduler", `rotaciones-${y}`), (snap) => {
-        setRotPorAnio((cur) => ({ ...cur, [y]: snap.exists() ? normalizeRot(snap.data()) : emptyRotYear() }));
-      }, () => {})
-    );
-    return () => unsubs.forEach((u) => u());
-  }, [clavesAnios]);
-
-  useEffect(() => {
-    const unsub = onSnapshot(doc(db, "scheduler", "equipos"), (snap) => setEquiposDoc(snap.exists() ? snap.data() : {}), () => {});
+    const unsub = escuchar(doc(db, "scheduler", "equipos"), (snap) => setEquiposDoc(snap.exists() ? snap.data() : {}), "los equipos por UTI");
     return unsub;
   }, []);
 
@@ -1106,27 +1174,37 @@ function SchedulerView({ isAdmin }) {
   // de verdad es esa pestaña, acá solo se refleja si hay clase ese día.
   useEffect(() => {
     const ref = doc(db, "scheduler", "academico");
-    const unsub = onSnapshot(ref, (snap) => setAcademico(snap.exists() ? normalizeAcademico(snap.data()) : emptyAcademico()), () => {});
+    const unsub = escuchar(ref, (snap) => setAcademico(snap.exists() ? normalizeAcademico(snap.data()) : emptyAcademico()), "el calendario académico");
     return unsub;
   }, []);
 
-  const flush = useCallback(async () => {
-    const payload = pending.current; if (!payload) return;
-    pending.current = null; setStatus("saving");
-    try { await setDoc(doc(db, "scheduler", docId), payload); dirty.current = false; setStatus("saved");
-      if (statusTimer.current) clearTimeout(statusTimer.current);
-      statusTimer.current = setTimeout(() => setStatus("idle"), 1600);
-    } catch (e) { console.error("save", e); setStatus("error"); }
-  }, [docId]);
+  /* Guardar la semana. La espera y el estado los maneja useGuardadoConEspera
+     (ver nube.jsx); lo único propio de acá es `dirty`, que le dice al
+     onSnapshot de arriba que ignore lo que llegue de la nube mientras haya
+     cambios locales sin escribir — si no, lo que uno acaba de mover se
+     revierte solo en pantalla al llegar el eco del guardado anterior. */
+  const { guardar: guardarSemana, estado: status, forzar } = useGuardadoConEspera(
+    async (payload) => {
+      await setDoc(doc(db, "scheduler", docId), payload);
+      dirty.current = false;
+    },
+    { etiqueta: "el cronograma de la semana", puede: isAdmin, espera: 350 }
+  );
 
-  const commit = useCallback((next, delay = 350) => {
+  const commit = useCallback((next, delay) => {
     if (!isAdmin) return;
-    setWeek(next); dirty.current = true; pending.current = next;
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(flush, delay);
-  }, [flush, isAdmin]);
+    setWeek(next); dirty.current = true;
+    guardarSemana(next, delay);
+  }, [guardarSemana, isAdmin]);
 
-  useEffect(() => { const h = () => { if (pending.current) flush(); }; window.addEventListener("beforeunload", h); return () => window.removeEventListener("beforeunload", h); }, [flush]);
+  // Cerrar la pestaña con algo sin guardar: se escribe ya. El "pagehide" y el
+  // "visibilitychange" (que son los que funcionan en el celular) ya los cubre
+  // useGuardadoConEspera; esto suma el caso de escritorio.
+  useEffect(() => {
+    const h = () => forzar();
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [forzar]);
 
   const flash = (msg) => { setToast(msg); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 2400); };
 
@@ -1715,36 +1793,31 @@ function RotacionesView({ isAdmin }) {
   const [year, setYear] = useState(new Date().getFullYear());
   const [data, setData] = useState(emptyRotYear);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState("idle");
   const [editing, setEditing] = useState(null);
   const [expanded, setExpanded] = useState({});
 
   const docId = `rotaciones-${year}`;
-  const pending = useRef(null);
-  const timer = useRef(null);
-  const statusTimer = useRef(null);
 
   useEffect(() => {
     setLoading(true);
     const ref = doc(db, "scheduler", docId);
-    const unsub = onSnapshot(ref, (snap) => {
+    const unsub = escuchar(ref, (snap) => {
       setData(snap.exists() ? normalizeRot(snap.data()) : emptyRotYear());
       setLoading(false);
-    }, () => { setLoading(false); });
-    return () => { unsub(); if (timer.current) clearTimeout(timer.current); };
+    }, "las rotaciones del año", () => setLoading(false));
+    return unsub;
   }, [docId]);
 
-  const save = useCallback(async (next) => {
+  const { guardar, estado: status } = useGuardadoConEspera(
+    (next) => setDoc(doc(db, "scheduler", docId), next),
+    { etiqueta: "las rotaciones del año", puede: isAdmin, espera: 400 }
+  );
+
+  const save = useCallback((next) => {
     if (!isAdmin) return;
-    setData(next); pending.current = next; setStatus("saving");
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(async () => {
-      try { await setDoc(doc(db, "scheduler", docId), pending.current); setStatus("saved");
-        if (statusTimer.current) clearTimeout(statusTimer.current);
-        statusTimer.current = setTimeout(() => setStatus("idle"), 1600);
-      } catch (e) { console.error(e); setStatus("error"); }
-    }, 400);
-  }, [docId, isAdmin]);
+    setData(next);
+    guardar(next);
+  }, [guardar, isAdmin]);
 
   const addAssignment = (mi) => { if (!isAdmin) return; setEditing({ month: mi, mode: "new", resident: "", place: "", exterior: false }); };
 
@@ -1797,28 +1870,7 @@ function RotacionesView({ isAdmin }) {
     return m.assignments.length > 0 || !!m.notes.trim();
   };
 
-  // Vaciar el historial. Borra las dos colecciones enteras: los votos y también
-  // quiénes votaron, así las semanas quedan como nuevas y se podría volver a
-  // votar cualquiera de ellas. No hay vuelta atrás, por eso pide escribir
-  // BORRAR: un solo click de confirmación es demasiado poco para algo que no se
-  // puede deshacer.
-  const borrarHistorial = async () => {
-    if (!isAdmin || textoBorrar.trim().toUpperCase() !== "BORRAR") return;
-    setBorrando("yendo");
-    try {
-      for (const col of ["chipa_votes", "chipa_voters"]) {
-        const snap = await getDocs(collection(db, col));
-        await Promise.all(snap.docs.map((d) => deleteDoc(doc(db, col, d.id))));
-      }
-      setHistory(null); setShowHistory(false);
-      setWeek({ weekStart: weekId, candidates: [], counts: {}, countsAura: {} });
-      setVoted({ chipa: false, aura: false });
-      setStatus("saved"); setTimeout(() => setStatus("idle"), 1800);
-    } catch (e) { console.error("borrar historial", e); setStatus("error"); }
-    setBorrando(false); setTextoBorrar("");
-  };
-
-  const S = { saving: { t: "Guardando…", c: "#CBD5E1" }, saved: { t: "✓ Guardado", c: "#86EFAC" }, error: { t: "⚠ Error", c: "#FCA5A5" } }[status];
+  const S = CARTEL_ESTADO[status];   // ver nube.jsx
 
   if (loading) return <Skeleton />;
 
@@ -2148,8 +2200,12 @@ function timeAgo(iso) {
 const PASES_FRESCO_MS = 15 * 60 * 1000;
 
 function PasesView({ isAdmin }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // Esta pestaña quiere el pase tal cual viene del Drive, sin procesar: lo
+  // muestra crudo, campo por campo. (Pase App y RedCap leen el mismo
+  // documento pero lo procesan distinto — de ahí que el lector sea uno solo y
+  // lo que cambie sea qué se hace con cada paciente.)
+  const { foto, cargando: loading } = usePaseDelDrive(paseCrudo);
+  const data = foto ? foto.crudo : null;
   const [unit, setUnit] = useState(null);
   const [open, setOpen] = useState({});
   const [syncing, setSyncing] = useState(false);
@@ -2178,14 +2234,6 @@ function PasesView({ isAdmin }) {
       setAiState((s) => ({ ...s, [p.bed]: { loading: false, error: "No se pudo conectar con el servidor." } }));
     }
   };
-
-  useEffect(() => {
-    const unsub = onSnapshot(doc(db, "scheduler", "pases-latest"), (snap) => {
-      setData(snap.exists() ? snap.data() : null);
-      setLoading(false);
-    }, () => setLoading(false));
-    return unsub;
-  }, []);
 
   // Refresco automático al abrir la pestaña, si el resumen está viejo.
   //
@@ -2498,36 +2546,28 @@ function ChipaView({ isAdmin, user }) {
   useEffect(() => {
     setLoading(true);
     const ref = doc(db, "chipa_votes", weekId);
-    const unsub = onSnapshot(ref, (snap) => {
+    const unsub = escuchar(ref, (snap) => {
       setWeek(snap.exists() ? normalizeChipaWeek(snap.data(), weekId) : { weekStart: weekId, candidates: [], counts: {}, countsAura: {} });
       setLoading(false);
-    }, () => setLoading(false));
+    }, "la votación de la semana", () => setLoading(false));
     return unsub;
   }, [weekId]);
 
   useEffect(() => {
     if (!user?.uid) return;
     const ref = doc(db, "chipa_voters", weekId);
-    const unsub = onSnapshot(ref, (snap) => {
+    const unsub = escuchar(ref, (snap) => {
       const d = snap.exists() ? snap.data() : {};
       const yaVoto = (campo) => Array.isArray(d[campo]) && d[campo].includes(user.uid);
       setVoted({ chipa: yaVoto("voted"), aura: yaVoto("votedAura") });
-    }, () => setVoted({ chipa: false, aura: false }));
+    }, "quiénes ya votaron", () => setVoted({ chipa: false, aura: false }));
     return unsub;
   }, [weekId, user?.uid]);
 
   // Rotaciones y vacaciones del año (y del siguiente, para la semana que cruza
   // diciembre), que es lo que define quién está disponible esa semana.
-  const [rotPorAnio, setRotPorAnio] = useState({});
   const aniosSemana = useMemo(() => [...new Set([monday.getFullYear(), shift(monday, 6).getFullYear()])], [weekId]);
-  useEffect(() => {
-    const unsubs = aniosSemana.map((y) =>
-      onSnapshot(doc(db, "scheduler", `rotaciones-${y}`), (snap) => {
-        setRotPorAnio((cur) => ({ ...cur, [y]: snap.exists() ? normalizeRot(snap.data()) : emptyRotYear() }));
-      }, () => {})
-    );
-    return () => unsubs.forEach((u) => u());
-  }, [aniosSemana.join(",")]);
+  const rotPorAnio = useRotaciones(aniosSemana);
 
   // Los candidatos se arman solos con los que estuvieron esa semana. Si la
   // jefatura guardó una lista a mano para esa semana, esa manda: sirve de
@@ -2544,11 +2584,10 @@ function ChipaView({ isAdmin, user }) {
 
   const saveCandidates = async () => {
     if (!isAdmin) return;
-    setStatus("saving");
-    try {
-      await setDoc(doc(db, "chipa_votes", weekId), { weekStart: weekId, candidates: pickerSel }, { merge: true });
-      setStatus("saved"); setTimeout(() => setStatus("idle"), 1500);
-    } catch (e) { console.error(e); setStatus("error"); }
+    setStatus("guardando");
+    const ok = await escribir(setDoc(doc(db, "chipa_votes", weekId), { weekStart: weekId, candidates: pickerSel }, { merge: true }), "los candidatos de la votación");
+    setStatus(ok ? "guardado" : "error");
+    if (ok) setTimeout(() => setStatus("idle"), 1500);
     setEditingCandidates(false);
   };
 
@@ -2561,7 +2600,7 @@ function ChipaView({ isAdmin, user }) {
     try {
       await setDoc(doc(db, "chipa_votes", weekId), { weekStart: weekId, [premio.campoVotos]: { [name]: increment(1) } }, { merge: true });
       await setDoc(doc(db, "chipa_voters", weekId), { [premio.campoVotantes]: arrayUnion(user.uid) }, { merge: true });
-    } catch (e) { console.error("voto " + premio.clave, e); }
+    } catch (e) { registrarFalla("tu voto", e, "escritura"); }
     setVoting(false);
   };
 
@@ -2594,12 +2633,12 @@ function ChipaView({ isAdmin, user }) {
       setHistory(null); setShowHistory(false);
       setWeek({ weekStart: weekId, candidates: [], counts: {}, countsAura: {} });
       setVoted({ chipa: false, aura: false });
-      setStatus("saved"); setTimeout(() => setStatus("idle"), 1800);
+      setStatus("guardado"); setTimeout(() => setStatus("idle"), 1800);
     } catch (e) { console.error("borrar historial", e); setStatus("error"); }
     setBorrando(false); setTextoBorrar("");
   };
 
-  const S = { saving: { t: "Guardando…", c: "#CBD5E1" }, saved: { t: "✓ Guardado", c: "#86EFAC" }, error: { t: "⚠ Error", c: "#FCA5A5" } }[status];
+  const S = CARTEL_ESTADO[status];   // ver nube.jsx
 
   if (loading) return <Skeleton />;
 
@@ -2798,36 +2837,31 @@ function ChipaHistoryRow({ week }) {
 function AcademicoView({ isAdmin }) {
   const [data, setData] = useState(emptyAcademico);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState("idle");
   const [editing, setEditing] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
 
   const docId = "academico";
-  const pending = useRef(null);
-  const timer = useRef(null);
-  const statusTimer = useRef(null);
 
   useEffect(() => {
     setLoading(true);
     const ref = doc(db, "scheduler", docId);
-    const unsub = onSnapshot(ref, (snap) => {
+    const unsub = escuchar(ref, (snap) => {
       setData(snap.exists() ? normalizeAcademico(snap.data()) : emptyAcademico());
       setLoading(false);
-    }, () => setLoading(false));
-    return () => { unsub(); if (timer.current) clearTimeout(timer.current); };
+    }, "el calendario académico", () => setLoading(false));
+    return unsub;
   }, []);
+
+  const { guardar, estado: status } = useGuardadoConEspera(
+    (next) => setDoc(doc(db, "scheduler", docId), next),
+    { etiqueta: "el calendario académico", puede: isAdmin, espera: 400 }
+  );
 
   const save = useCallback((next) => {
     if (!isAdmin) return;
-    setData(next); pending.current = next; setStatus("saving");
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(async () => {
-      try { await setDoc(doc(db, "scheduler", docId), pending.current); setStatus("saved");
-        if (statusTimer.current) clearTimeout(statusTimer.current);
-        statusTimer.current = setTimeout(() => setStatus("idle"), 1600);
-      } catch (e) { console.error(e); setStatus("error"); }
-    }, 400);
-  }, [isAdmin]);
+    setData(next);
+    guardar(next);
+  }, [guardar, isAdmin]);
 
   const addActivity = () => { if (!isAdmin) return; setEditing({ mode: "new", date: isoDate(new Date()), time: "", title: "", docente: "", notes: "" }); };
   const editActivity = (a) => { if (!isAdmin) return; setEditing({ mode: "edit", id: a.id, date: a.date, time: a.time, title: a.title, docente: a.docente, notes: a.notes }); };
@@ -2843,28 +2877,7 @@ function AcademicoView({ isAdmin }) {
 
   const removeActivity = (id) => { if (!isAdmin) return; if (!confirm("¿Eliminar esta actividad?")) return; const next = clone(data); next.activities = next.activities.filter((a) => a.id !== id); save(next); };
 
-  // Vaciar el historial. Borra las dos colecciones enteras: los votos y también
-  // quiénes votaron, así las semanas quedan como nuevas y se podría volver a
-  // votar cualquiera de ellas. No hay vuelta atrás, por eso pide escribir
-  // BORRAR: un solo click de confirmación es demasiado poco para algo que no se
-  // puede deshacer.
-  const borrarHistorial = async () => {
-    if (!isAdmin || textoBorrar.trim().toUpperCase() !== "BORRAR") return;
-    setBorrando("yendo");
-    try {
-      for (const col of ["chipa_votes", "chipa_voters"]) {
-        const snap = await getDocs(collection(db, col));
-        await Promise.all(snap.docs.map((d) => deleteDoc(doc(db, col, d.id))));
-      }
-      setHistory(null); setShowHistory(false);
-      setWeek({ weekStart: weekId, candidates: [], counts: {}, countsAura: {} });
-      setVoted({ chipa: false, aura: false });
-      setStatus("saved"); setTimeout(() => setStatus("idle"), 1800);
-    } catch (e) { console.error("borrar historial", e); setStatus("error"); }
-    setBorrando(false); setTextoBorrar("");
-  };
-
-  const S = { saving: { t: "Guardando…", c: "#CBD5E1" }, saved: { t: "✓ Guardado", c: "#86EFAC" }, error: { t: "⚠ Error", c: "#FCA5A5" } }[status];
+  const S = CARTEL_ESTADO[status];   // ver nube.jsx
 
   if (loading) return <Skeleton />;
 
@@ -3002,10 +3015,10 @@ function ArticuloSemanaView({ isAdmin }) {
   useEffect(() => {
     setLoading(true);
     const q = query(collection(db, "articulos_semana"), orderBy("generatedAt", "desc"));
-    const unsub = onSnapshot(q, (snap) => {
+    const unsub = escuchar(q, (snap) => {
       setArticulos(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setLoading(false);
-    }, (err) => { console.error(err); setLoading(false); });
+    }, "los artículos de la semana", () => setLoading(false));
     return () => unsub();
   }, []);
 
@@ -3016,11 +3029,11 @@ function ArticuloSemanaView({ isAdmin }) {
 
   const eliminarArticulo = async (id) => {
     if (!confirm("¿Eliminar este artículo? Se borra el resumen, las preguntas y el link — no se puede deshacer.")) return;
-    try { await deleteDoc(doc(db, "articulos_semana", id)); } catch (e) { console.error(e); }
+    await escribir(deleteDoc(doc(db, "articulos_semana", id)), "borrar el artículo");
   };
 
   const guardarPdfUrl = async (id, url) => {
-    try { await setDoc(doc(db, "articulos_semana", id), { pdfUrl: url.trim() || null }, { merge: true }); } catch (e) { console.error(e); }
+    await escribir(setDoc(doc(db, "articulos_semana", id), { pdfUrl: url.trim() || null }, { merge: true }), "el PDF del artículo");
   };
 
   const handleFile = async (e) => {
@@ -3302,45 +3315,45 @@ function RegistroView({ isAdmin, user }) {
   const [overIdx, setOverIdx] = useState(null);
 
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "registro_eventos"), (snap) => {
+    const unsub = escuchar(collection(db, "registro_eventos"), (snap) => {
       setEventos(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setLoading(false);
-    }, () => setLoading(false));
+    }, "el registro de llegadas tarde y faltas", () => setLoading(false));
     return unsub;
   }, []);
 
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "procedimientos"), (snap) => {
+    const unsub = escuchar(collection(db, "procedimientos"), (snap) => {
       setProcedimientos(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    }, () => {});
+    }, "los procedimientos cargados");
     return unsub;
   }, []);
 
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "cobertura_sala"), (snap) => {
+    const unsub = escuchar(collection(db, "cobertura_sala"), (snap) => {
       setCobertura(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    }, () => {});
+    }, "las coberturas de sala");
     return unsub;
   }, []);
 
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "registro_clases"), (snap) => {
+    const unsub = escuchar(collection(db, "registro_clases"), (snap) => {
       setClases(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    }, () => {});
+    }, "el registro de clases");
     return unsub;
   }, []);
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "scheduler", "registro-config"), (snap) => {
+    const unsub = escuchar(doc(db, "scheduler", "registro-config"), (snap) => {
       const list = snap.exists() && Array.isArray(snap.data().procedimientosList) ? snap.data().procedimientosList : null;
       setProcList(list && list.length ? list : DEFAULT_PROCEDIMIENTOS);
-    }, () => {});
+    }, "la lista de procedimientos");
     return unsub;
   }, []);
 
   useEffect(() => {
     const ref = doc(db, "scheduler", "ui-config");
-    const unsub = onSnapshot(ref, (snap) => {
+    const unsub = escuchar(ref, (snap) => {
       const stored = snap.exists() ? snap.data().registroSubOrder : null;
       if (Array.isArray(stored) && stored.length) {
         const known = stored.filter((k) => DEFAULT_REGISTRO_SUB_ORDER.includes(k));
@@ -3349,13 +3362,13 @@ function RegistroView({ isAdmin, user }) {
       } else {
         setSubOrder(DEFAULT_REGISTRO_SUB_ORDER);
       }
-    }, () => {});
+    }, null);   // cosmético, igual que el orden de las pestañas
     return unsub;
   }, []);
 
   const persistSubOrder = (next) => {
     setSubOrder(next);
-    setDoc(doc(db, "scheduler", "ui-config"), { registroSubOrder: next }, { merge: true }).catch((e) => console.error("ui-config registroSubOrder", e));
+    escribir(setDoc(doc(db, "scheduler", "ui-config"), { registroSubOrder: next }, { merge: true }), "el orden de las sub-pestañas");
   };
 
   const handleSubDragStart = (i) => (e) => { setDragIdx(i); e.dataTransfer.effectAllowed = "move"; };
@@ -3445,18 +3458,16 @@ function EventosSection({ tipo, eventos, isAdmin, user }) {
   const agregar = async () => {
     if (!residente || !fecha || saving) return;
     setSaving(true);
-    try {
-      await setDoc(doc(collection(db, "registro_eventos")), {
-        residente, tipo, fecha, nota: nota.trim(),
-        creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
-      });
-      setNota("");
-    } catch (e) { console.error(e); }
+    const ok = await escribir(setDoc(doc(collection(db, "registro_eventos")), {
+      residente, tipo, fecha, nota: nota.trim(),
+      creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
+    }), "cargar el registro");
+    if (ok) setNota("");
     setSaving(false);
   };
 
   const eliminar = async (id) => {
-    try { await deleteDoc(doc(db, "registro_eventos", id)); } catch (e) { console.error(e); }
+    await escribir(deleteDoc(doc(db, "registro_eventos", id)), "borrar el registro");
     setConfirmId(null);
   };
 
@@ -3557,18 +3568,16 @@ function CoberturaSection({ cobertura, isAdmin, user }) {
   const agregar = async () => {
     if (!residente || !fecha || saving) return;
     setSaving(true);
-    try {
-      await setDoc(doc(collection(db, "cobertura_sala")), {
-        residente, fecha, modalidad, nota: nota.trim(),
-        creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
-      });
-      setNota("");
-    } catch (e) { console.error(e); }
+    const ok = await escribir(setDoc(doc(collection(db, "cobertura_sala")), {
+      residente, fecha, modalidad, nota: nota.trim(),
+      creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
+    }), "cargar la cobertura de sala");
+    if (ok) setNota("");
     setSaving(false);
   };
 
   const eliminar = async (id) => {
-    try { await deleteDoc(doc(db, "cobertura_sala", id)); } catch (e) { console.error(e); }
+    await escribir(deleteDoc(doc(db, "cobertura_sala", id)), "borrar la cobertura de sala");
     setConfirmId(null);
   };
 
@@ -3687,18 +3696,16 @@ function ClasesSection({ clases, isAdmin, user }) {
   const agregar = async () => {
     if (!residente || !modulo || !fecha || saving) return;
     setSaving(true);
-    try {
-      await setDoc(doc(collection(db, "registro_clases")), {
-        residente, modulo, fecha, tema: tema.trim(),
-        creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
-      });
-      setTema("");
-    } catch (e) { console.error(e); }
+    const ok = await escribir(setDoc(doc(collection(db, "registro_clases")), {
+      residente, modulo, fecha, tema: tema.trim(),
+      creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
+    }), "cargar la clase");
+    if (ok) setTema("");
     setSaving(false);
   };
 
   const eliminar = async (id) => {
-    try { await deleteDoc(doc(db, "registro_clases", id)); } catch (e) { console.error(e); }
+    await escribir(deleteDoc(doc(db, "registro_clases", id)), "borrar la clase");
     setConfirmId(null);
   };
 
@@ -3925,35 +3932,33 @@ function ProcedimientosSection({ procedimientos, procList, isAdmin, user, misRes
   const enviar = async () => {
     if (!misResidente || !tipo || !fecha || saving) return;
     setSaving(true);
-    try {
-      await setDoc(doc(collection(db, "procedimientos")), {
-        residente: misResidente, tipo, fecha, nota: nota.trim(),
-        estado: "pendiente", creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
-        revisadoPor: null, revisadoEn: null,
-      });
-      setNota("");
-    } catch (e) { console.error(e); }
+    const ok = await escribir(setDoc(doc(collection(db, "procedimientos")), {
+      residente: misResidente, tipo, fecha, nota: nota.trim(),
+      estado: "pendiente", creadoPor: user?.email || "", creadoEn: new Date().toISOString(),
+      revisadoPor: null, revisadoEn: null,
+    }), "cargar el procedimiento");
+    if (ok) setNota("");
     setSaving(false);
   };
 
   const revisar = async (id, estado) => {
-    try { await setDoc(doc(db, "procedimientos", id), { estado, revisadoPor: user?.email || "", revisadoEn: new Date().toISOString() }, { merge: true }); } catch (e) { console.error(e); }
+    await escribir(setDoc(doc(db, "procedimientos", id), { estado, revisadoPor: user?.email || "", revisadoEn: new Date().toISOString() }, { merge: true }), "revisar el procedimiento");
   };
 
   const eliminar = async (id) => {
-    try { await deleteDoc(doc(db, "procedimientos", id)); } catch (e) { console.error(e); }
+    await escribir(deleteDoc(doc(db, "procedimientos", id)), "borrar el procedimiento");
     setConfirmId(null);
   };
 
   const agregarAlaLista = async () => {
     const v = nuevoProc.trim();
     if (!v || procList.includes(v)) { setNuevoProc(""); return; }
-    try { await setDoc(doc(db, "scheduler", "registro-config"), { procedimientosList: [...procList, v] }, { merge: true }); } catch (e) { console.error(e); }
+    await escribir(setDoc(doc(db, "scheduler", "registro-config"), { procedimientosList: [...procList, v] }, { merge: true }), "agregar el tipo de procedimiento");
     setNuevoProc("");
   };
 
   const sacarDeLaLista = async (v) => {
-    try { await setDoc(doc(db, "scheduler", "registro-config"), { procedimientosList: procList.filter((p) => p !== v) }, { merge: true }); } catch (e) { console.error(e); }
+    await escribir(setDoc(doc(db, "scheduler", "registro-config"), { procedimientosList: procList.filter((p) => p !== v) }, { merge: true }), "sacar el tipo de procedimiento");
   };
 
   const mios = useMemo(() => procedimientos.filter((p) => p.residente === misResidente), [procedimientos, misResidente]);
@@ -4243,24 +4248,24 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
 
   useEffect(() => {
     const unsubs = claveIds.split(",").map((id) =>
-      onSnapshot(doc(db, "scheduler", `week-${id}`), (snap) => {
+      escuchar(doc(db, "scheduler", `week-${id}`), (snap) => {
         setSemanas((cur) => ({ ...cur, [id]: snap.exists() ? normalize(snap.data()) : emptyWeek() }));
         setLoading(false);
-      }, () => setLoading(false))
+      }, "quién está de sala hoy", () => setLoading(false))
     );
     return () => unsubs.forEach((u) => u());
   }, [claveIds]);
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "scheduler", "telefonos"), (snap) => {
+    const unsub = escuchar(doc(db, "scheduler", "telefonos"), (snap) => {
       const d = snap.exists() ? snap.data() : {};
       setTelefonosDoc({ numeros: d.numeros || {}, invitados: d.invitados || {} });
-    }, () => {});
+    }, "los teléfonos internos");
     return unsub;
   }, []);
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "scheduler", "quien-esta-hoy"), (snap) => setNota(snap.exists() && typeof snap.data().observaciones === "string" ? snap.data().observaciones : ""), () => {});
+    const unsub = escuchar(doc(db, "scheduler", "quien-esta-hoy"), (snap) => setNota(snap.exists() && typeof snap.data().observaciones === "string" ? snap.data().observaciones : ""), "la nota del día");
     return unsub;
   }, []);
 
@@ -4308,19 +4313,14 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
   }, [semanas, diaHoy, ayer, hoy]);
 
   const guardarTelefono = async (persona, valor) => {
-    try {
-      if (persona.tipo === "residente") {
-        const nuevo = { ...(telefonosDoc.numeros || {}), [persona.key]: valor.trim() };
-        await setDoc(doc(db, "scheduler", "telefonos"), { numeros: nuevo }, { merge: true });
-      } else {
-        const nuevo = { ...(telefonosDoc.invitados || {}), [persona.key]: { nombre: persona.nombre, telefono: valor.trim(), creadoEn: new Date().toISOString() } };
-        await setDoc(doc(db, "scheduler", "telefonos"), { invitados: nuevo }, { merge: true });
-      }
-    } catch (e) { console.error(e); }
+    const parche = persona.tipo === "residente"
+      ? { numeros: { ...(telefonosDoc.numeros || {}), [persona.key]: valor.trim() } }
+      : { invitados: { ...(telefonosDoc.invitados || {}), [persona.key]: { nombre: persona.nombre, telefono: valor.trim(), creadoEn: new Date().toISOString() } } };
+    await escribir(setDoc(doc(db, "scheduler", "telefonos"), parche, { merge: true }), "el teléfono");
   };
 
   const guardarNota = async (valor) => {
-    try { await setDoc(doc(db, "scheduler", "quien-esta-hoy"), { observaciones: valor.trim() }, { merge: true }); } catch (e) { console.error(e); }
+    await escribir(setDoc(doc(db, "scheduler", "quien-esta-hoy"), { observaciones: valor.trim() }, { merge: true }), "la nota del día");
   };
 
   const telefonoDe = (persona) => (persona.tipo === "residente" ? (telefonosDoc.numeros || {})[persona.key] : (telefonosDoc.invitados || {})[persona.key]?.telefono) || "";
@@ -4337,6 +4337,12 @@ function QuienEstaHoyView({ isAdmin, embedded }) {
   return (
     <div style={{ minHeight: embedded ? "auto" : "100vh", background: embedded ? "transparent" : "#CBD5E1" }}>
       <div style={{ maxWidth: embedded ? "none" : 560, margin: embedded ? 0 : "0 auto", padding: embedded ? 0 : "14px 12px 40px", fontFamily: "'Inter', system-ui, sans-serif" }}>
+        {/* En /hoy esta pantalla se muestra sola, sin el resto de la app, así
+            que el aviso de fallas tiene que ir acá también: es la pantalla que
+            mira el resto del hospital, y es peor que nadie que ver una lista
+            de guardias incompleta creyendo que está completa. Adentro de la
+            app (embedded) el aviso ya lo pone AuthenticatedApp. */}
+        {!embedded && <AvisoDeFallas />}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff", flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 22 }}>📱</span>
@@ -4658,11 +4664,9 @@ const REDCAP_PREGUNTAS = [
 ];
 
 function RedcapView({ user }) {
-  const [foto, setFoto] = useState(null);      // el pase del Drive
   const [dia, setDia] = useState(() => isoDate(new Date()));
   // El documento del día entero: las respuestas más los arreglos al padrón.
   const [doc_, setDoc_] = useState({ camas: {}, extras: [], ajustes: {} });
-  const [cargando, setCargando] = useState(true);
   const [uSel, setUSel] = useState(null);
   const [estado, setEstado] = useState("");
   const [editandoPadron, setEditandoPadron] = useState(false);
@@ -4675,50 +4679,31 @@ function RedcapView({ user }) {
 
   // El pase del Drive: la lista de camas ocupadas sale de ahí, igual que en
   // las otras pestañas. Así no hay que mantener un padrón aparte.
+  const { foto, cargando } = usePaseDelDrive(paseNombreYEdad);
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "scheduler", "pases-latest"), (snap) => {
-      if (!snap.exists()) { setCargando(false); return; }
-      const d = snap.data();
-      const unidades = d.unitOrder?.length ? d.unitOrder : Object.keys(d.units || {});
-      const pacientes = unidades.flatMap((u) =>
-        (d.units?.[u] || []).map((p) => {
-          const n = paNombre(p.name || "");
-          // Igual que en Pase App: el parser del servidor ya separó la edad
-          // del nombre en `p.age`, así que `paNombre` casi nunca la va a
-          // volver a encontrar adentro de `p.name`. Se usa `p.age` primero.
-          const edad = (typeof p.age === "number" && p.age > 0) ? p.age : n.edad;
-          return { unidad: u, cama: p.bed, nombre: n.nombre, edad };
-        }));
-      setFoto({ unidades, pacientes, tomado: d.updatedAt });
-      setUSel((cur) => cur || unidades[0] || null);
-      setCargando(false);
-    }, () => setCargando(false));
-    return unsub;
-  }, []);
+    if (foto && foto.unidades.length) setUSel((cur) => cur || foto.unidades[0]);
+  }, [foto]);
 
   // Lo ya cargado ese día. Un documento por día con todo adentro: son
   // respuestas cortas, entran de sobra y se leen de una sola vez.
   useEffect(() => {
     if (!dia) return;
-    const unsub = onSnapshot(doc(db, REDCAP_COL, dia), (snap) => {
+    const unsub = escuchar(doc(db, REDCAP_COL, dia), (snap) => {
       const d = snap.exists() ? snap.data() : {};
       setDoc_({ camas: d.camas || {}, extras: d.extras || [], ajustes: d.ajustes || {} });
-    }, (e) => console.error("redcap", e));
+    }, "el relevamiento del RedCap");
     return unsub;
   }, [dia]);
 
   const guardar = async (parche) => {
     const next = { ...doc_, ...parche };
     setDoc_(next);                    // que se vea ya, sin esperar la red
-    try {
-      await setDoc(doc(db, REDCAP_COL, dia), {
-        fecha: dia, ...next, actualizado: new Date().toISOString(),
-      }, { merge: true });
-      setEstado("Guardado " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }));
-    } catch (e) {
-      console.error("guardar redcap", e);
-      setEstado("No se pudo guardar");
-    }
+    const ok = await escribir(setDoc(doc(db, REDCAP_COL, dia), {
+      fecha: dia, ...next, actualizado: new Date().toISOString(),
+    }, { merge: true }), "el relevamiento del RedCap");
+    setEstado(ok
+      ? "Guardado " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
+      : "No se pudo guardar");
   };
 
   /* ── El padrón del día ───────────────────────────────────────────────────
@@ -6111,9 +6096,9 @@ function EquiposMes({ monday, isAdmin }) {
   const [editando, setEditando] = useState(false);
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "scheduler", "equipos"), (snap) => {
+    const unsub = escuchar(doc(db, "scheduler", "equipos"), (snap) => {
       setTodos(snap.exists() ? snap.data() : {});
-    }, () => {});
+    }, "los equipos por UTI");
     return unsub;
   }, []);
 
@@ -6121,8 +6106,7 @@ function EquiposMes({ monday, isAdmin }) {
   const conGente = EQUIPO_SLOTS.filter((s) => (equipos[s.key] || []).length > 0);
 
   const guardar = async (next) => {
-    try { await setDoc(doc(db, "scheduler", "equipos"), { [clave]: next }, { merge: true }); }
-    catch (e) { console.error("equipos", e); }
+    await escribir(setDoc(doc(db, "scheduler", "equipos"), { [clave]: next }, { merge: true }), "los equipos por UTI");
   };
 
   // Alguien pertenece a una sola UTI por mes: ponerlo en otra lo saca de la
@@ -6271,7 +6255,7 @@ function DiasLibresR4({ week, isAdmin, onChange, onAplicarAlMes, aplicando }) {
 /* ══════════════════ SCHEDULER HEADER ══════════════════ */
 
 function SchedulerHeader({ monday, setMonday, status, menuOpen, setMenuOpen, onCopyPrev, onClear, onPrint, onFeriados, isAdmin }) {
-  const S = { saving: { t: "Guardando…", c: "#CBD5E1", b: "rgba(255,255,255,.12)" }, saved: { t: "✓ Guardado", c: "#86EFAC", b: "rgba(34,197,94,.18)" }, error: { t: "⚠ Sin conexión", c: "#FCA5A5", b: "rgba(239,68,68,.18)" } }[status];
+  const S = CARTEL_ESTADO[status];   // ver nube.jsx
   return (
     <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "12px 16px", marginBottom: 12, borderRadius: 14, background: "linear-gradient(135deg,#0F172A,#1E293B 60%,#334155)", color: "#fff" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -7929,9 +7913,10 @@ function paDosis(inf, pesoReal) {
 
 /* ── La vista ───────────────────────────────────────────────────────────── */
 function PaseAppView({ user }) {
-  const [foto, setFoto] = useState(null);        // pase del Drive, nunca se toca
+  // El pase del Drive, pasado por el motor completo (paProcesar). Nunca se
+  // toca: lo editable es `mio`.
+  const { foto, cargando } = usePaseDelDrive(paProcesar);
   const [mio, setMio] = useState(null);          // mi copia editable
-  const [cargando, setCargando] = useState(true);
   const [uSel, setUSel] = useState(null);
   const [iSel, setISel] = useState(0);
   const [verOriginal, setVerOriginal] = useState(false);
@@ -7956,22 +7941,10 @@ function PaseAppView({ user }) {
 
   const docId = user && foto ? `${user.uid}__${(foto.tomado || "").slice(0, 10)}` : null;
 
-  // 1) La foto del Drive
+  // 1) La foto del Drive, pasada por el motor completo de Pase App.
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "scheduler", "pases-latest"), (snap) => {
-      if (!snap.exists()) { setCargando(false); return; }
-      const d = snap.data();
-      // Igual que la pestaña Pases: si el sync no dejó unitOrder, se usan las
-      // claves de units para no quedarse sin unidades por un campo faltante.
-      const unidades = d.unitOrder?.length ? d.unitOrder : Object.keys(d.units || {});
-      const pacientes = unidades.flatMap((u) =>
-        (d.units?.[u] || []).map((p) => paProcesar(p, u)));
-      setFoto({ tomado: d.updatedAt, unidades, pacientes });
-      setUSel((cur) => cur || unidades[0] || null);
-      setCargando(false);
-    }, () => setCargando(false));
-    return unsub;
-  }, []);
+    if (foto && foto.unidades.length) setUSel((cur) => cur || foto.unidades[0]);
+  }, [foto]);
 
   /* 2) Mi copia. Si no existe todavía, arranca siendo la foto del Drive.
 
