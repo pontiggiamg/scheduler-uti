@@ -6551,7 +6551,7 @@ const PA_ACENTOS = {
   medico: "médico", medica: "médica", cardiaca: "cardíaca", cardiacas: "cardíacas",
   dilatacion: "dilatación", mejorara: "mejorará", asintomatico: "asintomático",
   asintomatica: "asintomática", somnolienta: "somnolienta", somnoliento: "somnoliento",
-  taquipneica: "taquipneica", desaturacion: "desaturación", hipoventilacion: "hipoventilación",
+  taquipneica: "taquipneica",
   espirometria: "espirometría", ecocardiograma: "ecocardiograma", akinesia: "acinesia",
   aquinesia: "acinesia", hipoquinesia: "hipocinesia", hipokinesia: "hipocinesia",
   paralitico: "paralítico", paralitica: "paralítica", colectomia: "colectomía",
@@ -7938,8 +7938,23 @@ function PaseAppView({ user }) {
     setFallo(null);
     getDoc(doc(db, PASEAPP_COL, docId)).then((snap) => {
       if (!vivo) return;
-      if (snap.exists() && Array.isArray(snap.data().pacientes)) {
-        setMio(snap.data().pacientes);
+      // ¿Hay algo en este navegador más nuevo que lo que trajo la nube? Pasa
+      // cuando la escritura falló: el trabajo quedó acá y allá no llegó.
+      let local = null;
+      try {
+        const crudo = claveLocal ? localStorage.getItem(claveLocal) : null;
+        if (crudo) local = JSON.parse(crudo);
+      } catch (e) { /* ignorar */ }
+
+      const nube = snap.exists() && Array.isArray(snap.data().pacientes) ? snap.data() : null;
+      const localEsMasNuevo = local && Array.isArray(local.pacientes) &&
+        (!nube || (local.guardadoEn || "") > (nube.guardadoEn || ""));
+
+      if (localEsMasNuevo) {
+        setMio(local.pacientes);
+        setEstado("Recuperado de este navegador — no había llegado a guardarse en la nube");
+      } else if (nube) {
+        setMio(nube.pacientes);
         setEstado("Recuperado de tu última sesión");
       } else {
         // No hay copia guardada todavía: es la primera vez con este pase.
@@ -7948,7 +7963,20 @@ function PaseAppView({ user }) {
     }).catch((e) => {
       if (!vivo) return;
       console.error("leer mi copia", e);
-      setFallo(e && e.message ? e.message : "no se pudo leer");
+      // Si la nube no responde pero este navegador tiene una copia, se usa
+      // esa: es mejor seguir trabajando sobre lo propio que quedar frenado.
+      let local = null;
+      try {
+        const crudo = claveLocal ? localStorage.getItem(claveLocal) : null;
+        if (crudo) local = JSON.parse(crudo);
+      } catch (e2) { /* ignorar */ }
+      if (local && Array.isArray(local.pacientes)) {
+        setMio(local.pacientes);
+        setEstado("Trabajando con la copia de este navegador");
+        setNoGuarda(e && e.message ? e.message : "no se pudo leer");
+      } else {
+        setFallo(e && e.message ? e.message : "no se pudo leer");
+      }
     });
     return () => { vivo = false; };
   }, [docId, foto, reintento]);
@@ -8019,8 +8047,30 @@ function PaseAppView({ user }) {
   // venza la espera de abajo.
   const pendienteRef = useRef(null);
 
+  /* Respaldo en el propio navegador.
+
+     El 2/9/2026 se perdió una guardia entera de anotaciones: las reglas de
+     Firestore rechazaban la escritura y no había ninguna otra copia. El
+     trabajo existía sólo en la pantalla, y al recargar desapareció.
+
+     Ahora antes de cada intento de escribir en la nube se deja una copia acá,
+     en el navegador. No reemplaza a Firestore —no se comparte entre
+     dispositivos ni sobrevive a limpiar el navegador— pero convierte "se
+     perdió todo" en "está en la máquina donde lo escribiste". */
+  const claveLocal = docId ? "uti-pase-" + docId : null;
+
+  const guardarLocal = (datos) => {
+    if (!claveLocal) return;
+    try {
+      localStorage.setItem(claveLocal, JSON.stringify({
+        guardadoEn: new Date().toISOString(), pacientes: datos,
+      }));
+    } catch (e) { /* sin espacio o modo privado: no es motivo para frenar nada */ }
+  };
+
   const escribir = async (datos) => {
     if (!docId) return;
+    guardarLocal(datos);          // primero lo seguro, después la nube
     await setDoc(doc(db, PASEAPP_COL, docId), {
       uid: user.uid, email: user.email || "", nombre: user.displayName || "",
       tomado: foto.tomado, guardadoEn: new Date().toISOString(), pacientes: datos,

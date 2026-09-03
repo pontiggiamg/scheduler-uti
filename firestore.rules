@@ -91,6 +91,13 @@ service cloud.firestore {
              docId == 'telefonos';
     }
 
+    /* Ya no hay ninguna excepción para el servidor.
+
+       Hasta el 2/9/2026 el documento `pases-latest` estaba abierto a
+       escritura sin login, porque el sincronizador usaba el mismo SDK que el
+       navegador y no tenía forma de identificarse. Ahora usa una credencial
+       de servicio (ver api/_admin.js), que pasa por encima de estas reglas,
+       así que la excepción se pudo borrar: la base quedó cerrada del todo. */
     match /scheduler/{docId} {
       allow read: if autorizado() || docPublico(docId);
       allow write: if autorizado();
@@ -118,8 +125,20 @@ service cloud.firestore {
     // pide. El admin tampoco lee estas copias — no las necesita, y que no
     // pueda es parte de que la gente escriba tranquila.
     match /pase_guardia/{docId} {
+      // El id del documento es "uid__fecha". Se compara el arranque con el uid
+      // de quien pide, para que nadie lea la libreta de otro.
+      //
+      // Antes esto usaba docId.split('__')[0], que es más lindo de leer pero
+      // depende de que split() se comporte igual que en JavaScript. En las
+      // reglas split() interpreta su argumento como expresión regular y el
+      // resultado no siempre es el que uno espera; si esa comparación falla,
+      // el efecto es que NADIE puede leer su propia copia y la Pase App queda
+      // inutilizable. Comparar el prefijo directamente no tiene esa
+      // ambigüedad: los uid de Firebase son alfanuméricos, así que no hay
+      // caracteres raros que puedan alterar la comparación.
       allow read, write: if autorizado()
-                         && docId.split('__')[0] == request.auth.uid;
+                         && docId.size() > request.auth.uid.size()
+                         && docId[0:request.auth.uid.size()] == request.auth.uid;
     }
 
     // ── Registro de accesos ──────────────────────────────────────────────

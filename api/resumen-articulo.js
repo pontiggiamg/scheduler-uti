@@ -1,17 +1,8 @@
-import { initializeApp, getApps } from "firebase/app";
-import { getFirestore, collection, doc, setDoc } from "firebase/firestore";
+import { adminDb } from "./_admin.js";
 
-var firebaseConfig = {
-  apiKey: "AIzaSyAHjLDpf9MZr8I6KA1sg3Ofr0GzN0IYENw",
-  authDomain: "residencia-uti-hb.firebaseapp.com",
-  projectId: "residencia-uti-hb",
-  storageBucket: "residencia-uti-hb.firebasestorage.app",
-  messagingSenderId: "404025159387",
-  appId: "1:404025159387:web:eab539798b975a00dca6fe",
-};
-
-var app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
-var db = getFirestore(app);
+/* Igual que el sync del pase: escribe desde el servidor, sin usuario, así que
+   usa la credencial de administrador en vez del SDK del navegador. Antes las
+   reglas tenían que permitir crear artículos sin estar logueado. */
 
 // Límite práctico: Vercel corta el body de una función serverless en ~4.5MB.
 // Un PDF en base64 pesa ~33% más que el original, así que ponemos el techo
@@ -157,7 +148,7 @@ export default async function handler(req, res) {
 
     // Cada artículo queda como un documento propio en articulos_semana (no se
     // pisa el anterior), para armar un historial ordenado por fecha en la app.
-    var articleRef = doc(collection(db, "articulos_semana"));
+    var articleRef = adminDb().collection("articulos_semana").doc();
 
     // No subimos el PDF a Firebase Storage (desde fines de 2024 Google exige
     // tener el plan de pago Blaze vinculado con tarjeta para usarlo, aunque
@@ -176,7 +167,7 @@ export default async function handler(req, res) {
       pdfUrl: pdfUrl,
     };
 
-    await setDoc(articleRef, payload);
+    await articleRef.set(payload);
 
     return res.status(200).json({ ok: true, articulo: payload });
   } catch (e) {
