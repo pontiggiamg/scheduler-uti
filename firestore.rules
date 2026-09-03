@@ -39,11 +39,39 @@ service cloud.firestore {
       return logueado() && miMail() == 'pontiggiamg@gmail.com';
     }
 
+    /* Los 12 residentes que ya venían usando la app antes de que existiera
+       "usuarios_autorizados". En src/App.jsx (RESIDENT_EMAIL) el login los
+       deja entrar directo, sin pedirles permiso ni crearles un documento acá
+       — es la misma idea que explica el comentario de esa lista: "así un
+       deploy nuevo jamás deja afuera a la gente que ya venía usando la app".
+
+       Hasta el 2/9/2026 no hacía falta que estas reglas supieran nada de
+       eso, porque todo estaba abierto (`if true`). Al cerrar la base ese
+       día esta lista se quedó sin mudarse para acá, y el resultado fue que
+       once de los doce (todos menos vos) entraban a la app con normalidad
+       —el chequeo del lado del cliente los deja pasar igual— pero cada
+       lectura a la base les daba PERMISSION_DENIED en silencio: la app no
+       avisa nada, sólo se queda mostrando todo vacío ("Actualizado nunca",
+       meses en blanco), como si la base estuviera realmente sin datos.
+       Nahuel y Ulloa fueron los primeros en toparse con eso.
+
+       Si cambia esta lista en App.jsx, hay que repetir el cambio ACÁ y
+       volver a publicar las reglas — git push no las aplica solo. */
+    function residenteFundador() {
+      return miMail() in [
+        'dpadillasalcedo@gmail.com', 'caro146ro@gmail.com', 'leonardohomar1894@gmail.com',
+        'vaninagobatto23@gmail.com', 'chrislombardo225@gmail.com', 'nico24ulloa@gmail.com',
+        'nico.a.varoli@gmail.com', 'giancarlomilemacci@gmail.com', 'macagonzalezvirgili@gmail.com',
+        'mportilla58@gmail.com', 'nataciademoraes@gmail.com', 'nahuelklahn@gmail.com'
+      ];
+    }
+
     // ¿Está en la lista y aprobado? Se lee el documento de la colección de
-    // autorizados que lleva su propio mail como id.
+    // autorizados que lleva su propio mail como id. O, si no tiene
+    // documento, ¿es uno de los residentes fundadores de arriba?
     function autorizado() {
       return logueado() && (
-        esAdmin() ||
+        esAdmin() || residenteFundador() ||
         (
           exists(/databases/$(database)/documents/usuarios_autorizados/$(miMail())) &&
           get(/databases/$(database)/documents/usuarios_autorizados/$(miMail())).data.estado == 'aprobado'

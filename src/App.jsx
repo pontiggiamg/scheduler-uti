@@ -78,6 +78,18 @@ const ASIGNABLES = [...ALL, JEFE];
 
 // Mapeo residente → email de Google. Se usa para identificar qué cuenta logueada
 // corresponde a qué residente (ej. Procedimientos, donde cada uno carga lo suyo).
+//
+// ⚠️ ESTA LISTA TAMBIÉN VIVE EN firestore.rules (función residenteFundador).
+// Es la misma idea acá y allá —estos 12 entran sin pedir permiso, sin pasar
+// por usuarios_autorizados— pero son DOS listas separadas que hay que
+// mantener iguales A MANO: nada las sincroniza. El 3/9/2026 se rompió por
+// esto: acá dejaba pasar a Nahuel y a Ulloa (entre otros) sin problema, pero
+// las reglas de Firestore no tenían la excepción, así que cada lectura a la
+// base les daba PERMISSION_DENIED en silencio y la app se veía vacía
+// ("Actualizado nunca", meses en blanco) sin ningún error visible. Si agregás,
+// sacás o cambiás un mail ACÁ, hacé el mismo cambio en firestore.rules y
+// volvé a publicar las reglas en la consola de Firebase — un git push no
+// las aplica solo.
 const RESIDENT_EMAIL = {
   Dani: "dpadillasalcedo@gmail.com",
   Caro: "caro146ro@gmail.com",
