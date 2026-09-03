@@ -1512,8 +1512,14 @@ function SchedulerView({ isAdmin }) {
       {!loading && (
         <div className="no-print" style={{ overflowX: "auto", paddingBottom: 4 }}>
           <div style={{ display: "grid", gridTemplateColumns: `104px repeat(${DIAS_VIS.length}, minmax(150px, 1fr))`, background: "#fff", borderRadius: "0 0 14px 14px", overflow: "hidden", border: "1px solid #E2E8F0", borderTop: "none", boxShadow: "0 1px 3px rgba(15,23,42,.06)", minWidth: 104 + DIAS_VIS.length * 150 }}>
-            <RowLabel label="Disponibles" color="#16A34A" />
-            {DIAS_VIS.map((di) => {
+            {/* "Disponibles" es sólo del admin: dice quién está libre para
+                asignar, que es un dato de gestión interna (y desde acá se
+                arrastra gente a la grilla) — no algo que el resto del
+                plantel necesite ver. "No disponibles" sigue siendo de
+                todos: a cualquiera le sirve saber quién no está por
+                rotación o vacaciones. */}
+            {isAdmin && <RowLabel label="Disponibles" color="#16A34A" />}
+            {isAdmin && DIAS_VIS.map((di) => {
               const free = pool(di);
               return (
                 <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]}>
