@@ -8233,6 +8233,16 @@ function PaseAppView({ user }) {
     }, 700);
   };
 
+  /* `guardar` se vuelve a crear en cada render (usa `fotoBase`, `docId`, etc.
+     por closure), pero el intervalo de purga de acá abajo se monta UNA sola
+     vez. Sin esta ref, el intervalo se queda para siempre con el `guardar`
+     del primerísimo render —cuando `fotoBase` todavía era `null`— y cuando
+     por fin purga algo (media hora después, o más) guarda con datos viejos
+     en vez de los actuales. Actualizarla en cada render asegura que el
+     intervalo siempre llame a la versión de ahora. */
+  const guardarRef = useRef(guardar);
+  guardarRef.current = guardar;
+
   /* La purga de anotaciones viejas (ver PA_ANOT_TTL_HORAS) corre al abrir el
      pase, pero una guardia puede quedar con la pestaña abierta muchas horas
      sin recargar. Este intervalo repite la purga cada media hora mientras la
@@ -8243,7 +8253,7 @@ function PaseAppView({ user }) {
       setMio((cur) => {
         if (!cur) return cur;
         const p = purgarAnotacionesViejas(cur);
-        if (p !== cur) guardar(p);
+        if (p !== cur) guardarRef.current(p);
         return p;
       });
     }, 30 * 60 * 1000);
