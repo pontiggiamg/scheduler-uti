@@ -4665,7 +4665,11 @@ function RedcapView({ user }) {
       const pacientes = unidades.flatMap((u) =>
         (d.units?.[u] || []).map((p) => {
           const n = paNombre(p.name || "");
-          return { unidad: u, cama: p.bed, nombre: n.nombre, edad: n.edad };
+          // Igual que en Pase App: el parser del servidor ya separó la edad
+          // del nombre en `p.age`, así que `paNombre` casi nunca la va a
+          // volver a encontrar adentro de `p.name`. Se usa `p.age` primero.
+          const edad = (typeof p.age === "number" && p.age > 0) ? p.age : n.edad;
+          return { unidad: u, cama: p.bed, nombre: n.nombre, edad };
         }));
       setFoto({ unidades, pacientes, tomado: d.updatedAt });
       setUSel((cur) => cur || unidades[0] || null);
@@ -7686,8 +7690,19 @@ function paProcesar(raw, unidad) {
     // *fecha estudio resultado, en las tres secciones fechadas.
     limpios[k] = CON_ASTERISCO.has(k) ? paFormatoAsterisco(limpio) : limpio;
   }
+  /* La edad puede venir de dos lados. El parser del servidor (api/_parser.js)
+     ya la separa del nombre en el momento de leer el Drive —"Huarachi 37
+     años" pasa a nombre "Huarachi" y edad 37 en `raw.age`— así que acá casi
+     siempre `raw.name` YA NO TIENE la edad adentro para que paNombre() la
+     vuelva a encontrar. Antes esta línea sólo miraba `paNombre(raw.name)` y
+     tiraba `raw.age` sin usarlo: por eso la edad no aparecía en Pase App
+     aunque el pase la tuviera. Se usa `raw.age` cuando está, y `paNombre`
+     como respaldo para cuando no —una cama agregada a mano, por ejemplo, no
+     tiene `raw.age` y sólo tiene lo que se haya escrito en el nombre—. */
+  const nom = paNombre(raw.name);
+  const edad = (typeof raw.age === "number" && raw.age > 0) ? raw.age : nom.edad;
   return {
-    unidad, cama: raw.bed, ...paNombre(raw.name),
+    unidad, cama: raw.bed, ...nom, edad,
     // El sync marca con vacia:true las camas que rellenó porque el Drive las
     // salteaba (la 2.4 entre la 2.3 y la 2.5). Acá se traducen a la marca que
     // la app ya usa para una cama sin paciente, así caen solas en la vista de
@@ -8006,14 +8021,25 @@ function PaseAppView({ user }) {
       const localEsMasNuevo = local && Array.isArray(local.pacientes) &&
         (!nube || (local.guardadoEn || "") > (nube.guardadoEn || ""));
 
-      // La foto contra la que se va a comparar (naranja / "ver original")
-      // queda congelada acá, en el mismo momento en que se carga `mio`. Un
-      // resync posterior de la pestaña Pases sigue actualizando `foto` para
-      // el cartelito de arriba, pero ya no mueve esta base: si el Drive
-      // cambia un dato que vos nunca tocaste, tu campo no se pone naranja
-      // solo. Para traer lo nuevo del Drive está, a propósito,
-      // "Borrar mis anotaciones y sincronizar pase".
-      setFotoBase(fotoRef.current);
+      /* La foto contra la que se va a comparar (naranja / "ver original")
+         se recupera de donde se recupera `mio`: si ya había una copia
+         guardada (en este navegador o en la nube) y trae su propia
+         `fotoOriginal`, se usa ESA, no la foto viva actual. Si se usara la
+         viva, cada vez que se vuelve a esta pestaña —lo que la desmonta y
+         remonta entera— quedaría fijada de nuevo contra lo más reciente que
+         haya sincronizado la pestaña Pases mientras tanto, que es
+         exactamente lo que se quería evitar: el cartelito saltando adelante
+         solo, y campos marcados naranja que nadie tocó en esta sesión.
+
+         Sólo cuando no hay ninguna copia guardada (fuente `fotoOriginal`
+         inexistente, sea porque es la primera vez o porque es una copia
+         vieja de antes de que este campo existiera) se usa la foto viva:
+         no hay otra con la que trabajar. */
+      const fuente = localEsMasNuevo ? local : nube;
+      const fotoGuardada = fuente && Array.isArray(fuente.fotoOriginal)
+        ? { tomado: fuente.tomado, pacientes: fuente.fotoOriginal }
+        : fotoRef.current;
+      setFotoBase(fotoGuardada);
 
       // Se cargue de donde se cargue, antes de mostrarla se le sacan las
       // anotaciones que ya cumplieron sus 26 h (ver PA_ANOT_TTL_HORAS más
@@ -8038,7 +8064,6 @@ function PaseAppView({ user }) {
     }).catch((e) => {
       if (!vivo) return;
       console.error("leer mi copia", e);
-      setFotoBase(fotoRef.current);
       // Si la nube no responde pero este navegador tiene una copia, se usa
       // esa: es mejor seguir trabajando sobre lo propio que quedar frenado.
       let local = null;
@@ -8047,6 +8072,9 @@ function PaseAppView({ user }) {
         if (crudo) local = JSON.parse(crudo);
       } catch (e2) { /* ignorar */ }
       if (local && Array.isArray(local.pacientes)) {
+        setFotoBase(Array.isArray(local.fotoOriginal)
+          ? { tomado: local.tomado, pacientes: local.fotoOriginal }
+          : fotoRef.current);
         // Acá sólo se purga para lo que se ve en pantalla, sin forzar un
         // guardado: la nube ya está fallando, insistir ahora sólo suma un
         // segundo error. La próxima lectura que funcione lo guarda bien.
@@ -8054,6 +8082,7 @@ function PaseAppView({ user }) {
         setEstado("Trabajando con la copia de este navegador");
         setNoGuarda(e && e.message ? e.message : "no se pudo leer");
       } else {
+        setFotoBase(fotoRef.current);
         setFallo(e && e.message ? e.message : "no se pudo leer");
       }
     });
@@ -8138,11 +8167,23 @@ function PaseAppView({ user }) {
      perdió todo" en "está en la máquina donde lo escribiste". */
   const claveLocal = docId ? "uti-pase-" + docId : null;
 
+  /* La foto congelada (`fotoBase`) vive en memoria, y la memoria no sobrevive
+     a cambiar de pestaña: esta vista se desmonta y se vuelve a montar entera,
+     así que "congelar al cargar" terminaba congelando de nuevo cada vez que
+     alguien volvía a Pase App, contra lo que fuera la foto MÁS RECIENTE en
+     ese momento — que es justo lo que se quería evitar.
+
+     La solución es guardar la foto congelada JUNTO con la copia, no sólo en
+     memoria: así al volver a entrar se recupera la misma de siempre, en vez
+     de fijar una nueva. `fotoOriginal` es esa foto (los pacientes tal como
+     los trajo el Drive quel día que se armó esta copia); `tomado` es su hora. */
   const guardarLocal = (datos) => {
     if (!claveLocal) return;
     try {
       localStorage.setItem(claveLocal, JSON.stringify({
         guardadoEn: new Date().toISOString(), pacientes: datos,
+        tomado: fotoBase ? fotoBase.tomado : foto.tomado,
+        fotoOriginal: fotoBase ? fotoBase.pacientes : foto.pacientes,
       }));
     } catch (e) { /* sin espacio o modo privado: no es motivo para frenar nada */ }
   };
@@ -8152,9 +8193,13 @@ function PaseAppView({ user }) {
     guardarLocal(datos);          // primero lo seguro, después la nube
     await setDoc(doc(db, PASEAPP_COL, docId), {
       uid: user.uid, email: user.email || "", nombre: user.displayName || "",
-      // `fotoBase.tomado`, no `foto.tomado`: es el pase que tu copia
-      // realmente tiene adentro, no el último que llegó del Drive.
-      tomado: fotoBase ? fotoBase.tomado : foto.tomado, guardadoEn: new Date().toISOString(), pacientes: datos,
+      // `fotoBase`, no `foto`: es el pase que tu copia realmente tiene
+      // adentro, no el último que llegó del Drive. Se guarda completa
+      // (no sólo la hora) para poder recuperarla igual la próxima vez que
+      // se abra esta copia, aunque para entonces el Drive ya haya cambiado.
+      tomado: fotoBase ? fotoBase.tomado : foto.tomado,
+      fotoOriginal: fotoBase ? fotoBase.pacientes : foto.pacientes,
+      guardadoEn: new Date().toISOString(), pacientes: datos,
     });
   };
 
