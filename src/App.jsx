@@ -4671,6 +4671,7 @@ function RedcapView({ user }) {
   const [estado, setEstado] = useState("");
   const [editandoPadron, setEditandoPadron] = useState(false);
   const [nuevo_, setNuevo_] = useState({ cama: "", nombre: "" });
+  const [busqueda, setBusqueda] = useState("");
   const chico = useChico();
 
   const reg = doc_.camas || {};
@@ -4785,6 +4786,29 @@ function RedcapView({ user }) {
       .sort((a, b) => paCamaOrden(a.cama).localeCompare(paCamaOrden(b.cama)));
   };
 
+  /* ── Buscar un paciente en toda la UTI ───────────────────────────────────
+     Son cuatro unidades y casi treinta camas: el que está al lado del
+     paciente sabe cómo se llama, no en qué unidad lo tiene cargado el pase.
+     Buscar recorre UTI 1, 2, 3 y RECU juntas.
+
+     Se compara sin acentos y sin distinguir mayúsculas, porque los nombres
+     vienen del Drive escritos como cada uno los escribió: "MARTINEZ" y
+     "Martínez" tienen que encontrarse igual.
+
+     Cada palabra buscada se exige por separado y en cualquier orden, así
+     "perez juan" encuentra a "Juan Pérez". También matchea el número de
+     cama: si alguien tipea "1.4" es evidente qué está buscando. */
+  const sinAcentos = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const terminos = sinAcentos(busqueda).split(/\s+/).filter(Boolean);
+  const buscando = terminos.length > 0;
+
+  const encontrados = !buscando ? [] : (foto?.unidades || [])
+    .flatMap((u) => pacientesDe(u))
+    .filter((p) => {
+      const donde = sinAcentos(p.nombre) + " " + sinAcentos(p.cama);
+      return terminos.every((t) => donde.includes(t));
+    });
+
   // Para bajar y cargar en el RedCap. Sin esto los datos quedan encerrados en
   // la app, que es el problema que esta pestaña vino a resolver.
   const exportar = () => {
@@ -4821,8 +4845,11 @@ function RedcapView({ user }) {
 
   const B = { fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "7px 12px", borderRadius: 5, border: "1.5px solid #E2E8F0", background: "#fff", color: "#0F172A", cursor: "pointer" };
   const INP = { fontFamily: "inherit", fontSize: 13, padding: "7px 9px", border: "1.5px solid #CBD5E1", borderRadius: 5, minHeight: 38, boxSizing: "border-box" };
+  // Lo que se está mirando: la unidad elegida, o el resultado de la búsqueda
+  // si hay algo escrito en el buscador.
   const delDia = pacientesDe(uSel);
-  const completas = delDia.filter((p) => {
+  const aMostrar = buscando ? encontrados : delDia;
+  const completas = aMostrar.filter((p) => {
     const r = reg[clave(p)] || {};
     return REDCAP_PREGUNTAS.every(([k]) => typeof r[k] === "boolean");
   }).length;
@@ -4849,10 +4876,38 @@ function RedcapView({ user }) {
         {estado && <span style={{ fontSize: 11.5, color: "#64748B", marginLeft: "auto" }}>{estado}</span>}
       </div>
 
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+      {/* Buscar en las cuatro unidades a la vez. Va arriba de las pestañas de
+          unidad porque cuando uno busca a alguien no sabe —ni le importa— en
+          qué unidad está: ese es justamente el dato que viene a averiguar. */}
+      <div style={{ display: "flex", gap: 7, alignItems: "center", marginBottom: 10 }}>
+        <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
+          <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, opacity: 0.5, pointerEvents: "none" }}>🔎</span>
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            onKeyDown={(e) => e.key === "Escape" && setBusqueda("")}
+            placeholder="Buscar paciente por nombre o apellido"
+            style={{ ...INP, width: "100%", paddingLeft: 32 }} />
+        </div>
+        {buscando && (
+          <button onClick={() => setBusqueda("")} style={B} title="Volver a ver por unidad">
+            Limpiar
+          </button>
+        )}
+      </div>
+
+      {/* Con el buscador activo las unidades no se eligen: se está mirando
+          todo junto. Se dejan a la vista igual, apagadas, para no hacer
+          desaparecer media pantalla de golpe. */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12, opacity: buscando ? 0.45 : 1 }}>
+        {/* El resaltado del botón elegido usa `border` entero y no
+            `borderColor`: mezclar la forma corta con la larga sobre la misma
+            propiedad hace que React avise en consola cada vez que el botón
+            cambia de estado, y ahora cambia cada vez que se escribe o se
+            limpia la búsqueda. */}
         {foto.unidades.map((u) => (
-          <button key={u} onClick={() => setUSel(u)}
-            style={{ ...B, fontWeight: 700, ...(u === uSel ? { background: "#0F172A", borderColor: "#0F172A", color: "#fff" } : {}) }}>
+          <button key={u} onClick={() => { setBusqueda(""); setUSel(u); }}
+            style={{ ...B, fontWeight: 700, ...(!buscando && u === uSel ? { background: "#0F172A", border: "1.5px solid #0F172A", color: "#fff" } : {}) }}>
             {u} <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 10, opacity: 0.7 }}>{pacientesDe(u).length}</span>
           </button>
         ))}
@@ -4860,7 +4915,15 @@ function RedcapView({ user }) {
 
       <div style={{ display: "flex", gap: 9, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
         <span style={{ fontSize: 12.5, color: "#475569" }}>
-          {uSel}: <b>{completas}</b> de <b>{delDia.length}</b> camas completas
+          {buscando ? (
+            <>
+              {aMostrar.length === 0
+                ? <>Ningún paciente coincide con <b>“{busqueda.trim()}”</b> en las cuatro unidades.</>
+                : <><b>{aMostrar.length}</b> {aMostrar.length === 1 ? "paciente encontrado" : "pacientes encontrados"} en toda la UTI · <b>{completas}</b> con las ocho respuestas</>}
+            </>
+          ) : (
+            <>{uSel}: <b>{completas}</b> de <b>{delDia.length}</b> camas completas</>
+          )}
           {dia !== hoy && <span style={{ color: "#8A4B00", marginLeft: 8 }}>· estás viendo el {dia.split("-").reverse().join("/")}</span>}
         </span>
         <button onClick={() => setEditandoPadron((v) => !v)}
@@ -4869,13 +4932,18 @@ function RedcapView({ user }) {
         </button>
       </div>
 
+      {/* Corregir nombres y camas anda igual buscando; lo que no tiene sentido
+          durante una búsqueda es AGREGAR, porque se agrega a una unidad y en
+          ese momento no hay ninguna elegida. */}
       {editandoPadron && (
         <div style={{ background: "#FFFBF3", border: "1.5px solid #E9C48A", borderRadius: 8, padding: "13px 15px", marginBottom: 12 }}>
-          <div style={{ fontSize: 12.5, color: "#7A4B00", lineHeight: 1.5, marginBottom: 10 }}>
-            Agregá un paciente que el pase del Drive todavía no tiene, corregí un nombre o una cama,
-            o sacá a alguien que ya se fue. Es sólo para el relevamiento de este día y lo ven todos.
+          <div style={{ fontSize: 12.5, color: "#7A4B00", lineHeight: 1.5, marginBottom: buscando ? 0 : 10 }}>
+            {buscando
+              ? <>Podés corregir el nombre o la cama de los pacientes que encontraste. Para <b>agregar</b> uno nuevo, limpiá la búsqueda y elegí primero la unidad.</>
+              : <>Agregá un paciente que el pase del Drive todavía no tiene, corregí un nombre o una cama,
+                 o sacá a alguien que ya se fue. Es sólo para el relevamiento de este día y lo ven todos.</>}
           </div>
-          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ display: buscando ? "none" : "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
             <input value={nuevo_.cama} placeholder="Cama"
               onChange={(e) => setNuevo_((n) => ({ ...n, cama: e.target.value }))}
               style={{ ...INP, width: 90, fontFamily: "ui-monospace,monospace" }} />
@@ -4891,13 +4959,13 @@ function RedcapView({ user }) {
         </div>
       )}
 
-      {delDia.length === 0 && (
+      {!buscando && delDia.length === 0 && (
         <div style={{ fontSize: 13, color: "#64748B", padding: "14px 2px" }}>
           No hay camas cargadas en {uSel}. Usá “Corregir la lista de camas” para agregarlas.
         </div>
       )}
 
-      {delDia.map((p) => {
+      {aMostrar.map((p) => {
         const k = clave(p);
         const r = reg[k] || {};
         const listo = REDCAP_PREGUNTAS.every(([kk]) => typeof r[kk] === "boolean");
@@ -4921,6 +4989,13 @@ function RedcapView({ user }) {
               </div>
             ) : (
               <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap", marginBottom: 9 }}>
+                {/* Buscando, la unidad es el dato que se vino a averiguar: va
+                    primero y bien visible. Viendo una unidad sola, sobra. */}
+                {buscando && (
+                  <span style={{ fontSize: 11.5, fontWeight: 800, color: colorUnidad(p.unidad).fuerte, background: colorUnidad(p.unidad).suave, borderRadius: 5, padding: "2px 8px" }}>
+                    {p.unidad}
+                  </span>
+                )}
                 <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 16, fontWeight: 800 }}>{p.cama}</span>
                 <span style={{ fontSize: 14.5, fontWeight: 700 }}>{p.nombre || "—"}</span>
                 {p.edad && <span style={{ fontSize: 11.5, color: "#64748B" }}>{p.edad} años</span>}
