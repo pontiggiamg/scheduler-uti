@@ -28,12 +28,7 @@ const emptyDay = () => ({ uti1: [], uti2: [], uti3: [], postguardia: [], unavail
 
 const emptyDiasLibresR4 = () => Object.fromEntries(RESIDENTS.R4.map((n) => [n, ""]));
 
-// Comodín: quién se adapta a cualquier sala esta semana (puede cambiar de UTI
-// día a día) para mantener parejo el número de gente por sala. No cambia
-// ninguna regla de disponibilidad ni de asignación —quien es comodín se sigue
-// arrastrando a la grilla como cualquiera—, es sólo una marca visual para que
-// se note de un vistazo quién tiene ese rol esta semana.
-const emptyWeek = () => ({ days: DAYS.map(() => emptyDay()), diasLibresR4: emptyDiasLibresR4(), comodines: [] });
+const emptyWeek = () => ({ days: DAYS.map(() => emptyDay()), diasLibresR4: emptyDiasLibresR4() });
 
 function normalize(raw) {
   const week = emptyWeek();
@@ -70,13 +65,12 @@ function normalize(raw) {
   }
   const dl = raw.diasLibresR4 || {};
   for (const n of RESIDENTS.R4) week.diasLibresR4[n] = DAYS.includes(dl[n]) ? dl[n] : "";
-  week.comodines = Array.isArray(raw.comodines) ? [...new Set(raw.comodines.filter((n) => LEVEL[n]))] : [];
   return week;
 }
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
-const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length === 0) && d.unavailable.length === 0 && !d.observaciones.trim() && !d.recordatorios.trim() && d.deGuardia.length === 0 && !d.feriado) && RESIDENTS.R4.every((n) => !w.diasLibresR4[n]) && (w.comodines || []).length === 0;
+const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length === 0) && d.unavailable.length === 0 && !d.observaciones.trim() && !d.recordatorios.trim() && d.deGuardia.length === 0 && !d.feriado) && RESIDENTS.R4.every((n) => !w.diasLibresR4[n]);
 
 // Un nombre de guardia puede ser uno de los 12 residentes o alguien de afuera.
 const esResidente = (n) => !!LEVEL[n];
@@ -310,6 +304,22 @@ function normalizeChipaWeek(raw, weekId) {
     candidates: Array.isArray(raw.candidates) ? raw.candidates.filter((n) => LEVEL[n]) : [],
     counts: raw.counts && typeof raw.counts === "object" ? raw.counts : {},
     countsAura: raw.countsAura && typeof raw.countsAura === "object" ? raw.countsAura : {},
+  };
+}
+
+/* ══════════════════ MODELO VOTACIÓN DE LAURA ══════════════════ */
+
+// Misma idea que chipa (una semana = un documento en su propia colección),
+// pero con una sola votación en vez de dos.
+// laura_votes/{weekId}   → candidatos y recuento de votos (público)
+// laura_voters/{weekId}  → uids que ya votaron esa semana (solo para bloquear el doble voto)
+
+function normalizeLauraWeek(raw, weekId) {
+  if (!raw || typeof raw !== "object") return { weekStart: weekId, candidates: [], counts: {} };
+  return {
+    weekStart: typeof raw.weekStart === "string" ? raw.weekStart : weekId,
+    candidates: Array.isArray(raw.candidates) ? raw.candidates.filter((n) => LEVEL[n]) : [],
+    counts: raw.counts && typeof raw.counts === "object" ? raw.counts : {},
   };
 }
 
@@ -603,4 +613,4 @@ function analizarSemana(week, monday, rotPorAnio, equiposMes) {
   return { duras, suaves };
 }
 
-export { TRAMOS_VACACIONES, agruparPorMes, agruparPorTipo, analizarSemana, canonizarGuardia, clone, colorUnidad, cupoR2, disponiblesEsaSemana, emptyAcademico, emptyDay, emptyDiasLibresR4, emptyRotYear, emptyWeek, esResidente, esSuperior, isBlank, limpiarTelefono, motivoNoDisponible, motivoNoPuedeGuardia, normalizarListaGuardia, normalize, normalizeAcademico, normalizeChipaWeek, normalizeRot, parseDeGuardia, paseArreglado, resolverResidente, semanaDeVotacionPorDefecto, semanaLibreEseDia, textoTramo, tramoPorDefecto, useRotaciones, vacacionesEseDia };
+export { TRAMOS_VACACIONES, agruparPorMes, agruparPorTipo, analizarSemana, canonizarGuardia, clone, colorUnidad, cupoR2, disponiblesEsaSemana, emptyAcademico, emptyDay, emptyDiasLibresR4, emptyRotYear, emptyWeek, esResidente, esSuperior, isBlank, limpiarTelefono, motivoNoDisponible, motivoNoPuedeGuardia, normalizarListaGuardia, normalize, normalizeAcademico, normalizeChipaWeek, normalizeLauraWeek, normalizeRot, parseDeGuardia, paseArreglado, resolverResidente, semanaDeVotacionPorDefecto, semanaLibreEseDia, textoTramo, tramoPorDefecto, useRotaciones, vacacionesEseDia };
