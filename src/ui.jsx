@@ -117,11 +117,12 @@ const RowLabel = ({ label, color, sub, fondo, className }) => (<div className={c
 
 const Cell = ({ children, onClick, tint, ring, pad = 4, lastCol, lastRow, className }) => (<div className={className} onClick={onClick} style={{ padding: pad, minHeight: 46, display: "flex", flexDirection: "column", gap: 3, background: tint, borderRight: lastCol ? "none" : "1px solid #F1F5F9", borderBottom: lastRow ? "none" : "1px solid #F1F5F9", boxShadow: ring ? `inset 0 0 0 1.5px ${ring}66` : "none", cursor: ring ? "pointer" : "default", transition: "background .12s, box-shadow .12s" }}>{children}</div>);
 
-function Chip({ name, selected, onPick, onRemove, alerta }) {
+function Chip({ name, selected, onPick, onRemove, alerta, comodin }) {
   const lv = LEVEL[name]; const c = COLOR[lv];
   const esJefe = lv === "JR";
-  return (<div onClick={onPick} title={alerta || undefined} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3.5px 6px 3.5px 8px", borderRadius: 7, background: selected ? c.solid : c.bg, border: alerta && !selected ? "1.5px solid #F59E0B" : `1.5px solid ${selected ? c.solid : c.bd}`, color: selected ? "#fff" : c.tx, fontWeight: 600, fontSize: 11.5, cursor: "pointer", userSelect: "none", boxShadow: selected ? `0 0 0 3px ${c.solid}33` : alerta ? "0 0 0 2px #FDE68A" : "none", transition: "all .12s", ...(esJefe && !selected ? SKIN_JR : {}) }}>
+  return (<div onClick={onPick} title={alerta || (comodin ? "Comodín esta semana: se adapta a cualquier sala" : undefined)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3.5px 6px 3.5px 8px", borderRadius: 7, background: selected ? c.solid : c.bg, border: alerta && !selected ? "1.5px solid #F59E0B" : comodin && !selected ? "1.5px solid #7C3AED" : `1.5px solid ${selected ? c.solid : c.bd}`, color: selected ? "#fff" : c.tx, fontWeight: 600, fontSize: 11.5, cursor: "pointer", userSelect: "none", boxShadow: selected ? `0 0 0 3px ${c.solid}33` : alerta ? "0 0 0 2px #FDE68A" : comodin ? "0 0 0 2px #DDD6FE" : "none", transition: "all .12s", ...(esJefe && !selected ? SKIN_JR : {}) }}>
     {alerta && <span title={alerta} style={{ fontSize: 10, lineHeight: 1, cursor: "help" }}>⚠️</span>}
+    {!alerta && comodin && <span title="Comodín esta semana" style={{ fontSize: 10, lineHeight: 1 }}>🃏</span>}
     {lv === "JR" && <span style={{ fontSize: 10, lineHeight: 1 }}>👑</span>}
     <span style={{ flex: 1, lineHeight: 1.3 }}>{name}</span>
     <span style={{ fontSize: 8, fontWeight: 800, padding: "1px 3.5px", borderRadius: 3, background: esJefe && !selected ? "rgba(69,26,3,.55)" : selected ? "rgba(255,255,255,.28)" : c.solid, color: "#fff", letterSpacing: 0.2, textShadow: "none" }}>{lv}</span>

@@ -186,6 +186,17 @@ function SchedulerView({ isAdmin }) {
   const editText = (di, field, value) => { if (!isAdmin) return; const next = clone(week); next.days[di][field] = value; commit(next, 700); };
   const setDiaLibre = (name, day) => { if (!isAdmin) return; const next = clone(week); next.diasLibresR4[name] = day; commit(next, 300); };
 
+  // Comodín es sólo una marca visual (ver modelo.jsx): no toca disponibilidad
+  // ni asignaciones, así que alcanza con prender/apagar el nombre en la lista.
+  const toggleComodin = (name) => {
+    if (!isAdmin) return;
+    const next = clone(week);
+    const set = new Set(next.comodines || []);
+    set.has(name) ? set.delete(name) : set.add(name);
+    next.comodines = [...set];
+    commit(next, 300);
+  };
+
   const copyPrevWeek = async () => {
     if (!isAdmin) return;
     setMenuOpen(false);
@@ -381,6 +392,7 @@ function SchedulerView({ isAdmin }) {
           {isAdmin && <PanelAlertas duras={alertas.duras} suaves={alertas.suaves} />}
           <EquiposMes monday={monday} isAdmin={isAdmin} />
           <DiasLibresR4 week={week} isAdmin={isAdmin} onChange={setDiaLibre} onAplicarAlMes={aplicarDiasLibresAlMes} aplicando={aplicandoMes} />
+          <ComodinesEditor week={week} isAdmin={isAdmin} onToggle={toggleComodin} />
           {/* Barra de día. Siempre visible: a la izquierda las flechas para
               moverse de día, a la derecha el botón que abre la semana entera.
               El botón dice qué vas a ver si lo tocás, no en qué estás. */}
@@ -436,7 +448,7 @@ function SchedulerView({ isAdmin }) {
                     <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place(slot.key, di); }} tint={slot.tint} ring={active ? slot.accent : null} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]}>
                       <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 40 }}>
                         {[...week.days[di][slot.key]].sort(porJerarquia).map((n) => (
-                          <Chip key={n} name={n} selected={sel?.name === n} alerta={motivoDe(n, di)} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
+                          <Chip key={n} name={n} selected={sel?.name === n} alerta={motivoDe(n, di)} comodin={week.comodines?.includes(n)} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: slot.key }); }} onRemove={isAdmin ? (e) => { e.stopPropagation(); removeChip(n, di); } : null} />
                         ))}
                         {active && <GhostHint color={slot.accent} name={sel.name} />}
                         {!active && week.days[di][slot.key].length === 0 && <Dash />}
@@ -529,7 +541,7 @@ function SchedulerView({ isAdmin }) {
                 <Cell key={di} onClick={(e) => { e.stopPropagation(); if (active) place("pool", di); }} tint="#F0FDF4" ring={active ? "#22C55E" : null} lastCol={di === DIAS_VIS[DIAS_VIS.length - 1]}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, minHeight: 50 }}>
                     {active && <div style={{ fontSize: 10, color: "#16A34A", fontWeight: 600, textAlign: "center", padding: "1px 0" }}>↩ liberar el {DAYS[di].toLowerCase()}</div>}
-                    {free.length === 0 ? (!active && <div style={{ fontSize: 10.5, color: "#64748B", fontStyle: "italic", textAlign: "center", padding: 6 }}>todos asignados</div>) : free.map((n) => <Chip key={n} name={n} selected={sel?.name === n} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "pool" }); }} />)}
+                    {free.length === 0 ? (!active && <div style={{ fontSize: 10.5, color: "#64748B", fontStyle: "italic", textAlign: "center", padding: 6 }}>todos asignados</div>) : free.map((n) => <Chip key={n} name={n} selected={sel?.name === n} comodin={week.comodines?.includes(n)} onPick={(e) => { e.stopPropagation(); pick(n, { di, key: "pool" }); }} />)}
                   </div>
                 </Cell>
               );
@@ -849,6 +861,34 @@ function DiasLibresR4({ week, isAdmin, onChange, onAplicarAlMes, aplicando }) {
           {aplicando ? "Aplicando…" : "📅 Aplicar a todo el mes"}
         </button>
       )}
+    </div>
+  );
+}
+
+// Comodín: quién se adapta a cualquier sala esta semana. Sólo marca — no
+// cambia disponibilidad ni saca a nadie de la grilla —, así que alcanza con
+// una fila de botones para prender/apagar el nombre. El chip de esa persona
+// en toda la grilla (y en "Disponibles") se dibuja con el 🃏 automáticamente,
+// ver Chip en ui.jsx.
+function ComodinesEditor({ week, isAdmin, onToggle }) {
+  const activos = week.comodines || [];
+  if (!isAdmin && activos.length === 0) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, padding: "8px 12px", marginBottom: 10, borderRadius: 10, background: "#F5F3FF", border: "1px solid #DDD6FE" }}>
+      <span title="Se adapta a cualquier sala en la semana para mantener parejo el número de gente por UTI" style={{ fontSize: 11, fontWeight: 700, color: "#5B21B6", cursor: "help" }}>🃏 Comodín esta semana:</span>
+      {isAdmin ? (
+        ALL.map((n) => {
+          const on = activos.includes(n);
+          return (
+            <button key={n} onClick={() => onToggle(n)} className="no-print" style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 999, border: `1.5px solid ${on ? "#7C3AED" : "#DDD6FE"}`, background: on ? "#7C3AED" : "#fff", color: on ? "#fff" : "#5B21B6", cursor: "pointer", fontFamily: "inherit" }}>
+              {n}
+            </button>
+          );
+        })
+      ) : (
+        activos.map((n) => <span key={n} style={{ fontSize: 11, fontWeight: 700, background: "#DDD6FE", color: "#5B21B6", padding: "1px 8px", borderRadius: 999 }}>{n}</span>)
+      )}
+      {isAdmin && activos.length === 0 && <span style={{ fontSize: 10.5, color: "#7C3AED", fontStyle: "italic" }}>nadie marcado</span>}
     </div>
   );
 }

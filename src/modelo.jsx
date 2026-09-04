@@ -28,7 +28,12 @@ const emptyDay = () => ({ uti1: [], uti2: [], uti3: [], postguardia: [], unavail
 
 const emptyDiasLibresR4 = () => Object.fromEntries(RESIDENTS.R4.map((n) => [n, ""]));
 
-const emptyWeek = () => ({ days: DAYS.map(() => emptyDay()), diasLibresR4: emptyDiasLibresR4() });
+// Comodín: quién se adapta a cualquier sala esta semana (puede cambiar de UTI
+// día a día) para mantener parejo el número de gente por sala. No cambia
+// ninguna regla de disponibilidad ni de asignación —quien es comodín se sigue
+// arrastrando a la grilla como cualquiera—, es sólo una marca visual para que
+// se note de un vistazo quién tiene ese rol esta semana.
+const emptyWeek = () => ({ days: DAYS.map(() => emptyDay()), diasLibresR4: emptyDiasLibresR4(), comodines: [] });
 
 function normalize(raw) {
   const week = emptyWeek();
@@ -65,12 +70,13 @@ function normalize(raw) {
   }
   const dl = raw.diasLibresR4 || {};
   for (const n of RESIDENTS.R4) week.diasLibresR4[n] = DAYS.includes(dl[n]) ? dl[n] : "";
+  week.comodines = Array.isArray(raw.comodines) ? [...new Set(raw.comodines.filter((n) => LEVEL[n]))] : [];
   return week;
 }
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
-const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length === 0) && d.unavailable.length === 0 && !d.observaciones.trim() && !d.recordatorios.trim() && d.deGuardia.length === 0 && !d.feriado) && RESIDENTS.R4.every((n) => !w.diasLibresR4[n]);
+const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length === 0) && d.unavailable.length === 0 && !d.observaciones.trim() && !d.recordatorios.trim() && d.deGuardia.length === 0 && !d.feriado) && RESIDENTS.R4.every((n) => !w.diasLibresR4[n]) && (w.comodines || []).length === 0;
 
 // Un nombre de guardia puede ser uno de los 12 residentes o alguien de afuera.
 const esResidente = (n) => !!LEVEL[n];
