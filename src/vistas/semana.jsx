@@ -97,12 +97,26 @@ function SchedulerView({ isAdmin }) {
      onSnapshot de arriba que ignore lo que llegue de la nube mientras haya
      cambios locales sin escribir — si no, lo que uno acaba de mover se
      revierte solo en pantalla al llegar el eco del guardado anterior. */
+  // Beacon de emergencia: manda el cambio pendiente al endpoint del servidor
+  // (api/guardar-emergencia.js) con navigator.sendBeacon, que el navegador
+  // garantiza enviar aunque la pestaña se esté cerrando o recargando en ese
+  // mismo instante — a diferencia del setDoc normal de Firestore, cuya
+  // conexión el navegador puede cortar a mitad de camino. No reemplaza el
+  // guardado normal, es la red de contención para ese instante puntual.
+  const enviarBeacon = useCallback((payload) => {
+    if (typeof navigator === "undefined" || !navigator.sendBeacon) return;
+    try {
+      const blob = new Blob([JSON.stringify({ docId, datos: payload })], { type: "application/json" });
+      navigator.sendBeacon("/api/guardar-emergencia", blob);
+    } catch (e) { console.error("beacon de emergencia:", e); }
+  }, [docId]);
+
   const { guardar: guardarSemana, estado: status, forzar } = useGuardadoConEspera(
     async (payload) => {
       await setDoc(doc(db, "scheduler", docId), payload);
       dirty.current = false;
     },
-    { etiqueta: "el cronograma de la semana", puede: isAdmin, espera: 350 }
+    { etiqueta: "el cronograma de la semana", puede: isAdmin, espera: 350, alSalirDeEmergencia: enviarBeacon }
   );
 
   const commit = useCallback((next, delay) => {
@@ -111,14 +125,17 @@ function SchedulerView({ isAdmin }) {
     guardarSemana(next, delay);
   }, [guardarSemana, isAdmin]);
 
-  // Cerrar la pestaña con algo sin guardar: se escribe ya. El "pagehide" y el
-  // "visibilitychange" (que son los que funcionan en el celular) ya los cubre
-  // useGuardadoConEspera; esto suma el caso de escritorio.
+  // Cerrar la pestaña con algo sin guardar: se escribe ya (forzar) y además
+  // se manda el beacon de emergencia, por si el setDoc normal no llega a
+  // confirmarse antes de que el navegador corte la conexión al descargar la
+  // página. El "pagehide" y el "visibilitychange" (los que funcionan en el
+  // celular) ya cubren esto mismo desde useGuardadoConEspera; esto suma el
+  // caso de escritorio con "beforeunload".
   useEffect(() => {
-    const h = () => forzar();
+    const h = () => { if (dirty.current) enviarBeacon(week); forzar(); };
     window.addEventListener("beforeunload", h);
     return () => window.removeEventListener("beforeunload", h);
-  }, [forzar]);
+  }, [forzar, enviarBeacon, week]);
 
   const flash = (msg) => { setToast(msg); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 2400); };
 
@@ -188,13 +205,18 @@ function SchedulerView({ isAdmin }) {
 
   // Comodín es sólo una marca visual (ver modelo.jsx): no toca disponibilidad
   // ni asignaciones, así que alcanza con prender/apagar el nombre en la lista.
+  // Se guarda sin espera (delay 0): con debounce, alguien podía tocar el
+  // comodín y cerrar la pestaña o apretar F5 antes de que el guardado
+  // llegara a salir, y el cambio se perdía. Arrancar el guardado ya mismo le
+  // da a Firestore el máximo margen posible para confirmar antes de que el
+  // navegador corte la conexión.
   const toggleComodin = (name) => {
     if (!isAdmin) return;
     const next = clone(week);
     const set = new Set(next.comodines || []);
     set.has(name) ? set.delete(name) : set.add(name);
     next.comodines = [...set];
-    commit(next, 300);
+    commit(next, 0);
   };
 
   const copyPrevWeek = async () => {

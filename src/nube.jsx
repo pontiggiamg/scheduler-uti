@@ -239,7 +239,7 @@ export function AvisoDeFallas() {
    Fuerza la escritura pendiente cuando la pestaña se oculta. Va con
    "visibilitychange" y no con "beforeunload" porque en el celular cambiar de
    app no dispara beforeunload, y ese es justo el caso que hay que cubrir. */
-export function useGuardadoConEspera(alGuardar, { etiqueta, puede = true, espera = 500 } = {}) {
+export function useGuardadoConEspera(alGuardar, { etiqueta, puede = true, espera = 500, alSalirDeEmergencia } = {}) {
   const [estado, setEstado] = useState("idle");
   const pendiente = useRef(null);
   const timer = useRef(null);
@@ -249,6 +249,8 @@ export function useGuardadoConEspera(alGuardar, { etiqueta, puede = true, espera
   // datos viejos cuando por fin dispara (pasó exactamente eso en Pase App).
   const alGuardarRef = useRef(alGuardar);
   alGuardarRef.current = alGuardar;
+  const alSalirDeEmergenciaRef = useRef(alSalirDeEmergencia);
+  alSalirDeEmergenciaRef.current = alSalirDeEmergencia;
 
   const escribirYa = useCallback(async () => {
     const datos = pendiente.current;
@@ -284,9 +286,23 @@ export function useGuardadoConEspera(alGuardar, { etiqueta, puede = true, espera
   }, [escribirYa]);
 
   useEffect(() => {
+    // Al ocultarse la pestaña (F5, cerrar, cambiar de app) puede haber un
+    // guardado pendiente que el setDoc normal de Firestore no llegue a
+    // confirmar: el navegador corta esa conexión antes de que termine. Por
+    // eso, además de `forzar()` (que sigue intentando el camino normal, y
+    // puede alcanzar a completarse si el cierre tarda un poco), se manda en
+    // paralelo un "beacon" — un envío que el navegador garantiza entregar
+    // aunque la página se esté descargando en ese mismo instante — cuando la
+    // pantalla que usa este hook definió cómo mandarlo (`alSalirDeEmergencia`).
+    // No es un reemplazo del guardado normal, es una red de contención para
+    // el instante exacto de cerrar/recargar.
     const alOcultar = () => {
       if (document.visibilityState !== "hidden") return;
-      if (pendiente.current !== null && pendiente.current !== undefined) forzar();
+      if (pendiente.current === null || pendiente.current === undefined) return;
+      if (alSalirDeEmergenciaRef.current) {
+        try { alSalirDeEmergenciaRef.current(pendiente.current); } catch (e) { console.error("beacon de emergencia:", etiqueta, e); }
+      }
+      forzar();
     };
     document.addEventListener("visibilitychange", alOcultar);
     window.addEventListener("pagehide", alOcultar);
@@ -296,7 +312,7 @@ export function useGuardadoConEspera(alGuardar, { etiqueta, puede = true, espera
       clearTimeout(timer.current);
       clearTimeout(limpiarEstado.current);
     };
-  }, [forzar]);
+  }, [forzar, etiqueta]);
 
   return { guardar, estado, forzar };
 }
