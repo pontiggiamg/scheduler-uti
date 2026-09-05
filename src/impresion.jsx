@@ -535,8 +535,17 @@ function htmlSemana({ lunes, week, equipos, borrador, emisor, bn }) {
 
   const libresHtml = RESIDENTS.R4.filter((n) => week.diasLibresR4[n]).map((n) =>
     `<span class="par">${chip(n)}<span class="txt">${week.diasLibresR4[n]}</span></span>`).join("") || '<span class="nota">sin cargar</span>';
-  const eqHtml = EQUIPO_SLOTS.filter((sl) => (equipos[sl.key] || []).length).map((sl) =>
-    `<span class="par"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : sl.tint};color:${P.bn ? "#111827" : sl.accent}">${sl.label}</span>${[...(equipos[sl.key] || [])].sort(porJerarquia).map(chip).join("")}</span>`).join("") || '<span class="nota">sin equipos armados</span>';
+  // Comodines no es un equipo que se arma a mano en la pestaña Equipos: son
+  // los que ya están marcados como comodín para ESTA semana en la grilla (ver
+  // ComodinesEditor en vistas/semana.jsx). Se muestran acá con el mismo
+  // formato que UTI 1/2/3 en vez de armar un cuarto equipo manual aparte,
+  // para no tener dos lugares distintos donde cargar quién es comodín.
+  const eqPiezas = EQUIPO_SLOTS.filter((sl) => (equipos[sl.key] || []).length).map((sl) =>
+    `<span class="par"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : sl.tint};color:${P.bn ? "#111827" : sl.accent}">${sl.label}</span>${[...(equipos[sl.key] || [])].sort(porJerarquia).map(chip).join("")}</span>`);
+  if ((week.comodines || []).length) {
+    eqPiezas.push(`<span class="par"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : "#DDD6FE"};color:${P.bn ? "#111827" : "#5B21B6"}">🃏 Comodines</span>${[...week.comodines].sort(porJerarquia).map(chip).join("")}</span>`);
+  }
+  const eqHtml = eqPiezas.join("") || '<span class="nota">sin equipos armados</span>';
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>${borrador ? "Borrador — " : ""}Scheduler UTI — Semana del ${rango}</title><style>
 ${CSS_IMPRESION}
@@ -620,8 +629,17 @@ function htmlMes({ anio, mes, lunes, semanas, rot, equipos, tipo, borrador, emis
     if (!gente.length) return "";
     return `<div class="eq"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : P.chips[lv][0]};color:#111827">${lv} · ${porNivel[lv]}</span>${gente.map((n) => `${chip(n)}<span class="cnt">${cuenta[n]}</span>`).join("")}</div>`;
   }).join("");
-  const eqHtml = EQUIPO_SLOTS.filter((sl) => (equipos[sl.key] || []).length).map((sl) =>
-    `<div class="eq"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : sl.tint};color:${P.bn ? "#111827" : sl.accent}">${sl.label}</span>${[...(equipos[sl.key] || [])].sort(porJerarquia).map(chip).join("")}</div>`).join("") || '<div class="nota">Sin equipos armados</div>';
+  // Unión de comodines de todas las semanas que tocan este mes (una persona
+  // puede haber sido comodín en una semana del mes y no en otra; alcanza con
+  // que lo haya sido en alguna para aparecer acá). Mismo criterio que en
+  // htmlSemana: se lee lo ya marcado en la grilla, no se arma a mano.
+  const comodinesDelMes = [...new Set(Object.values(semanas).flatMap((w) => w.comodines || []))];
+  const eqPiezas = EQUIPO_SLOTS.filter((sl) => (equipos[sl.key] || []).length).map((sl) =>
+    `<div class="eq"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : sl.tint};color:${P.bn ? "#111827" : sl.accent}">${sl.label}</span>${[...(equipos[sl.key] || [])].sort(porJerarquia).map(chip).join("")}</div>`);
+  if (comodinesDelMes.length) {
+    eqPiezas.push(`<div class="eq"><span class="eqn" style="background:${P.bn ? "#E5E7EB" : "#DDD6FE"};color:${P.bn ? "#111827" : "#5B21B6"}">🃏 Comodines</span>${comodinesDelMes.sort(porJerarquia).map(chip).join("")}</div>`);
+  }
+  const eqHtml = eqPiezas.join("") || '<div class="nota">Sin equipos armados</div>';
   const libresHtml = RESIDENTS.R4.filter((n) => diaLibrePrimeraSemana[n]).map((n) =>
     `<div class="eq">${chip(n)}<span class="txt">${diaLibrePrimeraSemana[n]}</span></div>`).join("") || '<div class="nota">Sin días libres cargados</div>';
   const rotan = (datosMes.assignments || []).map((x) => `${x.resident} (${x.place}${x.exterior ? " ✈️" : ""})`).join(" · ") || "nadie";

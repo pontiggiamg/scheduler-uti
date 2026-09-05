@@ -31,12 +31,39 @@ import { Skeleton } from "../comunes";
 import { fechaHoraAR } from "../fechas";
 import { ADMIN_EMAIL, ROLES, ROLES_ASIGNABLES, TAB_META } from "../config";
 
+// Una cuenta cuenta como "activa" si su último ingreso registrado (ver
+// access_logs más abajo) cayó dentro de las últimas 24 horas. `access_logs`
+// no se escribe solo al hacer login: se escribe en cada carga de la app y en
+// cada renovación de sesión de Firebase (cada más o menos una hora mientras
+// la pestaña sigue abierta), así que en la práctica funciona como un "última
+// vez que esta cuenta tuvo la app abierta" — no hace falta agregar un
+// registro nuevo por cada cambio de pestaña adentro de la app para tener una
+// señal de actividad razonable.
+const VEINTICUATRO_HS_MS = 24 * 60 * 60 * 1000;
+const activo24h = (loginAtISO) => !!loginAtISO && (Date.now() - new Date(loginAtISO).getTime()) < VEINTICUATRO_HS_MS;
+
+// "hace 5 min" / "hace 3 h" / "hace 2 d" — más rápido de leer de un vistazo
+// que la fecha y hora completas cuando lo que importa es "¿esto es reciente?".
+function haceRelativo(loginAtISO) {
+  if (!loginAtISO) return null;
+  const ms = Date.now() - new Date(loginAtISO).getTime();
+  if (ms < 0) return "recién";
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return "recién";
+  if (min < 60) return `hace ${min} min`;
+  const hs = Math.floor(min / 60);
+  if (hs < 24) return `hace ${hs} h`;
+  const dias = Math.floor(hs / 24);
+  return `hace ${dias} d`;
+}
+
 function AccesosView({ user }) {
   const [logs, setLogs] = useState([]);
   const [cuentas, setCuentas] = useState([]);
   const [rolesConfig, setRolesConfig] = useState({});
   const [loading, setLoading] = useState(true);
   const [seccion, setSeccion] = useState("cuentas"); // cuentas | roles
+  const [soloActivos, setSoloActivos] = useState(false);
 
   useEffect(() => {
     const unsub = escuchar(collection(db, "access_logs"), (snap) => {
@@ -60,6 +87,16 @@ function AccesosView({ user }) {
     return unsub;
   }, []);
 
+  // "hace 5 min" y el punto verde de actividad dependen de la hora actual, no
+  // solo de los datos — sin esto quedarían congelados en lo que decían cuando
+  // llegó el último cambio de Firestore, y "hace 2 min" se leería igual media
+  // hora después. Un tick por minuto alcanza para esta pantalla.
+  const [, forzarTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => forzarTick((n) => n + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
+
   // Una fila por cuenta que alguna vez entró (de access_logs), con su último
   // ingreso y el rol que tenga asignado, si tiene. Se arma agrupando por
   // email porque access_logs tiene un documento por CADA login, no uno por
@@ -81,8 +118,14 @@ function AccesosView({ user }) {
   }, [logs, cuentas]);
 
   const esAdminEmail = (email) => email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-  const sinRol = useMemo(() => cuentasVistas.filter((c) => !esAdminEmail(c.email) && !c.cuenta), [cuentasVistas]);
-  const conRol = useMemo(() => cuentasVistas.filter((c) => !esAdminEmail(c.email) && c.cuenta), [cuentasVistas]);
+  const sinRolTodas = useMemo(() => cuentasVistas.filter((c) => !esAdminEmail(c.email) && !c.cuenta), [cuentasVistas]);
+  const conRolTodas = useMemo(() => cuentasVistas.filter((c) => !esAdminEmail(c.email) && c.cuenta), [cuentasVistas]);
+  // El filtro de actividad solo se aplica a "Con rol": a alguien SIN rol
+  // conviene seguir viéndolo siempre ahí, activo o no, porque esa lista existe
+  // justamente para no perderlo de vista hasta asignarle algo.
+  const sinRol = sinRolTodas;
+  const conRol = useMemo(() => soloActivos ? conRolTodas.filter((c) => activo24h(c.loginAt)) : conRolTodas, [conRolTodas, soloActivos]);
+  const activosCount = useMemo(() => conRolTodas.filter((c) => activo24h(c.loginAt)).length, [conRolTodas]);
 
   const asignarRol = async (email, rol) => {
     await escribir(setDoc(doc(db, "cuentas", email), {
@@ -125,7 +168,9 @@ function AccesosView({ user }) {
       </div>
 
       {seccion === "cuentas" ? (
-        <CuentasSeccion sinRol={sinRol} conRol={conRol} onAsignar={asignarRol} onQuitar={quitarRol} />
+        <CuentasSeccion sinRol={sinRol} conRol={conRol} totalConRol={conRolTodas.length} activosCount={activosCount}
+          soloActivos={soloActivos} onToggleActivos={() => setSoloActivos((v) => !v)}
+          onAsignar={asignarRol} onQuitar={quitarRol} />
       ) : (
         <RolesSeccion rolesConfig={rolesConfig} onToggle={toggleTabRol} />
       )}
@@ -144,7 +189,7 @@ function Badge({ n }) {
 }
 
 // ── Sección 1 y 2: auditoría de cuentas + asignación de rol ────────────────
-function CuentasSeccion({ sinRol, conRol, onAsignar, onQuitar }) {
+function CuentasSeccion({ sinRol, conRol, totalConRol, activosCount, soloActivos, onToggleActivos, onAsignar, onQuitar }) {
   return (
     <div>
       {sinRol.length > 0 && (
@@ -160,9 +205,22 @@ function CuentasSeccion({ sinRol, conRol, onAsignar, onQuitar }) {
       )}
 
       <div>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>Con rol asignado ({conRol.length})</div>
-        {conRol.length === 0 ? (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>Con rol asignado ({totalConRol})</div>
+          {/* Filtro de actividad: pensado para chequear rápido, antes de una
+              guardia o a la mañana, quién efectivamente abrió la app en las
+              últimas 24 hs — sin tener que leer fecha por fecha en la lista
+              completa. "Activo" acá quiere decir "tuvo la app abierta en
+              algún momento de las últimas 24 hs", no "la tiene abierta ahora
+              mismo" (ver nota en activo24h más arriba). */}
+          <button onClick={onToggleActivos} style={{ ...tabSeccion(soloActivos), padding: "5px 11px", fontSize: 11 }}>
+            🟢 Activos últimas 24 h ({activosCount}/{totalConRol})
+          </button>
+        </div>
+        {totalConRol === 0 ? (
           <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", padding: "4px 2px" }}>Todavía no le asignaste rol a ninguna cuenta.</div>
+        ) : conRol.length === 0 ? (
+          <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", padding: "4px 2px" }}>Nadie con rol asignado entró en las últimas 24 hs.</div>
         ) : (
           <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
             {conRol.map((c, i) => <FilaCuenta key={c.email} c={c} i={i} total={conRol.length} onAsignar={onAsignar} onQuitar={onQuitar} />)}
@@ -175,13 +233,19 @@ function CuentasSeccion({ sinRol, conRol, onAsignar, onQuitar }) {
 
 function FilaCuenta({ c, i, total, onAsignar, onQuitar }) {
   const rol = c.cuenta?.rol;
+  const activo = activo24h(c.loginAt);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === total - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
-      <span style={{ width: 26, height: 26, borderRadius: "50%", background: "#F1F5F9", border: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flexShrink: 0 }}>👤</span>
+      <span title={activo ? "Entró en las últimas 24 hs" : "No entró en las últimas 24 hs"} style={{ width: 26, height: 26, borderRadius: "50%", background: "#F1F5F9", border: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flexShrink: 0, position: "relative" }}>
+        👤
+        <span style={{ position: "absolute", bottom: -1, right: -1, width: 9, height: 9, borderRadius: "50%", background: activo ? "#22C55E" : "#CBD5E1", border: "1.5px solid #fff" }} />
+      </span>
       <div style={{ flex: 1, minWidth: 150 }}>
         <div style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A" }}>{c.displayName || "Sin nombre"}</div>
         <div style={{ fontSize: 11, color: "#64748B", wordBreak: "break-all" }}>{c.email}</div>
-        <div style={{ fontSize: 10, color: "#94A3B8", marginTop: 1 }}>Último ingreso: {c.loginAtAR || "—"}</div>
+        <div style={{ fontSize: 10, color: activo ? "#16A34A" : "#94A3B8", marginTop: 1, fontWeight: activo ? 700 : 400 }}>
+          Último ingreso: {c.loginAtAR || "—"}{c.loginAt && ` · ${haceRelativo(c.loginAt)}`}
+        </div>
       </div>
       <select value={rol || ""} onChange={(e) => e.target.value ? onAsignar(c.email, e.target.value) : onQuitar(c.email)} style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", background: "#fff", color: rol ? "#0F172A" : "#94A3B8" }}>
         <option value="">Sin rol…</option>
