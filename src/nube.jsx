@@ -242,6 +242,17 @@ export function AvisoDeFallas() {
 export function useGuardadoConEspera(alGuardar, { etiqueta, puede = true, espera = 500, alSalirDeEmergencia } = {}) {
   const [estado, setEstado] = useState("idle");
   const pendiente = useRef(null);
+  // Guarda el ÚLTIMO dato pasado a `guardar`, y no se borra cuando arranca la
+  // escritura sino recién cuando esa escritura CONFIRMA. `pendiente` en
+  // cambio se pone en null apenas el timer dispara (para permitir otro
+  // guardar() mientras el anterior está en vuelo), incluso aunque el setDoc
+  // siga sin terminar. Con espera=0 ese timer dispara casi al instante: si el
+  // beacon de emergencia mirara `pendiente`, en la práctica siempre lo
+  // encontraría vacío justo cuando más hace falta (comodín + F5 inmediato), y
+  // nunca se mandaría — este es el bug que hizo que el primer intento de
+  // arreglo no sirviera.
+  const ultimoDato = useRef(null);
+  const enVuelo = useRef(false);
   const timer = useRef(null);
   const limpiarEstado = useRef(null);
   // El callback se guarda en una ref y se refresca en cada render: si el
@@ -256,14 +267,17 @@ export function useGuardadoConEspera(alGuardar, { etiqueta, puede = true, espera
     const datos = pendiente.current;
     if (datos === null || datos === undefined) return;
     pendiente.current = null;
+    enVuelo.current = true;
     setEstado("guardando");
     try {
       await alGuardarRef.current(datos);
+      enVuelo.current = false;
       if (etiqueta) limpiarFalla(etiqueta);
       setEstado("guardado");
       clearTimeout(limpiarEstado.current);
       limpiarEstado.current = setTimeout(() => setEstado("idle"), 1600);
     } catch (e) {
+      enVuelo.current = false;
       console.error("guardar:", etiqueta, e);
       setEstado("error");
       if (etiqueta) registrarFalla(etiqueta, e, "escritura");
@@ -276,6 +290,7 @@ export function useGuardadoConEspera(alGuardar, { etiqueta, puede = true, espera
   const guardar = useCallback((datos, esperaAhora) => {
     if (!puede) return;
     pendiente.current = datos;
+    ultimoDato.current = datos;
     clearTimeout(timer.current);
     timer.current = setTimeout(escribirYa, esperaAhora === undefined ? espera : esperaAhora);
   }, [puede, espera, escribirYa]);
@@ -287,20 +302,31 @@ export function useGuardadoConEspera(alGuardar, { etiqueta, puede = true, espera
 
   useEffect(() => {
     // Al ocultarse la pestaña (F5, cerrar, cambiar de app) puede haber un
-    // guardado pendiente que el setDoc normal de Firestore no llegue a
-    // confirmar: el navegador corta esa conexión antes de que termine. Por
-    // eso, además de `forzar()` (que sigue intentando el camino normal, y
-    // puede alcanzar a completarse si el cierre tarda un poco), se manda en
-    // paralelo un "beacon" — un envío que el navegador garantiza entregar
-    // aunque la página se esté descargando en ese mismo instante — cuando la
-    // pantalla que usa este hook definió cómo mandarlo (`alSalirDeEmergencia`).
-    // No es un reemplazo del guardado normal, es una red de contención para
-    // el instante exacto de cerrar/recargar.
+    // guardado pendiente o en vuelo que el setDoc normal de Firestore no
+    // llegue a confirmar: el navegador corta esa conexión antes de que
+    // termine. Por eso, además de `forzar()` (que sigue intentando el camino
+    // normal, y puede alcanzar a completarse si el cierre tarda un poco), se
+    // manda en paralelo un "beacon" — un envío que el navegador garantiza
+    // entregar aunque la página se esté descargando en ese mismo instante —
+    // cuando la pantalla que usa este hook definió cómo mandarlo
+    // (`alSalirDeEmergencia`). No es un reemplazo del guardado normal, es una
+    // red de contención para el instante exacto de cerrar/recargar.
+    //
+    // Se manda si hay algo pendiente TODAVÍA SIN empezar a escribir
+    // (`pendiente`), o si ya empezó pero no confirmó (`enVuelo`) — este
+    // segundo caso es justo el de "tocar comodín y F5 al toque" con espera 0:
+    // el timer ya disparó y vació `pendiente`, pero el `await setDoc` de
+    // adentro puede seguir sin terminar cuando el navegador corta la
+    // conexión. `ultimoDato` siempre tiene el último valor real, esté o no
+    // vacío `pendiente`.
     const alOcultar = () => {
       if (document.visibilityState !== "hidden") return;
-      if (pendiente.current === null || pendiente.current === undefined) return;
+      const hayAlgoPendiente = pendiente.current !== null && pendiente.current !== undefined;
+      const hayAlgoEnVuelo = enVuelo.current && ultimoDato.current !== null && ultimoDato.current !== undefined;
+      if (!hayAlgoPendiente && !hayAlgoEnVuelo) return;
       if (alSalirDeEmergenciaRef.current) {
-        try { alSalirDeEmergenciaRef.current(pendiente.current); } catch (e) { console.error("beacon de emergencia:", etiqueta, e); }
+        const datos = hayAlgoPendiente ? pendiente.current : ultimoDato.current;
+        try { alSalirDeEmergenciaRef.current(datos); } catch (e) { console.error("beacon de emergencia:", etiqueta, e); }
       }
       forzar();
     };
