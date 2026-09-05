@@ -28,7 +28,16 @@ const emptyDay = () => ({ uti1: [], uti2: [], uti3: [], postguardia: [], unavail
 
 const emptyDiasLibresR4 = () => Object.fromEntries(RESIDENTS.R4.map((n) => [n, ""]));
 
-const emptyWeek = () => ({ days: DAYS.map(() => emptyDay()), diasLibresR4: emptyDiasLibresR4() });
+// `comodines` es de la semana entera, no de un día: quiénes se adaptan a
+// cualquier sala esos siete días. Tiene que estar acá —y copiarse en
+// normalize()— porque normalize() arma la semana partiendo de emptyWeek() y
+// descarta todo campo que no reconozca. Sin esto la marca se guardaba bien en
+// Firestore pero se perdía AL LEER: cada recarga (y cada eco del onSnapshot)
+// devolvía la semana sin comodines, y el primer guardado siguiente —que es un
+// setDoc del documento entero, no un merge— la borraba también de la base.
+// Ese era el motivo real de "los comodines no quedan guardados"; el guardado
+// nunca fue el problema.
+const emptyWeek = () => ({ days: DAYS.map(() => emptyDay()), diasLibresR4: emptyDiasLibresR4(), comodines: [] });
 
 function normalize(raw) {
   const week = emptyWeek();
@@ -65,12 +74,17 @@ function normalize(raw) {
   }
   const dl = raw.diasLibresR4 || {};
   for (const n of RESIDENTS.R4) week.diasLibresR4[n] = DAYS.includes(dl[n]) ? dl[n] : "";
+  // Se filtra por LEVEL igual que el resto: LEVEL cubre a los 12 residentes y
+  // al jefe, que son exactamente los que el editor de comodines ofrece. Un
+  // nombre que ya no existe (alguien que se fue del servicio) queda afuera
+  // solo, sin arrastrar una marca fantasma que nadie puede sacar.
+  week.comodines = Array.isArray(raw.comodines) ? raw.comodines.filter((n) => LEVEL[n]) : [];
   return week;
 }
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
-const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length === 0) && d.unavailable.length === 0 && !d.observaciones.trim() && !d.recordatorios.trim() && d.deGuardia.length === 0 && !d.feriado) && RESIDENTS.R4.every((n) => !w.diasLibresR4[n]);
+const isBlank = (w) => w.days.every((d) => SLOT_KEYS.every((k) => d[k].length === 0) && d.unavailable.length === 0 && !d.observaciones.trim() && !d.recordatorios.trim() && d.deGuardia.length === 0 && !d.feriado) && RESIDENTS.R4.every((n) => !w.diasLibresR4[n]) && (w.comodines || []).length === 0;
 
 // Un nombre de guardia puede ser uno de los 12 residentes o alguien de afuera.
 const esResidente = (n) => !!LEVEL[n];

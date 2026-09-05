@@ -15,9 +15,9 @@ import Lab, { isLabRoute } from "./Lab";
 import { db, auth, googleProvider } from "./firebase";
 import { doc, setDoc, collection } from "firebase/firestore";
 import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
-import { escuchar, escribir, registrarFalla, AvisoDeFallas } from "./nube";
+import { escuchar, escribir, AvisoDeFallas } from "./nube";
 import { isoDate, Skeleton } from "./comunes";
-import { ADMIN_EMAIL, DEFAULT_TAB_ORDER, RESIDENT_BY_EMAIL, TAB_META, TAB_RENOMBRADAS, isPublicRoute } from "./config";
+import { ADMIN_EMAIL, DEFAULT_TAB_ORDER, ROLES, TAB_META, TAB_RENOMBRADAS, isPublicRoute } from "./config";
 import { fechaHoraAR } from "./fechas";
 import { ImpresionesView } from "./impresion";
 import { TabBtn } from "./ui";
@@ -64,8 +64,10 @@ function AuthenticatedApp() {
   const [tabOrder, setTabOrder] = useState(DEFAULT_TAB_ORDER);
   const [dragIdx, setDragIdx] = useState(null);
   const [overIdx, setOverIdx] = useState(null);
-  const [acceso, setAcceso] = useState("cargando"); // cargando | ok | pendiente | rechazado
-  const [pendientesAcceso, setPendientesAcceso] = useState(0);
+  const [acceso, setAcceso] = useState("cargando"); // cargando | ok | sin-rol
+  const [rol, setRol] = useState(null);
+  const [rolesConfig, setRolesConfig] = useState(null);
+  const [cuentasSinRol, setCuentasSinRol] = useState(0);
 
   useEffect(() => {
     const ref = doc(db, "scheduler", "ui-config");
@@ -149,56 +151,45 @@ function AuthenticatedApp() {
     return () => document.removeEventListener("click", registrarSiNoHoy);
   }, [user]);
 
-  // ── Control de acceso al scheduler privado ───────────────────────────────
-  // Cualquiera puede iniciar sesión con Google, pero solo entra si el jefe de
-  // residentes lo autorizó. Dos excepciones que entran siempre y nunca piden
-  // permiso: la cuenta admin y los 12 residentes ya mapeados en
-  // RESIDENT_EMAIL — así un deploy nuevo jamás deja afuera a la gente que ya
-  // venía usando la app. Para el resto se crea (una sola vez) un documento en
-  // usuarios_autorizados con estado "pendiente" y se dispara el aviso por
-  // Telegram. Como quedamos escuchando ese documento con onSnapshot, cuando
-  // el admin aprueba desde su celular la app se desbloquea sola, sin que la
-  // persona tenga que recargar nada.
+  // ── Control de acceso al scheduler privado (roles) ───────────────────────
+  // Desde el 5/9/2026 reemplaza al sistema viejo (12 residentes hardcodeados
+  // + aprobación manual por mail vía usuarios_autorizados). Ahora cada cuenta
+  // de Google tiene un rol asignado a mano por el admin en la pestaña
+  // Accesos (colección `cuentas`, documento por mail), y qué pestañas ve cada
+  // rol se define EN VIVO desde esa misma pestaña (`scheduler/roles_config`).
+  //
+  // La cuenta admin (ADMIN_EMAIL) es la única excepción: nunca depende de
+  // esta colección, siempre entra y siempre ve todo — así el jefe de
+  // residentes no puede quedar bloqueado de su propia app por un typo o un
+  // rol mal configurado. Cualquier otra cuenta sin rol asignado ve la
+  // pantalla de espera hasta que se le asigne uno.
   useEffect(() => {
-    if (!user || !user.email) { setAcceso("cargando"); return; }
+    if (!user || !user.email) { setAcceso("cargando"); setRol(null); return; }
     const email = user.email.toLowerCase();
-    if (email === ADMIN_EMAIL.toLowerCase() || RESIDENT_BY_EMAIL[email]) { setAcceso("ok"); return; }
+    if (email === ADMIN_EMAIL.toLowerCase()) { setAcceso("ok"); setRol("admin"); return; }
 
-    const ref = doc(db, "usuarios_autorizados", email);
-    let pedidoEnviado = false;
-    const unsub = escuchar(ref, async (snap) => {
-      if (!snap.exists()) {
-        if (pedidoEnviado) return;
-        pedidoEnviado = true;
-        setAcceso("pendiente");
-        try {
-          await setDoc(ref, {
-            email: user.email,
-            displayName: user.displayName || "",
-            photoURL: user.photoURL || "",
-            estado: "pendiente",
-            solicitadoEn: new Date().toISOString(),
-            solicitadoEnAR: fechaHoraAR(new Date()),
-          });
-          // El aviso es "mejor esfuerzo": si el bot de Telegram no está
-          // configurado o falla, la solicitud igual queda registrada y el
-          // admin la ve con el badge de la pestaña Accesos.
-          fetch("/api/notificar-acceso", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ email: user.email, displayName: user.displayName || "" }),
-          }).catch(() => {});
-        } catch (e) { registrarFalla("tu pedido de acceso", e, "escritura"); }
-        return;
-      }
-      const estado = snap.data().estado;
-      setAcceso(estado === "aprobado" ? "ok" : estado === "rechazado" ? "rechazado" : "pendiente");
-    }, "tu estado de acceso", () => setAcceso("pendiente"));
+    const ref = doc(db, "cuentas", email);
+    const unsub = escuchar(ref, (snap) => {
+      const r = snap.exists() ? snap.data().rol : null;
+      if (r && ROLES[r]) { setRol(r); setAcceso("ok"); }
+      else { setRol(null); setAcceso("sin-rol"); }
+    }, "tu rol de acceso", () => setAcceso("sin-rol"));
     return unsub;
   }, [user]);
 
-  // Cantidad de solicitudes sin revisar, para el badge rojo de la pestaña
-  // Accesos. Solo lo mira la cuenta admin.
+  // Qué pestañas puede ver cada rol. Documento único, editable desde Accesos.
+  // Si todavía no existe (primera vez que se sube este sistema) o un rol no
+  // tiene entrada, esa cuenta no ve ninguna pestaña hasta que el admin se lo
+  // configure — a propósito: mejor "no veo nada, aviso al jefe" que exponer
+  // de más por un default optimista.
+  useEffect(() => {
+    if (!user) { setRolesConfig(null); return; }
+    const unsub = escuchar(doc(db, "scheduler", "roles_config"), (snap) => {
+      setRolesConfig(snap.exists() ? snap.data() : {});
+    }, null);   // cosmético: mientras no llegue, se ve como "sin pestañas" un instante
+    return unsub;
+  }, [user]);
+
   /* Precarga de la Pase App. Se pide el archivo apenas la app está en pie,
      sin esperarlo y sin bloquear nada: para cuando alguien toca la pestaña
      ya está en el navegador. Si falla, no importa —el import de la pestaña
@@ -209,12 +200,31 @@ function AuthenticatedApp() {
     return () => clearTimeout(t);
   }, [user]);
 
+  // Cantidad de cuentas que ya entraron alguna vez (según access_logs) pero
+  // todavía no tienen rol asignado, para el badge rojo de la pestaña Accesos.
+  // Es justamente lo que el jefe de residentes pidió: que no se le pase por
+  // alto una cuenta que ya está usando la app sin que él la haya visto.
   useEffect(() => {
-    if (!user || user.email !== ADMIN_EMAIL) { setPendientesAcceso(0); return; }
-    const unsub = escuchar(collection(db, "usuarios_autorizados"), (snap) => {
-      setPendientesAcceso(snap.docs.filter((d) => d.data().estado === "pendiente").length);
-    }, null);   // cosmético: es solo el numerito del badge
-    return unsub;
+    if (!user || user.email !== ADMIN_EMAIL) { setCuentasSinRol(0); return; }
+    let logs = null, cuentas = null;
+    const recalcular = () => {
+      if (!logs || !cuentas) return;
+      const conRol = new Set(cuentas.map((c) => c.id));
+      const vistos = new Set();
+      logs.forEach((l) => { if (l.email) vistos.add(l.email.toLowerCase()); });
+      let n = 0;
+      vistos.forEach((email) => { if (email !== ADMIN_EMAIL.toLowerCase() && !conRol.has(email)) n++; });
+      setCuentasSinRol(n);
+    };
+    const unsub1 = escuchar(collection(db, "access_logs"), (snap) => {
+      logs = snap.docs.map((d) => d.data());
+      recalcular();
+    }, null);
+    const unsub2 = escuchar(collection(db, "cuentas"), (snap) => {
+      cuentas = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      recalcular();
+    }, null);
+    return () => { unsub1(); unsub2(); };
   }, [user]);
 
   if (user === undefined) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#64748B", fontSize: 14 }}>Cargando…</div>;
@@ -224,7 +234,15 @@ function AuthenticatedApp() {
   const isAdmin = user.email === ADMIN_EMAIL;
 
   if (acceso === "cargando") return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#64748B", fontSize: 14 }}>Verificando acceso…</div>;
-  if (acceso !== "ok") return <PantallaEspera user={user} rechazado={acceso === "rechazado"} />;
+  if (acceso !== "ok") return <PantallaEspera user={user} />;
+
+  // Pestañas visibles para el rol actual. El admin siempre ve todas, sin
+  // mirar roles_config — ver el comentario más arriba sobre por qué. Para el
+  // resto, `tabsDelRol` viene de scheduler/roles_config[rol].tabs; hasta que
+  // el admin lo configure, la lista sale vacía y esa cuenta no ve pestañas
+  // (a propósito: mejor pedirle que avise que exponer de más por default).
+  const tabsDelRol = isAdmin ? null : (rolesConfig && rol ? (rolesConfig[rol]?.tabs || []) : []);
+  const puedeVerTab = (key) => tabsDelRol === null || tabsDelRol.includes(key);
 
   return (
     <div style={{ maxWidth: 1500, margin: "0 auto", padding: "14px 12px 40px", fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -240,6 +258,7 @@ function AuthenticatedApp() {
           {user.photoURL && <img src={user.photoURL} alt="" style={{ width: 24, height: 24, borderRadius: "50%" }} />}
           <span style={{ color: "#475569", fontWeight: 500 }}>{user.displayName || user.email}</span>
           {isAdmin && <span style={{ fontSize: 9, fontWeight: 700, background: "#0F172A", color: "#fff", padding: "2px 6px", borderRadius: 4 }}>ADMIN</span>}
+          {!isAdmin && rol && <span style={{ fontSize: 9, fontWeight: 700, background: "#E2E8F0", color: "#334155", padding: "2px 6px", borderRadius: 4 }}>{ROLES[rol]?.icon} {ROLES[rol]?.label?.toUpperCase()}</span>}
           {!isAdmin && <span style={{ fontSize: 9, fontWeight: 600, background: "#E2E8F0", color: "#64748B", padding: "2px 6px", borderRadius: 4 }}>SOLO LECTURA</span>}
         </div>
         <button onClick={() => signOut(auth)} style={{ background: "none", border: "none", color: "#64748B", fontSize: 11, cursor: "pointer", fontFamily: "inherit", fontWeight: 500 }}>Cerrar sesión</button>
@@ -252,12 +271,13 @@ function AuthenticatedApp() {
           const meta = TAB_META[key];
           if (!meta) return null;
           if (meta.soloAdmin && !isAdmin) return null;
+          if (!puedeVerTab(key)) return null;
           return (
             <TabBtn
               key={key}
               active={tab === key}
               onClick={() => setTab(key)}
-              badge={key === "accesos" ? pendientesAcceso : 0}
+              badge={key === "accesos" ? cuentasSinRol : 0}
               draggable={isAdmin}
               dragging={dragIdx === i}
               dropTarget={isAdmin && overIdx === i && dragIdx !== null && dragIdx !== i}
@@ -276,26 +296,36 @@ function AuthenticatedApp() {
         })}
       </div>
 
-      {tab === "scheduler" && <SchedulerView isAdmin={isAdmin} />}
-      {tab === "rotaciones" && <RotacionesView isAdmin={isAdmin} />}
-      {tab === "pases" && <PasesView isAdmin={isAdmin} />}
+      {!isAdmin && tabsDelRol && tabsDelRol.length === 0 && (
+        <div style={{ fontSize: 12, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 10, padding: "12px 14px", marginBottom: 14, lineHeight: 1.5 }}>
+          Tu rol ({ROLES[rol]?.label || rol}) todavía no tiene ninguna pestaña habilitada. Avisale al jefe de residentes para que te las configure desde Accesos.
+        </div>
+      )}
+
+      {/* Cada pestaña se filtra también acá, no solo en la barra: si el rol
+          de alguien cambia mientras tiene una pestaña abierta que ya no le
+          corresponde, deja de verse el contenido en el próximo render, no
+          solo el botón. */}
+      {tab === "scheduler" && puedeVerTab("scheduler") && <SchedulerView isAdmin={isAdmin} />}
+      {tab === "rotaciones" && puedeVerTab("rotaciones") && <RotacionesView isAdmin={isAdmin} />}
+      {tab === "pases" && puedeVerTab("pases") && <PasesView isAdmin={isAdmin} />}
       {/* Mientras baja el archivo de la Pase App se ve el mismo "Cargando…"
           que ya se veía mientras llegaban sus datos, así que en la práctica
           no cambia nada de lo que ve la persona. */}
-      {tab === "paseapp" && (
+      {tab === "paseapp" && puedeVerTab("paseapp") && (
         <Suspense fallback={<Skeleton />}>
           <PaseAppView user={user} />
         </Suspense>
       )}
-      {tab === "chipa" && <ChipaView isAdmin={isAdmin} user={user} />}
-      {tab === "laura" && <LauraView isAdmin={isAdmin} user={user} />}
-      {tab === "academico" && <AcademicoView isAdmin={isAdmin} />}
-      {tab === "articulo" && <ArticuloSemanaView isAdmin={isAdmin} />}
-      {tab === "registro" && <RegistroView isAdmin={isAdmin} user={user} />}
-      {tab === "redcap" && <RedcapView user={user} />}
-      {tab === "hoy" && <QuienEstaHoyView isAdmin={isAdmin} embedded />}
+      {tab === "chipa" && puedeVerTab("chipa") && <ChipaView isAdmin={isAdmin} user={user} />}
+      {tab === "laura" && puedeVerTab("laura") && <LauraView isAdmin={isAdmin} user={user} />}
+      {tab === "academico" && puedeVerTab("academico") && <AcademicoView isAdmin={isAdmin} />}
+      {tab === "articulo" && puedeVerTab("articulo") && <ArticuloSemanaView isAdmin={isAdmin} />}
+      {tab === "registro" && puedeVerTab("registro") && <RegistroView isAdmin={isAdmin} user={user} />}
+      {tab === "redcap" && puedeVerTab("redcap") && <RedcapView user={user} />}
+      {tab === "hoy" && puedeVerTab("hoy") && <QuienEstaHoyView isAdmin={isAdmin} embedded />}
       {tab === "accesos" && isAdmin && <AccesosView user={user} />}
-      {tab === "impresiones" && <ImpresionesView user={user} isAdmin={isAdmin} />}
+      {tab === "impresiones" && puedeVerTab("impresiones") && <ImpresionesView user={user} isAdmin={isAdmin} />}
     </div>
   );
 }
@@ -321,24 +351,21 @@ function LoginScreen() {
   );
 }
 
-// Lo que ve alguien que inició sesión pero todavía no fue autorizado (o fue
-// rechazado). No muestra ningún dato de la app. Cuando el admin aprueba, el
-// onSnapshot de AuthenticatedApp cambia el estado y esta pantalla desaparece
-// sola, sin necesidad de recargar.
-function PantallaEspera({ user, rechazado }) {
+// Lo que ve alguien que inició sesión pero todavía no tiene un rol asignado.
+// No muestra ningún dato de la app. Cuando el admin le asigna un rol desde la
+// pestaña Accesos, el onSnapshot de AuthenticatedApp lo detecta solo y esta
+// pantalla desaparece, sin necesidad de recargar. Ya no hay estado
+// "pendiente"/"rechazado" ni solicitud automática: el admin ve la cuenta en
+// la lista de "sin rol" (viene de access_logs, que registra cualquier login)
+// y le asigna un rol cuando corresponda.
+function PantallaEspera({ user }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 20, fontFamily: "'Inter', system-ui, sans-serif", background: "#F1F5F9" }}>
       <div style={{ textAlign: "center", padding: "36px 32px", background: "#fff", borderRadius: 16, boxShadow: "0 4px 24px rgba(15,23,42,.1)", border: "1px solid #E2E8F0", maxWidth: 380 }}>
-        <div style={{ fontSize: 38, marginBottom: 10 }}>{rechazado ? "⛔" : "⏳"}</div>
-        <div style={{ fontWeight: 800, fontSize: 17, color: "#0F172A", marginBottom: 8 }}>
-          {rechazado ? "Acceso no autorizado" : "Esperando autorización"}
-        </div>
+        <div style={{ fontSize: 38, marginBottom: 10 }}>⏳</div>
+        <div style={{ fontWeight: 800, fontSize: 17, color: "#0F172A", marginBottom: 8 }}>Todavía no tenés acceso</div>
         <div style={{ fontSize: 12.5, color: "#64748B", lineHeight: 1.6, marginBottom: 18 }}>
-          {rechazado ? (
-            <>Tu cuenta no tiene acceso a esta aplicación. Si creés que es un error, hablá con el jefe de residentes.</>
-          ) : (
-            <>Tu solicitud ya fue enviada al jefe de residentes. En cuanto la apruebe, esta pantalla se va a desbloquear sola — no hace falta que recargues ni que vuelvas a entrar.</>
-          )}
+          Tu cuenta inició sesión correctamente, pero el jefe de residentes todavía no te asignó un rol. Avisale directamente — esta pantalla se va a desbloquear sola en cuanto lo haga, sin que tengas que recargar ni volver a entrar.
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 9, padding: "8px 12px", marginBottom: 16 }}>
           {user.photoURL && <img src={user.photoURL} alt="" style={{ width: 22, height: 22, borderRadius: "50%" }} />}

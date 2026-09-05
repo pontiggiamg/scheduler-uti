@@ -45,16 +45,32 @@ service cloud.firestore {
       return logueado() && miMail() == 'pontiggiamg@gmail.com';
     }
 
-    // ¿Tiene algún rol asignado? No importa cuál — la restricción por rol
-    // (quién ve qué pestaña) vive del lado de la interfaz, no acá. Estas
-    // reglas solo necesitan saber "esta cuenta está habilitada para tocar
-    // datos del servicio, sí o no".
+    /* ⚠️ MODO TRANSICIÓN — 5/9/2026
+       ────────────────────────────────────────────────────────────────────
+       Mientras dure la migración al sistema de roles, autorizado() deja
+       entrar a cualquiera que haya iniciado sesión con Google. Es el mismo
+       comportamiento que la app venía teniendo antes de esta migración, así
+       que nadie pierde el acceso mientras se cargan los roles.
+
+       PARA CERRARLO (hacer esto recién cuando TODAS las cuentas que usan la
+       app tengan su rol asignado en la pestaña Accesos): comentá la función
+       de acá abajo y descomentá la versión estricta que está más abajo.
+       Después volvé a publicar las reglas. */
+    function autorizado() {
+      return logueado();
+    }
+
+    /* VERSIÓN ESTRICTA — la definitiva. Descomentar cuando todos tengan rol.
+       Pide que la cuenta exista en `cuentas`, o sea que tenga un rol
+       asignado a mano desde la pestaña Accesos.
+
     function autorizado() {
       return logueado() && (
         esAdmin() ||
         exists(/databases/$(database)/documents/cuentas/$(miMail()))
       );
     }
+    */
 
     // ── Cuentas y roles ──────────────────────────────────────────────────
     //
@@ -65,6 +81,20 @@ service cloud.firestore {
     match /cuentas/{email} {
       allow read: if logueado();
       allow write: if esAdmin();
+    }
+
+    /* ⚠️ TRANSICIÓN — la colección del sistema viejo de aprobación por mail.
+       El código que está en producción ahora mismo todavía la lee para las
+       cuentas que no son de los 12 residentes. Se deja mientras dure la
+       migración para que nadie quede colgado en "esperando autorización".
+       SE PUEDE BORRAR ENTERA una vez que el código nuevo esté desplegado y
+       todas las cuentas tengan rol. */
+    match /usuarios_autorizados/{email} {
+      allow read: if esAdmin() || (logueado() && email == miMail());
+      allow create: if logueado()
+                    && email == miMail()
+                    && request.resource.data.estado == 'pendiente';
+      allow update, delete: if esAdmin();
     }
 
     // ── Datos del servicio ───────────────────────────────────────────────

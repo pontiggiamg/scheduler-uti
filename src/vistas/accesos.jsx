@@ -1,5 +1,26 @@
 /* ══════════════════════════════════════════════════════════════════════════
    La pestaña de accesos
+
+   Rediseñada el 5/9/2026: reemplaza al viejo sistema de "12 residentes
+   hardcodeados + aprobación manual por mail" por roles. Tres cosas separadas
+   acá adentro:
+
+     1. AUDITORÍA — todas las cuentas de Google que alguna vez entraron a la
+        app (según access_logs, que ya registraba cada login) cruzadas contra
+        quién tiene rol asignado. Esto es lo que el jefe de residentes pidió
+        explícitamente: poder ver si hay cuentas usando la app que él no vio
+        nunca en esta pantalla. Antes esto no existía — la lista vieja de
+        "solicitudes" solo mostraba a quien pasaba por el flujo de pedir
+        acceso, y una cuenta que entraba por otro lado (ej. estaba en la
+        lista hardcodeada de residentes) no dejaba ningún rastro visible acá.
+
+     2. ROLES POR CUENTA — asignar o cambiar el rol de cada cuenta. Sin rol,
+        la cuenta ve la pantalla de espera y no entra a ninguna pestaña.
+
+     3. PESTAÑAS POR ROL — qué pestañas puede ver cada rol, configurable en
+        vivo desde acá (colección scheduler/roles_config), sin necesidad de
+        tocar código ni hacer un deploy nuevo. El admin no aparece en esta
+        sección: siempre ve todas las pestañas, sin excepción.
    ══════════════════════════════════════════════════════════════════════════ */
 
 import { useState, useEffect, useMemo } from "react";
@@ -8,42 +29,83 @@ import { doc, setDoc, deleteDoc, collection } from "firebase/firestore";
 import { escuchar, escribir } from "../nube";
 import { Skeleton } from "../comunes";
 import { fechaHoraAR } from "../fechas";
+import { ADMIN_EMAIL, ROLES, ROLES_ASIGNABLES, TAB_META } from "../config";
 
-// Panel del admin para autorizar o revocar el acceso al scheduler privado.
-// Los 12 residentes y la cuenta admin no aparecen acá: entran siempre por
-// código (ver el gate en AuthenticatedApp), así que esta lista es solo para
-// cuentas "de afuera" que pidieron entrar.
 function AccesosView({ user }) {
-  const [solicitudes, setSolicitudes] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [cuentas, setCuentas] = useState([]);
+  const [rolesConfig, setRolesConfig] = useState({});
   const [loading, setLoading] = useState(true);
-  const [confirmId, setConfirmId] = useState(null);
+  const [seccion, setSeccion] = useState("cuentas"); // cuentas | roles
 
   useEffect(() => {
-    const unsub = escuchar(collection(db, "usuarios_autorizados"), (snap) => {
-      setSolicitudes(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    const unsub = escuchar(collection(db, "access_logs"), (snap) => {
+      setLogs(snap.docs.map((d) => d.data()));
       setLoading(false);
-    }, "la lista de accesos", () => setLoading(false));
+    }, "el registro de accesos", () => setLoading(false));
     return unsub;
   }, []);
 
-  const revisar = async (id, estado) => {
-    await escribir(setDoc(doc(db, "usuarios_autorizados", id), {
-      estado,
-      revisadoPor: user?.email || "",
-      revisadoEn: new Date().toISOString(),
-      revisadoEnAR: fechaHoraAR(new Date()),
-    }, { merge: true }), estado === "aprobado" ? "aprobar el acceso" : "cambiar el estado del acceso");
+  useEffect(() => {
+    const unsub = escuchar(collection(db, "cuentas"), (snap) => {
+      setCuentas(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, "las cuentas con rol asignado");
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = escuchar(doc(db, "scheduler", "roles_config"), (snap) => {
+      setRolesConfig(snap.exists() ? snap.data() : {});
+    }, "la configuración de roles");
+    return unsub;
+  }, []);
+
+  // Una fila por cuenta que alguna vez entró (de access_logs), con su último
+  // ingreso y el rol que tenga asignado, si tiene. Se arma agrupando por
+  // email porque access_logs tiene un documento por CADA login, no uno por
+  // persona — puede haber cientos de filas de la misma cuenta.
+  const cuentasVistas = useMemo(() => {
+    const porEmail = new Map();
+    for (const l of logs) {
+      if (!l.email) continue;
+      const email = l.email.toLowerCase();
+      const prev = porEmail.get(email);
+      if (!prev || (l.loginAt || "") > (prev.loginAt || "")) {
+        porEmail.set(email, { email, displayName: l.displayName || "", loginAt: l.loginAt || "", loginAtAR: l.loginAtAR || "" });
+      }
+    }
+    const cuentaPorEmail = new Map(cuentas.map((c) => [c.id, c]));
+    return [...porEmail.values()]
+      .map((v) => ({ ...v, cuenta: cuentaPorEmail.get(v.email) || null }))
+      .sort((a, b) => (b.loginAt || "").localeCompare(a.loginAt || ""));
+  }, [logs, cuentas]);
+
+  const esAdminEmail = (email) => email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  const sinRol = useMemo(() => cuentasVistas.filter((c) => !esAdminEmail(c.email) && !c.cuenta), [cuentasVistas]);
+  const conRol = useMemo(() => cuentasVistas.filter((c) => !esAdminEmail(c.email) && c.cuenta), [cuentasVistas]);
+
+  const asignarRol = async (email, rol) => {
+    await escribir(setDoc(doc(db, "cuentas", email), {
+      email,
+      rol,
+      displayName: (cuentasVistas.find((c) => c.email === email) || {}).displayName || "",
+      asignadoPor: user?.email || "",
+      asignadoEn: new Date().toISOString(),
+      asignadoEnAR: fechaHoraAR(new Date()),
+    }, { merge: true }), "asignar el rol");
   };
 
-  const eliminar = async (id) => {
-    await escribir(deleteDoc(doc(db, "usuarios_autorizados", id)), "borrar la solicitud de acceso");
-    setConfirmId(null);
+  const quitarRol = async (email) => {
+    await escribir(deleteDoc(doc(db, "cuentas", email)), "quitar el acceso");
   };
 
-  const orden = (a, b) => (b.solicitadoEn || "").localeCompare(a.solicitadoEn || "");
-  const pendientes = useMemo(() => solicitudes.filter((s) => s.estado === "pendiente").sort(orden), [solicitudes]);
-  const aprobados = useMemo(() => solicitudes.filter((s) => s.estado === "aprobado").sort(orden), [solicitudes]);
-  const rechazados = useMemo(() => solicitudes.filter((s) => s.estado === "rechazado").sort(orden), [solicitudes]);
+  const toggleTabRol = async (rol, tabKey) => {
+    const actuales = new Set((rolesConfig[rol] || {}).tabs || []);
+    actuales.has(tabKey) ? actuales.delete(tabKey) : actuales.add(tabKey);
+    const next = { ...rolesConfig, [rol]: { tabs: [...actuales] } };
+    setRolesConfig(next); // optimista: se ve al toque, sin esperar la vuelta de Firestore
+    await escribir(setDoc(doc(db, "scheduler", "roles_config"), next), "la configuración de pestañas por rol");
+  };
 
   if (loading) return <Skeleton />;
 
@@ -53,74 +115,119 @@ function AccesosView({ user }) {
         <span style={{ fontSize: 22 }}>🔐</span>
         <div>
           <div style={{ fontWeight: 800, fontSize: 15.5, letterSpacing: -0.3 }}>Accesos</div>
-          <div style={{ fontSize: 10.5, opacity: 0.7 }}>Quién puede entrar al scheduler privado</div>
+          <div style={{ fontSize: 10.5, opacity: 0.7 }}>Quién puede entrar al scheduler y qué ve cada uno</div>
         </div>
       </div>
 
-      <div style={{ fontSize: 11.5, color: "#64748B", lineHeight: 1.55, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "9px 13px", marginBottom: 14 }}>
-        Los 12 residentes y tu cuenta de administrador entran siempre, sin pedir permiso — no aparecen en estas listas. Acá solo caen las cuentas de Google que no están en ese grupo.
+      <div className="no-print" style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+        <button onClick={() => setSeccion("cuentas")} style={tabSeccion(seccion === "cuentas")}>👤 Cuentas {sinRol.length > 0 && <Badge n={sinRol.length} />}</button>
+        <button onClick={() => setSeccion("roles")} style={tabSeccion(seccion === "roles")}>🗂️ Pestañas por rol</button>
       </div>
 
-      <SeccionAccesos titulo={`Pendientes de autorizar (${pendientes.length})`} vacio="No hay solicitudes esperando." items={pendientes} color="#B45309" bg="#FFFBEB" bd="#FDE68A">
-        {(s) => (
-          <>
-            <button onClick={() => revisar(s.id, "aprobado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#16A34A", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontFamily: "inherit" }}>✓ Autorizar</button>
-            <button onClick={() => revisar(s.id, "rechazado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontFamily: "inherit" }}>✗ Rechazar</button>
-          </>
-        )}
-      </SeccionAccesos>
-
-      <SeccionAccesos titulo={`Con acceso (${aprobados.length})`} vacio="Todavía no autorizaste ninguna cuenta de afuera." items={aprobados} color="#15803D" bg="#F0FDF4" bd="#BBF7D0">
-        {(s) => (
-          <button onClick={() => revisar(s.id, "rechazado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#B91C1C", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontFamily: "inherit" }}>Quitar acceso</button>
-        )}
-      </SeccionAccesos>
-
-      <SeccionAccesos titulo={`Rechazados (${rechazados.length})`} vacio="Sin cuentas rechazadas." items={rechazados} color="#B91C1C" bg="#FEF2F2" bd="#FECACA">
-        {(s) => (
-          <>
-            <button onClick={() => revisar(s.id, "aprobado")} style={{ fontSize: 10.5, fontWeight: 700, color: "#15803D", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontFamily: "inherit" }}>✓ Autorizar</button>
-            {confirmId === s.id ? (
-              <span style={{ display: "flex", gap: 4 }}>
-                <button onClick={() => eliminar(s.id)} style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: "#DC2626", border: "none", borderRadius: 5, padding: "4px 8px", cursor: "pointer", fontFamily: "inherit" }}>Sí, borrar</button>
-                <button onClick={() => setConfirmId(null)} style={{ fontSize: 10, fontWeight: 700, color: "#64748B", background: "#F1F5F9", border: "none", borderRadius: 5, padding: "4px 8px", cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
-              </span>
-            ) : (
-              <button onClick={() => setConfirmId(s.id)} title="Borrar el registro (si vuelve a entrar, pide permiso de nuevo)" style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>🗑️</button>
-            )}
-          </>
-        )}
-      </SeccionAccesos>
-    </div>
-  );
-}
-
-function SeccionAccesos({ titulo, vacio, items, color, bg, bd, children }) {
-  return (
-    <div style={{ marginBottom: 18 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>{titulo}</div>
-      {items.length === 0 ? (
-        <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", padding: "4px 2px" }}>{vacio}</div>
+      {seccion === "cuentas" ? (
+        <CuentasSeccion sinRol={sinRol} conRol={conRol} onAsignar={asignarRol} onQuitar={quitarRol} />
       ) : (
-        <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
-          {items.map((s, i) => (
-            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === items.length - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
-              {s.photoURL
-                ? <img src={s.photoURL} alt="" style={{ width: 26, height: 26, borderRadius: "50%", flexShrink: 0 }} />
-                : <span style={{ width: 26, height: 26, borderRadius: "50%", background: bg, border: `1px solid ${bd}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flexShrink: 0 }}>👤</span>}
-              <div style={{ flex: 1, minWidth: 150 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A" }}>{s.displayName || "Sin nombre"}</div>
-                <div style={{ fontSize: 11, color: "#64748B", wordBreak: "break-all" }}>{s.email || s.id}</div>
-                <div style={{ fontSize: 10, color: "#64748B", marginTop: 1 }}>Pidió acceso: {s.solicitadoEnAR || "—"}</div>
-              </div>
-              <span style={{ fontSize: 9.5, fontWeight: 700, color, background: bg, border: `1px solid ${bd}`, borderRadius: 999, padding: "2px 9px" }}>{s.estado}</span>
-              {children(s)}
-            </div>
-          ))}
-        </div>
+        <RolesSeccion rolesConfig={rolesConfig} onToggle={toggleTabRol} />
       )}
     </div>
   );
 }
 
-export { AccesosView, SeccionAccesos };
+const tabSeccion = (activo) => ({
+  fontSize: 12, fontWeight: 700, padding: "7px 14px", borderRadius: 8, border: `1.5px solid ${activo ? "#0F172A" : "#E2E8F0"}`,
+  background: activo ? "#0F172A" : "#fff", color: activo ? "#fff" : "#475569", cursor: "pointer", fontFamily: "inherit",
+  display: "flex", alignItems: "center", gap: 6,
+});
+
+function Badge({ n }) {
+  return <span style={{ fontSize: 10, fontWeight: 800, background: "#DC2626", color: "#fff", borderRadius: 999, padding: "1px 6px" }}>{n}</span>;
+}
+
+// ── Sección 1 y 2: auditoría de cuentas + asignación de rol ────────────────
+function CuentasSeccion({ sinRol, conRol, onAsignar, onQuitar }) {
+  return (
+    <div>
+      {sinRol.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#B45309", marginBottom: 6 }}>⚠️ Sin rol asignado ({sinRol.length})</div>
+          <div style={{ fontSize: 11, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "7px 11px", marginBottom: 8, lineHeight: 1.5 }}>
+            Estas cuentas ya iniciaron sesión en la app (quedó registrado en el ingreso) pero no ven ninguna pestaña hasta que les asignes un rol. Si alguna no te suena, es justamente lo que esta lista está para mostrarte.
+          </div>
+          <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+            {sinRol.map((c, i) => <FilaCuenta key={c.email} c={c} i={i} total={sinRol.length} onAsignar={onAsignar} onQuitar={onQuitar} />)}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>Con rol asignado ({conRol.length})</div>
+        {conRol.length === 0 ? (
+          <div style={{ fontSize: 11.5, color: "#64748B", fontStyle: "italic", padding: "4px 2px" }}>Todavía no le asignaste rol a ninguna cuenta.</div>
+        ) : (
+          <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+            {conRol.map((c, i) => <FilaCuenta key={c.email} c={c} i={i} total={conRol.length} onAsignar={onAsignar} onQuitar={onQuitar} />)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FilaCuenta({ c, i, total, onAsignar, onQuitar }) {
+  const rol = c.cuenta?.rol;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i === total - 1 ? "none" : "1px solid #F1F5F9", flexWrap: "wrap" }}>
+      <span style={{ width: 26, height: 26, borderRadius: "50%", background: "#F1F5F9", border: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flexShrink: 0 }}>👤</span>
+      <div style={{ flex: 1, minWidth: 150 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A" }}>{c.displayName || "Sin nombre"}</div>
+        <div style={{ fontSize: 11, color: "#64748B", wordBreak: "break-all" }}>{c.email}</div>
+        <div style={{ fontSize: 10, color: "#94A3B8", marginTop: 1 }}>Último ingreso: {c.loginAtAR || "—"}</div>
+      </div>
+      <select value={rol || ""} onChange={(e) => e.target.value ? onAsignar(c.email, e.target.value) : onQuitar(c.email)} style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", background: "#fff", color: rol ? "#0F172A" : "#94A3B8" }}>
+        <option value="">Sin rol…</option>
+        {ROLES_ASIGNABLES.map((r) => <option key={r} value={r}>{ROLES[r].icon} {ROLES[r].label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+// ── Sección 3: qué pestañas ve cada rol ─────────────────────────────────────
+function RolesSeccion({ rolesConfig, onToggle }) {
+  const tabs = Object.entries(TAB_META).filter(([key, meta]) => !meta.soloAdmin && key !== "accesos");
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: "#64748B", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, padding: "7px 11px", marginBottom: 14, lineHeight: 1.5 }}>
+        Tildá qué pestañas puede ver cada rol. Se guarda al toque y aplica a todas las cuentas con ese rol, sin que nadie tenga que recargar. El admin no está en esta lista: siempre ve todas las pestañas.
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11.5 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", padding: "6px 10px", color: "#64748B", fontWeight: 700, fontSize: 10.5, position: "sticky", left: 0, background: "#fff" }}>Pestaña</th>
+              {ROLES_ASIGNABLES.map((r) => (
+                <th key={r} style={{ padding: "6px 8px", color: "#334155", fontWeight: 700, whiteSpace: "nowrap" }}>{ROLES[r].icon} {ROLES[r].label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {tabs.map(([key, meta], i) => (
+              <tr key={key} style={{ background: i % 2 ? "#F8FAFC" : "#fff" }}>
+                <td style={{ padding: "7px 10px", fontWeight: 600, color: "#0F172A", whiteSpace: "nowrap", position: "sticky", left: 0, background: i % 2 ? "#F8FAFC" : "#fff" }}>{meta.icon} {meta.label}</td>
+                {ROLES_ASIGNABLES.map((r) => {
+                  const on = ((rolesConfig[r] || {}).tabs || []).includes(key);
+                  return (
+                    <td key={r} style={{ textAlign: "center", padding: "7px 8px" }}>
+                      <input type="checkbox" checked={on} onChange={() => onToggle(r, key)} style={{ cursor: "pointer", width: 16, height: 16 }} />
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+export { AccesosView };

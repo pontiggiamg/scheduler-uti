@@ -54,6 +54,32 @@ const TAB_META = {
 // nueva aparece sola con sólo agregarla a TAB_META.
 const DEFAULT_TAB_ORDER = Object.keys(TAB_META);
 
+// ── Roles ────────────────────────────────────────────────────────────────
+// Reemplaza al viejo sistema de "12 residentes hardcodeados + aprobación
+// manual por mail" (ver la migración del 5/9/2026). Ahora cada cuenta de
+// Google que usa la app tiene un rol asignado a mano desde la pestaña
+// Accesos, y cada rol define qué pestañas puede ver — eso último se
+// configura EN VIVO desde la misma pestaña (colección roles_config), no
+// acá, porque el jefe de residentes quería poder cambiarlo sin depender de
+// un deploy. Esta lista es solo el catálogo de roles que existen: agregar uno
+// nuevo es agregar una línea acá.
+//
+// "admin" es especial: no se le asigna a nadie desde la pestaña Accesos (la
+// tiene fija ADMIN_EMAIL) y siempre ve todas las pestañas, sin importar lo
+// que diga roles_config — así el jefe de residentes nunca puede quedar
+// bloqueado de su propia app.
+const ROLES = {
+  admin: { label: "Admin", icon: "👑" },
+  residente: { label: "Residente", icon: "🩺" },
+  staff: { label: "Staff", icon: "🧑‍⚕️" },
+  enfermeria: { label: "Enfermería", icon: "💉" },
+  rotante: { label: "Rotante", icon: "🔄" },
+};
+
+// Roles que se pueden asignar desde la pestaña Accesos (todos menos "admin",
+// que es fijo).
+const ROLES_ASIGNABLES = Object.keys(ROLES).filter((r) => r !== "admin");
+
 // Ruta pública sin login para compartir a otros servicios del hospital: entra
 // directo a "¿Quién está en la UTI hoy?" (hasta Postguardia inclusive), sin
 // pasar por la pantalla de login de Google. Como las reglas de Firestore ya
@@ -407,4 +433,4 @@ const EQUIPO_SLOTS = SLOTS.filter((s) => s.key !== "postguardia");
 
 const DIAS_LIBRES_OPCIONES = ["Lunes", "Miércoles", "Viernes"];
 
-export { ADMIN_EMAIL, ALL, ASIGNABLES, COBERTURA_RESIDENTS, COBERTURA_TIPOS, COLOR, CUPO_MES, DAYS, DEFAULT_PROCEDIMIENTOS, DEFAULT_REGISTRO_SUB_ORDER, DEFAULT_TAB_ORDER, DIAS_LIBRES_OPCIONES, DISPLAY_NAME, EQUIPO_MAX, EQUIPO_SLOTS, EVENTO_TIPOS, FILA_GUARDIA, HORA_AVISO_TARDE, HORA_CAMBIO_DIA, HORA_FIN_GUARDIA, INICIO_ESTADISTICAS, INVITADO_VIGENCIA_MS, JEFE, LEVEL, MES_INICIO_ESTADISTICAS, MODULOS_CLASE, MONTHS, ORDEN_JERARQUIA, PASES_FRESCO_MS, PASE_COLOR, PREMIOS, PUBLIC_ROUTE_PATH, REDCAP_COL, REDCAP_PREGUNTAS, REGISTRO_SUB_META, RESIDENTS, RESIDENT_BY_EMAIL, RESIDENT_EMAIL, SKIN_JR, SLOTS, SLOT_KEYS, TAB_META, TAB_RENOMBRADAS, TOPE_DIA_LIBRE, WEEKDAYS_FULL, WEEKEND_START_IDX, isPublicRoute, isWeekendIdx, nombrePublico, porJerarquia };
+export { ADMIN_EMAIL, ALL, ASIGNABLES, COBERTURA_RESIDENTS, COBERTURA_TIPOS, COLOR, CUPO_MES, DAYS, DEFAULT_PROCEDIMIENTOS, DEFAULT_REGISTRO_SUB_ORDER, DEFAULT_TAB_ORDER, DIAS_LIBRES_OPCIONES, DISPLAY_NAME, EQUIPO_MAX, EQUIPO_SLOTS, EVENTO_TIPOS, FILA_GUARDIA, HORA_AVISO_TARDE, HORA_CAMBIO_DIA, HORA_FIN_GUARDIA, INICIO_ESTADISTICAS, INVITADO_VIGENCIA_MS, JEFE, LEVEL, MES_INICIO_ESTADISTICAS, MODULOS_CLASE, MONTHS, ORDEN_JERARQUIA, PASES_FRESCO_MS, PASE_COLOR, PREMIOS, PUBLIC_ROUTE_PATH, REDCAP_COL, REDCAP_PREGUNTAS, REGISTRO_SUB_META, RESIDENTS, RESIDENT_BY_EMAIL, RESIDENT_EMAIL, ROLES, ROLES_ASIGNABLES, SKIN_JR, SLOTS, SLOT_KEYS, TAB_META, TAB_RENOMBRADAS, TOPE_DIA_LIBRE, WEEKDAYS_FULL, WEEKEND_START_IDX, isPublicRoute, isWeekendIdx, nombrePublico, porJerarquia };
