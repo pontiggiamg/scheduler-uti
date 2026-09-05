@@ -8,7 +8,7 @@ import { doc, setDoc } from "firebase/firestore";
 import { escuchar, useGuardadoConEspera, CARTEL_ESTADO } from "../nube";
 import { Skeleton } from "../comunes";
 import { ALL, COLOR, LEVEL, MONTHS } from "../config";
-import { TRAMOS_VACACIONES, clone, emptyRotYear, normalizeRot, textoTramo, tramoPorDefecto } from "../modelo";
+import { TRAMOS_ROTACION, TRAMOS_VACACIONES, clone, emptyRotYear, normalizeRot, textoTramo, tramoPorDefecto } from "../modelo";
 import { NAV, TEXTAREA } from "../ui";
 
 function RotacionesView({ isAdmin }) {
@@ -41,12 +41,17 @@ function RotacionesView({ isAdmin }) {
     guardar(next);
   }, [guardar, isAdmin]);
 
-  const addAssignment = (mi) => { if (!isAdmin) return; setEditing({ month: mi, mode: "new", resident: "", place: "", exterior: false }); };
+  const addAssignment = (mi) => { if (!isAdmin) return; setEditing({ month: mi, mode: "new", resident: "", place: "", exterior: false, tramo: "mes" }); };
 
-  const saveAssignment = (mi, resident, place, idx, exterior) => {
+  // `tramo` dice qué semanas del mes ocupa la rotación ("mes" = todas, igual
+  // que siempre). Se reusa el mismo catálogo que las vacaciones (1ª semana,
+  // 2ª a 4ª, etc.): así alguien que rota solo la mitad de un mes se carga acá
+  // con el tramo correspondiente, y en el mes siguiente con el resto — en vez
+  // de que la única rotación cargada bloquee el mes completo.
+  const saveAssignment = (mi, resident, place, idx, exterior, tramo) => {
     if (!resident.trim() || !place.trim()) return;
     const next = clone(data);
-    const registro = { resident: resident.trim(), place: place.trim(), exterior: !!exterior };
+    const registro = { resident: resident.trim(), place: place.trim(), exterior: !!exterior, tramo: tramo || "mes" };
     if (idx !== undefined && idx !== null) { next.months[mi].assignments[idx] = registro; }
     else { next.months[mi].assignments.push(registro); }
     save(next); setEditing(null);
@@ -139,15 +144,17 @@ function RotacionesView({ isAdmin }) {
                         const c = lv ? COLOR[lv] : { bg: "#F1F5F9", bd: "#CBD5E1", tx: "#475569", solid: "#64748B" };
                         const isEditingThis = editing && editing.month === mi && editing.idx === idx;
                         if (isEditingThis) {
-                          return <EditForm key={idx} resident={editing.resident} place={editing.place} exterior={editing.exterior} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onExteriorChange={(v) => setEditing({ ...editing, exterior: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place, idx, editing.exterior)} onCancel={() => setEditing(null)} />;
+                          return <EditForm key={idx} resident={editing.resident} place={editing.place} exterior={editing.exterior} tramo={editing.tramo} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onExteriorChange={(v) => setEditing({ ...editing, exterior: v })} onTramoChange={(v) => setEditing({ ...editing, tramo: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place, idx, editing.exterior, editing.tramo)} onCancel={() => setEditing(null)} />;
                         }
+                        const tramoInfo = TRAMOS_ROTACION[a.tramo] || TRAMOS_ROTACION.mes;
                         return (
                           <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 8, background: c.bg, border: `1.5px solid ${c.bd}`, fontSize: 12 }}>
                             <span style={{ fontWeight: 700, color: c.tx }}>{a.resident}</span>
                             <span style={{ color: "#64748B", fontWeight: 500 }}>({a.place})</span>
+                            {tramoInfo.semanas && <span title={`Rota solo ${tramoInfo.label.toLowerCase()} de este mes`} style={{ fontSize: 9.5, fontWeight: 700, color: "#0F766E", background: "#F0FDFA", border: "1px solid #99F6E4", borderRadius: 999, padding: "0 6px" }}>{tramoInfo.corto}</span>}
                             {a.exterior && <span title="Fuera del país — no hace guardias" style={{ fontSize: 10 }}>✈️</span>}
                             {lv && <span style={{ fontSize: 8, fontWeight: 800, background: c.solid, color: "#fff", padding: "1px 4px", borderRadius: 3 }}>{lv}</span>}
-                            {isAdmin && <span onClick={() => setEditing({ month: mi, idx, resident: a.resident, place: a.place, exterior: !!a.exterior })} style={{ cursor: "pointer", fontSize: 11, opacity: 0.4 }} title="Editar">✏️</span>}
+                            {isAdmin && <span onClick={() => setEditing({ month: mi, idx, resident: a.resident, place: a.place, exterior: !!a.exterior, tramo: a.tramo || "mes" })} style={{ cursor: "pointer", fontSize: 11, opacity: 0.4 }} title="Editar">✏️</span>}
                             {isAdmin && <span onClick={() => removeAssignment(mi, idx)} style={{ cursor: "pointer", fontSize: 11, opacity: 0.4 }} title="Eliminar">✕</span>}
                           </div>
                         );
@@ -155,7 +162,7 @@ function RotacionesView({ isAdmin }) {
                     </div>
                   )}
                   {editing && editing.month === mi && editing.mode === "new" && (
-                    <EditForm resident={editing.resident} place={editing.place} exterior={editing.exterior} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onExteriorChange={(v) => setEditing({ ...editing, exterior: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place, undefined, editing.exterior)} onCancel={() => setEditing(null)} />
+                    <EditForm resident={editing.resident} place={editing.place} exterior={editing.exterior} tramo={editing.tramo} onResChange={(v) => setEditing({ ...editing, resident: v })} onPlaceChange={(v) => setEditing({ ...editing, place: v })} onExteriorChange={(v) => setEditing({ ...editing, exterior: v })} onTramoChange={(v) => setEditing({ ...editing, tramo: v })} onSave={() => saveAssignment(mi, editing.resident, editing.place, undefined, editing.exterior, editing.tramo)} onCancel={() => setEditing(null)} />
                   )}
                   <VacacionesPicker mes={mi} seleccion={month.vacaciones || []} isAdmin={isAdmin} onToggle={toggleVacaciones} onTramo={setTramoVacaciones} />
                   {mi === 11 && <SemanasLibresPicker mes={mi} datos={month.semanasLibres || { navidad: [], anioNuevo: [] }} isAdmin={isAdmin} onToggle={toggleSemanaLibre} />}
@@ -310,13 +317,16 @@ function SemanasLibresPicker({ mes, datos, isAdmin, onToggle }) {
   );
 }
 
-const EditForm = ({ resident, place, exterior, onResChange, onPlaceChange, onExteriorChange, onSave, onCancel }) => (
+const EditForm = ({ resident, place, exterior, tramo, onResChange, onPlaceChange, onExteriorChange, onTramoChange, onSave, onCancel }) => (
   <div style={{ display: "flex", gap: 4, alignItems: "center", padding: "4px 0", flexWrap: "wrap" }}>
     <select value={resident} onChange={(e) => onResChange(e.target.value)} style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", background: "#fff", color: "#0F172A" }}>
       <option value="">Residente…</option>
       {ALL.map((n) => <option key={n} value={n}>{n} ({LEVEL[n]})</option>)}
     </select>
     <input value={place} onChange={(e) => onPlaceChange(e.target.value)} placeholder="Lugar (ej: Fernandez, Ecocardio)" onKeyDown={(e) => e.key === "Enter" && onSave()} style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", flex: 1, minWidth: 140, color: "#0F172A" }} />
+    <select value={tramo || "mes"} onChange={(e) => onTramoChange(e.target.value)} title="Qué semanas del mes ocupa esta rotación" style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", background: "#fff", color: "#0F172A" }}>
+      {Object.entries(TRAMOS_ROTACION).map(([clave, t]) => <option key={clave} value={clave}>{t.label}</option>)}
+    </select>
     <label title="Si rota fuera del país no hace guardias en el Británico" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: exterior ? "#B45309" : "#64748B", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
       <input type="checkbox" checked={!!exterior} onChange={(e) => onExteriorChange(e.target.checked)} style={{ cursor: "pointer" }} />
       ✈️ fuera del país

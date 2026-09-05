@@ -119,8 +119,14 @@ function normalizeRot(raw) {
   for (let i = 0; i < 12; i++) {
     const m = raw.months[i];
     if (m) {
+      // `tramo` es opcional: sin él (rotaciones cargadas antes de esto, o
+      // cuando no se toca el selector) la asignación sigue significando "todo
+      // el mes", exactamente como se comportaba siempre. Se reusa el mismo
+      // catálogo TRAMOS_ROTACION, separado del de vacaciones porque acá
+      // puede ser cualquier tramo de 1 a 4 semanas, no solo los dos formatos
+      // fijos que usan las vacaciones.
       year.months[i].assignments = Array.isArray(m.assignments)
-        ? m.assignments.map((a) => ({ resident: a.resident, place: a.place, exterior: a.exterior === true }))
+        ? m.assignments.map((a) => ({ resident: a.resident, place: a.place, exterior: a.exterior === true, tramo: a.tramo && TRAMOS_ROTACION[a.tramo] ? a.tramo : "mes" }))
         : [];
       year.months[i].notes = typeof m.notes === "string" ? m.notes : "";
       // Migración: antes era un array de nombres sueltos. Un nombre suelto
@@ -188,6 +194,25 @@ const tramoPorDefecto = (nombre) => (LEVEL[nombre] === "R4" ? "mes" : "1-3");
 // Texto para los avisos: "de vacaciones de invierno (primera semana)".
 const textoTramo = (t) => `de vacaciones de ${t.tipo} (${t.label.toLowerCase()})`;
 
+// Igual idea que TRAMOS_VACACIONES (qué semanas del mes ocupa algo) pero para
+// rotaciones: acá no hay solo dos formatos fijos (mes entero o tres semanas),
+// puede ser cualquier tramo de 1 a 4 semanas seguidas — por ejemplo alguien
+// que rota 2 semanas de un mes y 2 del siguiente. Catálogo aparte para no
+// mezclarlo con las etiquetas de "verano/invierno" que son propias de
+// vacaciones y no tendrían sentido acá.
+const TRAMOS_ROTACION = {
+  mes: { label: "Todo el mes", corto: "mes", semanas: null },
+  "1": { label: "1ª semana", corto: "1ª sem", semanas: [0] },
+  "2": { label: "2ª semana", corto: "2ª sem", semanas: [1] },
+  "3": { label: "3ª semana", corto: "3ª sem", semanas: [2] },
+  "4": { label: "4ª semana", corto: "4ª sem", semanas: [3] },
+  "1-2": { label: "1ª y 2ª semana", corto: "1ª-2ª", semanas: [0, 1] },
+  "2-3": { label: "2ª y 3ª semana", corto: "2ª-3ª", semanas: [1, 2] },
+  "3-4": { label: "3ª y 4ª semana", corto: "3ª-4ª", semanas: [2, 3] },
+  "1-3": { label: "1ª a 3ª semana", corto: "1ª-3ª", semanas: [0, 1, 2] },
+  "2-4": { label: "2ª a 4ª semana", corto: "2ª-4ª", semanas: [1, 2, 3] },
+};
+
 // ¿Está esta persona de vacaciones ese día? Hay que mirar dos meses: el del
 // propio día y el de la semana a la que pertenece, porque no siempre coinciden
 // (el 31 de agosto cae en una semana que es de septiembre).
@@ -212,6 +237,36 @@ function vacacionesEseDia(name, fecha, rotPorAnio) {
     const lista = lunesDelMes(anio, mes);
     const idx = lista.findIndex((l) => isoDate(l) === isoDate(mondayOf(fecha)));
     if (idx >= 0 && tramo.semanas.includes(idx)) return tramo;
+  }
+  return null;
+}
+
+// ¿Está esta persona rotando afuera ese día? Igual que vacacionesEseDia: cada
+// asignación de rotación tiene un tramo (por defecto "mes" entero, para no
+// romper lo que ya estaba cargado) que dice qué semanas del mes ocupa. Esto
+// es lo que permite cargar a alguien rotando solo 2 semanas de un mes y 2 del
+// siguiente, en vez de que cualquier rotación bloquee el mes completo.
+function rotacionEseDia(name, fecha, rotPorAnio) {
+  const candidatos = new Map();
+  candidatos.set(`${fecha.getFullYear()}-${fecha.getMonth()}`, [fecha.getFullYear(), fecha.getMonth()]);
+  const [ys, ms] = mesDeLaSemana(mondayOf(fecha)).split("-").map(Number);
+  candidatos.set(`${ys}-${ms - 1}`, [ys, ms - 1]);
+
+  for (const [anio, mes] of candidatos.values()) {
+    const rotAnio = rotPorAnio[anio];
+    if (!rotAnio) continue;
+    const datosMes = rotAnio.months[mes];
+    if (!datosMes) continue;
+    const rot = (datosMes.assignments || []).find((a) => a.resident === name);
+    if (!rot) continue;
+    const tramo = TRAMOS_ROTACION[rot.tramo] || TRAMOS_ROTACION.mes;
+    if (!tramo.semanas) {
+      if (fecha.getMonth() === mes && fecha.getFullYear() === anio) return rot;
+      continue;
+    }
+    const lista = lunesDelMes(anio, mes);
+    const idx = lista.findIndex((l) => isoDate(l) === isoDate(mondayOf(fecha)));
+    if (idx >= 0 && tramo.semanas.includes(idx)) return rot;
   }
   return null;
 }
@@ -260,12 +315,12 @@ function motivoNoDisponible(name, date, rotPorAnio, diaLibre) {
   if (vac) return `${name} está ${textoTramo(vac)}`;
   const libre = semanaLibreEseDia(name, date, rotPorAnio);
   if (libre) return `${name} tiene su semana libre de ${libre}`;
-  const rotAnio = rotPorAnio[date.getFullYear()];
-  if (!rotAnio) return null;
-  const mes = rotAnio.months[date.getMonth()];
-  if (!mes) return null;
-  const rot = (mes.assignments || []).find((a) => a.resident === name);
-  if (rot) return `${name} está rotando en ${rot.place} este mes`;
+  const rot = rotacionEseDia(name, date, rotPorAnio);
+  if (rot) {
+    const tramo = TRAMOS_ROTACION[rot.tramo] || TRAMOS_ROTACION.mes;
+    const cuando = tramo.semanas ? ` (${tramo.corto})` : " este mes";
+    return `${name} está rotando en ${rot.place}${cuando}`;
+  }
   return null;
 }
 
@@ -475,11 +530,7 @@ function motivoNoPuedeGuardia(name, date, rotPorAnio) {
   // La semana libre de fin de año es una desconexión total: ni sala ni guardia.
   const libre = semanaLibreEseDia(name, date, rotPorAnio);
   if (libre) return `${name} tiene su semana libre de ${libre}`;
-  const rotAnio = rotPorAnio[date.getFullYear()];
-  if (!rotAnio) return null;
-  const mes = rotAnio.months[date.getMonth()];
-  if (!mes) return null;
-  const rot = (mes.assignments || []).find((a) => a.resident === name);
+  const rot = rotacionEseDia(name, date, rotPorAnio);
   if (rot && rot.exterior) return `${name} está rotando fuera del país (${rot.place})`;
   return null;
 }
@@ -546,9 +597,7 @@ function analizarSemana(week, monday, rotPorAnio, equiposMes) {
       // aparezca acá un R4 que no está rotando: ese trabaja igual en sala al
       // día siguiente y no debería estar ocupando la fila de postguardia.
       (d.postguardia || []).filter((n) => LEVEL[n] === "R4").forEach((n) => {
-        const rotAnio = rotPorAnio[fecha.getFullYear()];
-        const mesRot = rotAnio && rotAnio.months[fecha.getMonth()];
-        const rota = mesRot && (mesRot.assignments || []).some((a) => a.resident === n);
+        const rota = !!rotacionEseDia(n, fecha, rotPorAnio);
         if (!rota) {
           agregar(suaves, di, `${n} es R4 y no está rotando — su postguardia la trabaja en sala, no debería figurar acá`);
         }
@@ -562,9 +611,7 @@ function analizarSemana(week, monday, rotPorAnio, equiposMes) {
       if (di >= 1) {
         const anoche = (week.days[di - 1] || {}).deGuardia || [];
         anoche.filter((n) => LEVEL[n] === "R4").forEach((n) => {
-          const rotAnio = rotPorAnio[fecha.getFullYear()];
-          const mesRot = rotAnio && rotAnio.months[fecha.getMonth()];
-          const rota = mesRot && (mesRot.assignments || []).some((a) => a.resident === n);
+          const rota = !!rotacionEseDia(n, fecha, rotPorAnio);
           if (rota) return;
           const sl = SLOTS.filter((x) => x.key !== "postguardia").find((x) => (d[x.key] || []).includes(n));
           if (!sl) return;
@@ -613,4 +660,4 @@ function analizarSemana(week, monday, rotPorAnio, equiposMes) {
   return { duras, suaves };
 }
 
-export { TRAMOS_VACACIONES, agruparPorMes, agruparPorTipo, analizarSemana, canonizarGuardia, clone, colorUnidad, cupoR2, disponiblesEsaSemana, emptyAcademico, emptyDay, emptyDiasLibresR4, emptyRotYear, emptyWeek, esResidente, esSuperior, isBlank, limpiarTelefono, motivoNoDisponible, motivoNoPuedeGuardia, normalizarListaGuardia, normalize, normalizeAcademico, normalizeChipaWeek, normalizeLauraWeek, normalizeRot, parseDeGuardia, paseArreglado, resolverResidente, semanaDeVotacionPorDefecto, semanaLibreEseDia, textoTramo, tramoPorDefecto, useRotaciones, vacacionesEseDia };
+export { TRAMOS_ROTACION, TRAMOS_VACACIONES, agruparPorMes, agruparPorTipo, analizarSemana, canonizarGuardia, clone, colorUnidad, cupoR2, disponiblesEsaSemana, emptyAcademico, emptyDay, emptyDiasLibresR4, emptyRotYear, emptyWeek, esResidente, esSuperior, isBlank, limpiarTelefono, motivoNoDisponible, motivoNoPuedeGuardia, normalizarListaGuardia, normalize, normalizeAcademico, normalizeChipaWeek, normalizeLauraWeek, normalizeRot, parseDeGuardia, paseArreglado, resolverResidente, rotacionEseDia, semanaDeVotacionPorDefecto, semanaLibreEseDia, textoTramo, tramoPorDefecto, useRotaciones, vacacionesEseDia };
