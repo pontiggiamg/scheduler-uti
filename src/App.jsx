@@ -26,6 +26,7 @@ import { AccesosView } from "./vistas/accesos";
 import { ArticuloSemanaView } from "./vistas/articulo";
 import { ChipaView } from "./vistas/chipa";
 import { QuienEstaHoyView } from "./vistas/hoy";
+import { LauraView } from "./vistas/laura";
 import { PasesView } from "./vistas/pases";
 import { RedcapView } from "./vistas/redcap";
 import { RegistroView } from "./vistas/registro";
@@ -287,6 +288,7 @@ function AuthenticatedApp() {
         </Suspense>
       )}
       {tab === "chipa" && <ChipaView isAdmin={isAdmin} user={user} />}
+      {tab === "laura" && <LauraView isAdmin={isAdmin} user={user} />}
       {tab === "academico" && <AcademicoView isAdmin={isAdmin} />}
       {tab === "articulo" && <ArticuloSemanaView isAdmin={isAdmin} />}
       {tab === "registro" && <RegistroView isAdmin={isAdmin} user={user} />}

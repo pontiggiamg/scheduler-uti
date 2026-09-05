@@ -36,6 +36,9 @@ const TAB_META = {
   // El 🥐 es el ícono de la pestaña y le corresponde a la chipa; el ✨ va pegado
   // a "Aura" en la etiqueta para que cada votación tenga su símbolo a la vista.
   chipa: { icon: "🥐", label: "Chipa y Aura ✨" },
+  // Votación auspiciada por el Dr. Elías. Funciona igual que Chipa y Aura
+  // (misma semana, mismos candidatos), pero es una sola votación.
+  laura: { icon: "🎗️", label: "Votación de Laura" },
   academico: { icon: "📚", label: "Calendario Académico" },
   articulo: { icon: "📄", label: "Artículo de la semana" },
   registro: { icon: "📋", label: "Registro" },
