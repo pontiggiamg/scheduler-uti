@@ -247,10 +247,28 @@ function FilaCuenta({ c, i, total, onAsignar, onQuitar }) {
           Último ingreso: {c.loginAtAR || "—"}{c.loginAt && ` · ${haceRelativo(c.loginAt)}`}
         </div>
       </div>
-      <select value={rol || ""} onChange={(e) => e.target.value ? onAsignar(c.email, e.target.value) : onQuitar(c.email)} style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", background: "#fff", color: rol ? "#0F172A" : "#94A3B8" }}>
-        <option value="">Sin rol…</option>
+      {/* El selector solo cambia ENTRE roles — bajarla a "Sin rol…" desde acá
+          quedó sacado a propósito. Eliminar el acceso de alguien es una
+          acción con consecuencias reales (la próxima vez que la persona
+          abra la app se encuentra con la pantalla de "no tenés acceso" y
+          tiene que esperar a que se lo reasignen), así que tiene su propio
+          botón bien visible en vez de ser una opción más de un desplegable
+          donde un clic de más la dispara sin querer. */}
+      <select value={rol || ""} onChange={(e) => onAsignar(c.email, e.target.value)} style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid #CBD5E1", fontSize: 11.5, fontFamily: "inherit", background: "#fff", color: rol ? "#0F172A" : "#94A3B8" }}>
+        {!rol && <option value="">Sin rol…</option>}
         {ROLES_ASIGNABLES.map((r) => <option key={r} value={r}>{ROLES[r].icon} {ROLES[r].label}</option>)}
       </select>
+      {rol && (
+        <button
+          onClick={() => {
+            if (confirm(`¿Eliminar el acceso de ${c.displayName || c.email}?\n\nLa próxima vez que intente entrar a la app va a ver la pantalla de "no tenés acceso" hasta que le vuelvas a asignar un rol desde acá. No se borra su historial (pases, procedimientos, etc.), solo el permiso para entrar.`)) onQuitar(c.email);
+          }}
+          title="Eliminar acceso — va a tener que pedirlo de nuevo"
+          style={{ width: 28, height: 28, borderRadius: 6, border: "1px solid #FECACA", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+        >
+          🗑️
+        </button>
+      )}
     </div>
   );
 }
