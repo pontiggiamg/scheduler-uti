@@ -42,6 +42,14 @@ import { ADMIN_EMAIL, ROLES, ROLES_ASIGNABLES, TAB_META } from "../config";
 const VEINTICUATRO_HS_MS = 24 * 60 * 60 * 1000;
 const activo24h = (loginAtISO) => !!loginAtISO && (Date.now() - new Date(loginAtISO).getTime()) < VEINTICUATRO_HS_MS;
 
+// Una cuenta SIN rol que hace más de 48 hs que no entra se deja de mostrar
+// acá — el servidor además la borra de verdad de access_logs (ver
+// api/limpiar-accesos.js, corre solo una vez por día), pero esto hace que la
+// lista ya se vea limpia al instante, sin esperar a que corra ese cron. Si la
+// cuenta entra de nuevo, genera un registro nuevo y reaparece.
+const CUARENTA_Y_OCHO_HS_MS = 48 * 60 * 60 * 1000;
+const dentroDe48hs = (loginAtISO) => !!loginAtISO && (Date.now() - new Date(loginAtISO).getTime()) < CUARENTA_Y_OCHO_HS_MS;
+
 // "hace 5 min" / "hace 3 h" / "hace 2 d" — más rápido de leer de un vistazo
 // que la fecha y hora completas cuando lo que importa es "¿esto es reciente?".
 function haceRelativo(loginAtISO) {
@@ -118,11 +126,11 @@ function AccesosView({ user }) {
   }, [logs, cuentas]);
 
   const esAdminEmail = (email) => email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-  const sinRolTodas = useMemo(() => cuentasVistas.filter((c) => !esAdminEmail(c.email) && !c.cuenta), [cuentasVistas]);
+  // Sin rol Y hace más de 48 hs que no entra: se saca de la vista (ver
+  // dentroDe48hs más arriba). A alguien CON rol nunca se le aplica este corte,
+  // por eso conRolTodas no lo usa.
+  const sinRolTodas = useMemo(() => cuentasVistas.filter((c) => !esAdminEmail(c.email) && !c.cuenta && dentroDe48hs(c.loginAt)), [cuentasVistas]);
   const conRolTodas = useMemo(() => cuentasVistas.filter((c) => !esAdminEmail(c.email) && c.cuenta), [cuentasVistas]);
-  // El filtro de actividad solo se aplica a "Con rol": a alguien SIN rol
-  // conviene seguir viéndolo siempre ahí, activo o no, porque esa lista existe
-  // justamente para no perderlo de vista hasta asignarle algo.
   const sinRol = sinRolTodas;
   const conRol = useMemo(() => soloActivos ? conRolTodas.filter((c) => activo24h(c.loginAt)) : conRolTodas, [conRolTodas, soloActivos]);
   const activosCount = useMemo(() => conRolTodas.filter((c) => activo24h(c.loginAt)).length, [conRolTodas]);
@@ -196,7 +204,7 @@ function CuentasSeccion({ sinRol, conRol, totalConRol, activosCount, soloActivos
         <div style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: "#B45309", marginBottom: 6 }}>⚠️ Sin rol asignado ({sinRol.length})</div>
           <div style={{ fontSize: 11, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "7px 11px", marginBottom: 8, lineHeight: 1.5 }}>
-            Estas cuentas ya iniciaron sesión en la app (quedó registrado en el ingreso) pero no ven ninguna pestaña hasta que les asignes un rol. Si alguna no te suena, es justamente lo que esta lista está para mostrarte.
+            Estas cuentas ya iniciaron sesión en la app (quedó registrado en el ingreso) pero no ven ninguna pestaña hasta que les asignes un rol. Si alguna no te suena, es justamente lo que esta lista está para mostrarte. Si no le asignás nada, desaparece sola de acá a las 48 hs de su último ingreso — no hace falta que la borres vos.
           </div>
           <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E2E8F0", overflow: "hidden" }}>
             {sinRol.map((c, i) => <FilaCuenta key={c.email} c={c} i={i} total={sinRol.length} onAsignar={onAsignar} onQuitar={onQuitar} />)}

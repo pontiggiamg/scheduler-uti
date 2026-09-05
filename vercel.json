@@ -7,6 +7,10 @@
     {
       "path": "/api/sync-pases",
       "schedule": "0 20 * * *"
+    },
+    {
+      "path": "/api/limpiar-accesos",
+      "schedule": "0 9 * * *"
     }
   ]
 }

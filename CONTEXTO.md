@@ -104,6 +104,21 @@ vinculada) es solo una comodidad cuando está disponible, nunca un requisito.
   hoja impresa lee los comodines ya marcados semana a semana y los muestra
   como un equipo más, con 🃏. En la hoja de mes se muestra la unión de quienes
   fueron comodín en alguna semana de ese mes.
+- **5/9/2026 — Botón de eliminar acceso**: cada cuenta con rol tiene un 🗑️
+  aparte del selector (bajar a "Sin rol…" desde el desplegable quedó sacado a
+  propósito, para que sea una acción explícita con confirmación, no un click
+  de más). Borra el rol, no el historial de la persona.
+- **5/9/2026 — Limpieza automática de cuentas sin rol**: una cuenta que entró
+  sin que se le asigne rol desaparece sola de la lista "⚠️ Sin rol asignado" a
+  las 48 hs de su último ingreso (al toque en la pantalla, y de la base de
+  verdad una vez por día vía `api/limpiar-accesos.js`, agregado como cron en
+  `vercel.json`). Objetivo: que gente que entra una vez sin que a Gonzalo le
+  interese darle acceso no ensucie esa lista para siempre. Si la cuenta vuelve
+  a entrar, reaparece — no queda bloqueada ni marcada de ninguna forma.
+  **Pendiente de Gonzalo**: configurar la variable de entorno `CRON_SECRET` en
+  Vercel (Settings → Environment Variables, cualquier texto largo al azar) para
+  que ese endpoint no quede abierto a cualquiera; sin ella igual funciona, pero
+  menos seguro.
 - **El bug real de "los comodines no se guardan"**: no era el guardado, era la
   LECTURA. `normalize()` en `modelo.jsx` armaba la semana copiando campo por
   campo desde `emptyWeek()`, y el campo `comodines` no estaba en esa lista —
